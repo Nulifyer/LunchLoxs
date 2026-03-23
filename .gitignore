@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build output
+frontend/dist/
+backend/bin/
+
+# Generated protobuf
+gen/
+frontend/src/gen/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+server
+
+# Bun
+bun.lockb
+
+# Podman/Docker
+pgdata/

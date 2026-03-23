@@ -1,0 +1,42 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "run-backend",
+      "type": "shell",
+      "command": "go run ./backend/cmd/server",
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgres://postgres:postgres@localhost:5432/todos?sslmode=disable",
+          "PORT": "8080",
+          "FRONTEND_URL": "http://localhost:5173"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": { "regexp": ".", "file": 1, "location": 2, "message": 3 },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "server listening on"
+        }
+      },
+      "group": "build"
+    },
+    {
+      "label": "run-frontend",
+      "type": "shell",
+      "command": "cd frontend && bun run build && bun run dev",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": { "regexp": ".", "file": 1, "location": 2, "message": 3 },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "Dev server running at"
+        }
+      },
+      "group": "build"
+    }
+  ]
+}

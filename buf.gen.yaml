@@ -1,0 +1,14 @@
+version: v2
+plugins:
+  # Go protobuf
+  - remote: buf.build/protocolbuffers/go
+    out: gen
+    opt: paths=source_relative
+  # ConnectRPC Go
+  - remote: buf.build/connectrpc/go
+    out: gen
+    opt: paths=source_relative
+  # Protobuf-ES v2 (includes service descriptors, no separate connect-es needed)
+  - remote: buf.build/bufbuild/es
+    out: frontend/src/gen
+    opt: target=ts
