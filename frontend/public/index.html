@@ -17,6 +17,49 @@
       padding: 2rem 1rem;
     }
     h1 { text-align: center; margin-bottom: 1.5rem; }
+
+    /* Login */
+    .login-section { max-width: 360px; margin: 0 auto; }
+    .login-section h2 { text-align: center; margin-bottom: 1rem; }
+    .login-section p { text-align: center; font-size: 0.85rem; color: #888; margin-bottom: 1.5rem; }
+    .field { margin-bottom: 1rem; }
+    .field label { display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.25rem; }
+    .field input {
+      width: 100%;
+      padding: 0.75rem;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #16213e;
+      color: #eee;
+      font-size: 1rem;
+    }
+    .login-btn {
+      width: 100%;
+      padding: 0.75rem;
+      border: none;
+      border-radius: 8px;
+      background: #e94560;
+      color: white;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    .login-btn:hover { background: #c73650; }
+    .login-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .login-error { color: #e94560; text-align: center; font-size: 0.85rem; margin-top: 0.75rem; }
+
+    /* App */
+    .app-header { display: flex; align-items: center; justify-content: center; gap: 0.75rem; margin-bottom: 1.5rem; }
+    .app-header h1 { margin-bottom: 0; }
+    .logout-btn {
+      background: none;
+      border: 1px solid #444;
+      color: #888;
+      padding: 0.25rem 0.75rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    .logout-btn:hover { border-color: #e94560; color: #e94560; }
     .add-form { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
     .add-form input {
       flex: 1;
@@ -56,25 +99,52 @@
       font-size: 1.2rem;
     }
     .status { text-align: center; font-size: 0.85rem; color: #666; margin-top: 1rem; }
-    .offline-badge {
+
+    /* Sync badge */
+    .sync-badge {
       display: inline-block;
-      background: #f0a500;
-      color: #000;
       padding: 0.15rem 0.5rem;
       border-radius: 4px;
       font-size: 0.75rem;
-      margin-left: 0.5rem;
     }
+    .sync-badge.connecting { background: #f0a500; color: #000; }
+    .sync-badge.disconnected { background: #e94560; color: #fff; }
+    .sync-badge.connected { display: none; }
   </style>
 </head>
 <body>
-  <h1>Todos <span id="offline-badge" class="offline-badge" hidden>offline</span></h1>
-  <form class="add-form" id="add-form">
-    <input type="text" id="todo-input" placeholder="What needs to be done?" required />
-    <button type="submit">Add</button>
-  </form>
-  <ul class="todo-list" id="todo-list"></ul>
-  <p class="status" id="status"></p>
+  <!-- Login -->
+  <section id="login-section" class="login-section" hidden>
+    <h2>Todo App</h2>
+    <p>End-to-end encrypted. Your data never leaves your devices unencrypted.</p>
+    <form id="login-form">
+      <div class="field">
+        <label for="username-input">Username</label>
+        <input type="text" id="username-input" required autocomplete="username" />
+      </div>
+      <div class="field">
+        <label for="passphrase-input">Passphrase</label>
+        <input type="password" id="passphrase-input" required autocomplete="current-password" />
+      </div>
+      <button type="submit" id="login-btn" class="login-btn">Login / Sign Up</button>
+      <p id="login-error" class="login-error" hidden></p>
+    </form>
+  </section>
+
+  <!-- App -->
+  <section id="app-section" hidden>
+    <div class="app-header">
+      <h1>Todos</h1>
+      <span id="sync-badge" class="sync-badge" hidden></span>
+      <button id="logout-btn" class="logout-btn">Logout</button>
+    </div>
+    <form class="add-form" id="add-form">
+      <input type="text" id="todo-input" placeholder="What needs to be done?" required />
+      <button type="submit">Add</button>
+    </form>
+    <ul class="todo-list" id="todo-list"></ul>
+    <p class="status" id="status"></p>
+  </section>
 
   <script type="module" src="/index.js"></script>
 </body>

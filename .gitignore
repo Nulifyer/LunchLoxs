@@ -29,10 +29,11 @@ Thumbs.db
 *.dll
 *.so
 *.dylib
-server
 
 # Bun
 bun.lockb
 
 # Podman/Docker
 pgdata/
+
+.claude/

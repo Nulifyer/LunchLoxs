@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 declare const self: ServiceWorkerGlobalScope;
 
-const CACHE_NAME = "todo-v1";
+const CACHE_NAME = "todo-v2";
 const STATIC_ASSETS = ["/", "/index.html", "/index.js"];
 
 // Install — pre-cache shell
@@ -22,15 +22,12 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Fetch — network-first for API, cache-first for static assets
+// Fetch — cache-first for static assets, passthrough everything else
 self.addEventListener("fetch", (event) => {
   const { request } = event;
-  const url = new URL(request.url);
 
-  // Let API calls go to network (ConnectRPC uses POST)
-  if (request.method === "POST" || url.pathname.startsWith("/todo.v1.")) {
-    return;
-  }
+  // Only cache GET requests for static assets
+  if (request.method !== "GET") return;
 
   event.respondWith(
     caches.match(request).then((cached) => {

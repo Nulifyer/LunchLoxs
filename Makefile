@@ -1,8 +1,4 @@
-.PHONY: generate build-backend build-frontend dev-backend dev-frontend migrate-up migrate-down migrate-create
-
-# Generate protobuf code for Go + TypeScript
-generate:
-	buf generate
+.PHONY: build-backend build-frontend dev-backend dev-frontend migrate-up migrate-down migrate-create dev
 
 # Backend
 build-backend:

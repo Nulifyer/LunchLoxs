@@ -1,19 +1,44 @@
-import { initLocalDb, getAllTodos, insertTodo, updateTodoLocal, deleteTodoLocal, type LocalTodo } from "./lib/local-db";
-import { todoClient } from "./lib/api-client";
-import { timestampDate } from "@bufbuild/protobuf/wkt";
+import { deriveKeys, deriveUserId } from "./lib/crypto";
+import { hasSession, getStoredUsername, getStoredPassphrase, getDeviceId, saveSession, clearSession } from "./lib/auth";
+import { AutomergeStore } from "./lib/automerge-store";
+import { SyncClient, type SyncStatus } from "./lib/sync-client";
+
+// ── App document schema ──
+interface TodoDoc {
+  todos: Array<{
+    id: string;
+    title: string;
+    completed: boolean;
+    createdAt: number;
+  }>;
+}
 
 // ── State ──
-let online = navigator.onLine;
+let store: AutomergeStore<TodoDoc> | null = null;
+let syncClient: SyncClient | null = null;
+let syncStatus: SyncStatus = "disconnected";
 
 // ── DOM refs ──
+const loginSection = document.getElementById("login-section") as HTMLElement;
+const appSection = document.getElementById("app-section") as HTMLElement;
+const loginForm = document.getElementById("login-form") as HTMLFormElement;
+const usernameInput = document.getElementById("username-input") as HTMLInputElement;
+const passphraseInput = document.getElementById("passphrase-input") as HTMLInputElement;
+const loginError = document.getElementById("login-error") as HTMLElement;
+const loginBtn = document.getElementById("login-btn") as HTMLButtonElement;
+const logoutBtn = document.getElementById("logout-btn") as HTMLButtonElement;
 const form = document.getElementById("add-form") as HTMLFormElement;
 const input = document.getElementById("todo-input") as HTMLInputElement;
 const list = document.getElementById("todo-list") as HTMLUListElement;
 const status = document.getElementById("status") as HTMLParagraphElement;
-const offlineBadge = document.getElementById("offline-badge") as HTMLSpanElement;
+const syncBadge = document.getElementById("sync-badge") as HTMLSpanElement;
 
 // ── Render ──
-function render(todos: LocalTodo[]) {
+function render() {
+  if (!store) return;
+  const doc = store.getDoc();
+  const todos = doc.todos ?? [];
+
   list.innerHTML = "";
   for (const todo of todos) {
     const li = document.createElement("li");
@@ -26,6 +51,7 @@ function render(todos: LocalTodo[]) {
     list.appendChild(li);
   }
   status.textContent = `${todos.length} item${todos.length !== 1 ? "s" : ""}`;
+  updateSyncBadge();
 }
 
 function escapeHtml(s: string): string {
@@ -34,104 +60,144 @@ function escapeHtml(s: string): string {
   return d.innerHTML;
 }
 
-// ── Sync from server → local ──
-async function syncFromServer() {
+function updateSyncBadge() {
+  syncBadge.textContent = syncStatus;
+  syncBadge.className = `sync-badge ${syncStatus}`;
+  syncBadge.hidden = syncStatus === "connected";
+}
+
+// ── Login flow ──
+async function login(username: string, passphrase: string) {
+  loginBtn.disabled = true;
+  loginBtn.textContent = "Deriving keys...";
+  loginError.hidden = true;
+
   try {
-    const res = await todoClient.listTodos({});
-    for (const t of res.todos) {
-      await insertTodo({
-        id: t.id,
-        title: t.title,
-        completed: t.completed,
-        created_at: (t.createdAt ? timestampDate(t.createdAt).toISOString() : undefined) ?? new Date().toISOString(),
-        updated_at: (t.updatedAt ? timestampDate(t.updatedAt).toISOString() : undefined) ?? new Date().toISOString(),
-        synced: true,
-      });
-    }
-    online = true;
-    offlineBadge.hidden = true;
-  } catch (e) {
-    online = false;
-    offlineBadge.hidden = false;
-    console.warn("sync failed, working offline:", e);
+    const [keys, userId] = await Promise.all([
+      deriveKeys(username, passphrase),
+      deriveUserId(username),
+    ]);
+
+    saveSession(username, passphrase);
+
+    // Init Automerge store
+    store = await AutomergeStore.init<TodoDoc>((doc) => {
+      doc.todos = [];
+    });
+    store.onChange(() => render());
+
+    // Determine WebSocket URL
+    const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${wsProtocol}//${location.hostname}:8080/ws`;
+
+    // Init sync client
+    syncClient = new SyncClient({
+      url: wsUrl,
+      userId,
+      deviceId: getDeviceId(),
+      authHash: keys.authHash,
+      encKey: keys.encKey,
+      getLastSeq: () => store!.getLastSeq(),
+      onRemoteChange: async (change, seq) => {
+        store!.applyChange(change);
+        await store!.setLastSeq(seq);
+      },
+      onCaughtUp: async (latestSeq) => {
+        await store!.setLastSeq(latestSeq);
+        // Always push all local changes — the relay needs every device's
+        // full Automerge history so other devices can apply changes.
+        // Automerge handles duplicate changes idempotently.
+        const changes = store!.getAllChanges();
+        if (changes.length > 0) {
+          await syncClient!.pushAll(changes);
+        }
+      },
+      onStatusChange: (s) => {
+        syncStatus = s;
+        updateSyncBadge();
+      },
+    });
+
+    syncClient.connect();
+
+    // Show app
+    loginSection.hidden = true;
+    appSection.hidden = false;
+    render();
+  } catch (e: any) {
+    loginError.textContent = e.message ?? "Login failed";
+    loginError.hidden = false;
+  } finally {
+    loginBtn.disabled = false;
+    loginBtn.textContent = "Login / Sign Up";
   }
 }
 
-// ── Refresh UI ──
-async function refresh() {
-  render(await getAllTodos());
+function logout() {
+  syncClient?.disconnect();
+  syncClient = null;
+  store = null;
+  clearSession();
+  loginSection.hidden = false;
+  appSection.hidden = true;
 }
 
 // ── Event handlers ──
-form.addEventListener("submit", async (e) => {
+loginForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await login(usernameInput.value.trim(), passphraseInput.value);
+});
+
+logoutBtn.addEventListener("click", logout);
+
+form.addEventListener("submit", (e) => {
   e.preventDefault();
   const title = input.value.trim();
-  if (!title) return;
+  if (!title || !store) return;
 
-  const tempId = crypto.randomUUID();
-  const now = new Date().toISOString();
-  await insertTodo({ id: tempId, title, completed: false, created_at: now, updated_at: now, synced: false });
+  store.change((doc) => {
+    doc.todos.push({
+      id: crypto.randomUUID(),
+      title,
+      completed: false,
+      createdAt: Date.now(),
+    });
+  });
+
+  // Send the change to the relay
+  const lastChange = store.getLastLocalChange();
+  if (lastChange) syncClient?.push(lastChange);
+
   input.value = "";
-  await refresh();
-
-  if (online) {
-    try {
-      const res = await todoClient.createTodo({ title });
-      // Replace temp record with server-assigned one
-      await deleteTodoLocal(tempId);
-      await insertTodo({
-        id: res.todo!.id,
-        title: res.todo!.title,
-        completed: res.todo!.completed,
-        created_at: res.todo!.createdAt ? timestampDate(res.todo!.createdAt).toISOString() : now,
-        updated_at: res.todo!.updatedAt ? timestampDate(res.todo!.updatedAt).toISOString() : now,
-        synced: true,
-      });
-      await refresh();
-    } catch (e) {
-      console.warn("create failed, saved locally:", e);
-    }
-  }
 });
 
-list.addEventListener("change", async (e) => {
+list.addEventListener("change", (e) => {
   const target = e.target as HTMLInputElement;
   const id = target.dataset.id;
-  if (!id) return;
-  const completed = target.checked;
-  await updateTodoLocal(id, { completed, synced: false });
-  await refresh();
+  if (!id || !store) return;
 
-  if (online) {
-    try {
-      await todoClient.updateTodo({ id, completed });
-      await updateTodoLocal(id, { synced: true });
-    } catch (e) {
-      console.warn("update failed:", e);
-    }
-  }
+  store.change((doc) => {
+    const todo = doc.todos.find((t) => t.id === id);
+    if (todo) todo.completed = target.checked;
+  });
+
+  const lastChange = store.getLastLocalChange();
+  if (lastChange) syncClient?.push(lastChange);
 });
 
-list.addEventListener("click", async (e) => {
+list.addEventListener("click", (e) => {
   const target = e.target as HTMLButtonElement;
   const id = target.dataset.delete;
-  if (!id) return;
-  await deleteTodoLocal(id);
-  await refresh();
+  if (!id || !store) return;
 
-  if (online) {
-    try {
-      await todoClient.deleteTodo({ id });
-    } catch (e) {
-      console.warn("delete failed:", e);
-    }
-  }
+  store.change((doc) => {
+    const idx = doc.todos.findIndex((t) => t.id === id);
+    if (idx !== -1) doc.todos.splice(idx, 1);
+  });
+
+  const lastChange = store.getLastLocalChange();
+  if (lastChange) syncClient?.push(lastChange);
 });
-
-// ── Online/offline tracking ──
-window.addEventListener("online", () => { online = true; offlineBadge.hidden = true; syncFromServer().then(() => refresh()); });
-window.addEventListener("offline", () => { online = false; offlineBadge.hidden = false; });
-offlineBadge.hidden = online;
 
 // ── Register service worker ──
 if ("serviceWorker" in navigator) {
@@ -140,7 +206,10 @@ if ("serviceWorker" in navigator) {
 
 // ── Boot ──
 (async () => {
-  await initLocalDb();
-  if (online) await syncFromServer();
-  await refresh();
+  if (hasSession()) {
+    await login(getStoredUsername()!, getStoredPassphrase()!);
+  } else {
+    loginSection.hidden = false;
+    appSection.hidden = true;
+  }
 })();
