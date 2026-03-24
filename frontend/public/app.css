@@ -1,0 +1,409 @@
+/* -- Pico overrides -- */
+:root {
+  --pico-font-family: system-ui, -apple-system, sans-serif;
+  --pico-form-element-spacing-vertical: 0.5rem;
+  --pico-form-element-spacing-horizontal: 0.75rem;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* -- Login -- */
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--pico-background-color);
+  z-index: 100;
+}
+
+.login-card {
+  max-width: 380px;
+  width: 100%;
+  padding: 2rem;
+}
+
+/* -- App layout -- */
+.app-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  height: 100vh;
+}
+
+/* -- Sidebar -- */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--pico-muted-border-color);
+  overflow: hidden;
+  height: 100vh;
+}
+
+.sidebar header {
+  padding: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sidebar header h1 {
+  font-size: 1.3rem;
+  margin: 0;
+  flex: 1;
+}
+
+.sidebar .search {
+  padding: 0 1rem;
+}
+
+.sidebar .search input {
+  margin-bottom: 0.5rem;
+}
+
+.sidebar footer {
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--pico-muted-border-color);
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.sidebar footer small {
+  flex: 1;
+}
+
+/* -- Recipe list -- */
+#recipe-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+#recipe-list li {
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+#recipe-list li:hover {
+  background: var(--pico-card-background-color);
+}
+
+#recipe-list li.selected {
+  background: var(--pico-primary-background);
+  color: var(--pico-primary-inverse);
+}
+
+#recipe-list li strong {
+  font-size: 0.95rem;
+}
+
+#recipe-list li small {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.tag {
+  background: var(--pico-muted-border-color);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+}
+
+/* -- Main content -- */
+.main-content {
+  overflow-y: auto;
+  height: 100vh;
+  padding: 1.25rem 1.5rem;
+}
+
+#empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  opacity: 0.5;
+}
+
+/* -- Recipe detail -- */
+#recipe-detail header {
+  margin-bottom: 1.5rem;
+}
+
+#recipe-detail .meta {
+  font-size: 0.85rem;
+  opacity: 0.7;
+  margin-bottom: 1rem;
+}
+
+.detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.detail-title-row h2 {
+  flex: 1;
+  margin: 0;
+}
+
+/* -- Section headers -- */
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 1.25rem 0 0.6rem;
+}
+
+.section-header h3 {
+  margin: 0;
+  flex: 1;
+  font-size: 1rem;
+}
+
+/* -- Buttons -- */
+.btn-sm {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+}
+
+.btn-danger {
+  color: var(--pico-del-color);
+  border-color: var(--pico-del-color);
+}
+
+.btn-danger-fill {
+  background: var(--pico-del-color);
+  border-color: var(--pico-del-color);
+  color: #fff;
+}
+
+/* -- Editors -- */
+.editor-wrap {
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.editor-wrap .cm-editor {
+  min-height: 200px;
+  max-height: 50vh;
+}
+
+.editor-wrap .cm-scroller {
+  overflow: auto;
+}
+
+.preview-wrap {
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 8px;
+  padding: 1rem;
+  min-height: 100px;
+  line-height: 1.6;
+}
+
+/* -- Clickable preview areas (only in edit mode) -- */
+.editing .preview-clickable {
+  cursor: pointer;
+}
+
+.editing .preview-clickable:hover {
+  border-color: var(--pico-primary);
+}
+
+/* -- Read-only ingredients -- */
+#ingredients-list li .ing-qty,
+#ingredients-list li .ing-unit,
+#ingredients-list li .ing-text {
+  font-size: 0.9rem;
+}
+
+#ingredients-list li .ing-qty {
+  font-weight: bold;
+  min-width: 2.5rem;
+}
+
+#ingredients-list li .ing-unit {
+  opacity: 0.7;
+  min-width: 2.5rem;
+}
+
+#ingredients-list li .ing-text {
+  flex: 1;
+}
+
+/* -- Ingredients list -- */
+#ingredients-list {
+  padding-left: 0;
+  list-style: none;
+  margin: 0;
+}
+
+#ingredients-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+input.ing-edit {
+  margin-bottom: 0;
+  padding: 0.2rem 0.3rem;
+  font-size: 0.85rem;
+  height: auto;
+  min-height: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+}
+
+input.ing-edit:focus {
+  border-color: var(--pico-primary);
+  background: var(--pico-card-background-color);
+}
+
+input.ing-edit.ing-qty {
+  width: 3.5rem;
+  font-weight: bold;
+}
+
+input.ing-edit.ing-unit {
+  width: 3.5rem;
+  opacity: 0.7;
+}
+
+input.ing-edit.ing-text {
+  flex: 1;
+}
+
+#ingredients-list li button {
+  background: none;
+  border: none;
+  color: var(--pico-del-color);
+  cursor: pointer;
+  padding: 0.1rem;
+  font-size: 1rem;
+  opacity: 0.4;
+}
+
+#ingredients-list li button:hover {
+  opacity: 1;
+}
+
+/* -- Ingredient add form -- */
+.ingredient-form {
+  display: none;
+  grid-template-columns: 4rem 4rem 1fr auto;
+  gap: 0.4rem;
+  align-items: end;
+  margin-top: 0.5rem;
+}
+
+.ingredient-form.open {
+  display: grid;
+}
+
+.ingredient-form label {
+  font-size: 0.7rem;
+  margin-bottom: 0.1rem;
+  display: block;
+}
+
+.ingredient-form input,
+.ingredient-form button {
+  margin-bottom: 0;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.85rem;
+  height: auto;
+  min-height: 0;
+}
+
+/* -- Dialog forms -- */
+.dialog-grid-3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.dialog-footer {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+/* -- Account page -- */
+.account-page {
+  max-width: 500px;
+}
+
+.alert-error {
+  color: var(--pico-del-color);
+}
+
+.alert-success {
+  color: var(--pico-ins-color);
+}
+
+.danger-label {
+  color: var(--pico-del-color);
+}
+
+/* -- Sync badge -- */
+.sync-badge {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+
+.sync-badge.connecting {
+  background: #f0a500;
+  color: #000;
+}
+
+.sync-badge.disconnected {
+  background: #e94560;
+  color: #fff;
+}
+
+/* -- Mobile -- */
+@media (max-width: 768px) {
+  .app-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .main-content {
+    display: none;
+  }
+
+  .app-layout.detail-open .sidebar {
+    display: none;
+  }
+
+  .app-layout.detail-open .main-content {
+    display: block;
+  }
+
+  .mobile-only {
+    display: inline-flex !important;
+  }
+}
+
+@media (min-width: 769px) {
+  .mobile-only {
+    display: none !important;
+  }
+}

@@ -39,6 +39,9 @@ export interface SessionKeys {
  * The wrapping key is used to wrap/unwrap the master key.
  */
 export async function deriveKeys(username: string, passphrase: string): Promise<DerivedKeys> {
+  if (!crypto?.subtle) {
+    throw new Error("This app requires HTTPS. Please access it over a secure connection.");
+  }
   const usernameBytes = new TextEncoder().encode(username.trim().toLowerCase());
   const salt = new Uint8Array(await crypto.subtle.digest("SHA-256", usernameBytes));
 

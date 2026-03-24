@@ -8,7 +8,7 @@
 
 const STORAGE_KEY_USERNAME = "e2ee_username";
 const STORAGE_KEY_DEVICE_ID = "e2ee_device_id";
-const STORAGE_KEY_WRAPPED_KEY = "e2ee_wrapped_master_key"; // per-user, suffixed with userId
+const STORAGE_KEY_WRAPPED_KEY = "e2ee_wrapped_master_key";
 
 /** In-memory session — destroyed on tab close */
 let sessionKeys: {
@@ -31,7 +31,6 @@ export function getDeviceId(): string {
   return id;
 }
 
-/** Get the stored wrapped master key for a user (encrypted, safe in localStorage). */
 export function getStoredWrappedKey(userId: string): Uint8Array | null {
   const b64 = localStorage.getItem(`${STORAGE_KEY_WRAPPED_KEY}_${userId.slice(0, 16)}`);
   if (!b64) return null;
@@ -41,11 +40,14 @@ export function getStoredWrappedKey(userId: string): Uint8Array | null {
   return bytes;
 }
 
-/** Store the wrapped master key (encrypted blob, safe to persist). */
 export function storeWrappedKey(userId: string, wrapped: Uint8Array): void {
   let binary = "";
   for (let i = 0; i < wrapped.length; i++) binary += String.fromCharCode(wrapped[i]);
   localStorage.setItem(`${STORAGE_KEY_WRAPPED_KEY}_${userId.slice(0, 16)}`, btoa(binary));
+}
+
+export function clearWrappedKey(userId: string): void {
+  localStorage.removeItem(`${STORAGE_KEY_WRAPPED_KEY}_${userId.slice(0, 16)}`);
 }
 
 export function saveSession(username: string, keys: {
@@ -68,16 +70,10 @@ export function clearSession(): void {
   sessionKeys = null;
 }
 
-/** Clear the stored wrapped key for a user (e.g., after password change on another device). */
-export function clearWrappedKey(userId: string): void {
-  localStorage.removeItem(`${STORAGE_KEY_WRAPPED_KEY}_${userId.slice(0, 16)}`);
-}
-
 export function hasSession(): boolean {
   return sessionKeys !== null;
 }
 
-/** Update the wrapped key after a password change. */
 export function updateWrappedKey(userId: string, wrapped: Uint8Array): void {
   storeWrappedKey(userId, wrapped);
   if (sessionKeys) {

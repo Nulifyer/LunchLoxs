@@ -73,6 +73,8 @@ function updateSyncBadge() {
 // ── Recipe selection ──
 async function selectRecipe(id: string) {
   if (!docMgr || !syncClient) return;
+  // Hide account page if open
+  accountPage.hidden = true;
   selectedRecipeId = id;
   appSection.classList.add("detail-open");
   renderCatalog();
@@ -278,6 +280,8 @@ function showAccountPage() {
   accountUsername.textContent = getStoredUsername() ?? "";
   accountDeviceId.textContent = getDeviceId();
   emptyState.hidden = true;
+  const detailEl = document.getElementById("recipe-detail") as HTMLElement;
+  detailEl.hidden = true;
   accountPage.hidden = false;
   appSection.classList.add("detail-open");
   pwError.hidden = true;
