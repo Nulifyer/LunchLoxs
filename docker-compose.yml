@@ -84,4 +84,3 @@ services:
         condition: service_healthy
     volumes:
       - ./pgadmin-servers.json:/pgadmin4/servers.json:ro
-      - ./pgadmin-pgpass:/pgpass:ro
