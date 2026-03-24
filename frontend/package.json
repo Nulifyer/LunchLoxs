@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun run --hot src/dev-server.ts",
-    "build": "bun build src/index.ts --outdir dist --minify && bun build src/workers/service-worker.ts --outdir dist --minify && bun run scripts/copy-public.ts",
+    "build": "bun build src/index.ts --outdir dist --minify && bun build src/workers/service-worker.ts --outdir dist --minify && bun run scripts/copy-public.ts && bun run scripts/gen-theme-loader.ts",
     "watch": "bun run scripts/watch.ts",
     "preview": "bunx serve dist"
   },

@@ -1,20 +1,20 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#1a1a2e" />
+  <meta name="theme-color" content="#0d1117" />
   <link rel="manifest" href="/manifest.json" />
   <title>Recipes</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
   <link rel="stylesheet" href="/app.css" />
+  <script src="/theme-loader.js"></script>
 </head>
 <body>
   <!-- Login -->
   <div id="login-section" class="login-overlay">
-    <article class="login-card">
+    <div class="login-card">
       <h2>Recipes</h2>
-      <p><small>End-to-end encrypted. Your data never leaves your devices unencrypted.</small></p>
+      <p><small>End-to-end encrypted. Your data stays yours.</small></p>
       <form id="login-form">
         <label for="username-input">Username</label>
         <input type="text" id="username-input" required autocomplete="username" />
@@ -23,110 +23,138 @@
         <button type="submit" id="login-btn">Login / Sign Up</button>
         <p id="login-error" class="alert-error" role="alert" hidden></p>
       </form>
-    </article>
+    </div>
   </div>
 
   <!-- App -->
-  <div id="app-section" class="app-layout" hidden>
-    <aside class="sidebar" role="navigation" aria-label="Recipe navigation">
-      <header>
-        <h1>Recipes</h1>
-        <button id="add-recipe-btn" class="outline btn-sm" aria-label="Add new recipe">+ New</button>
-      </header>
-      <div class="book-selector">
-        <label for="book-select" class="sr-only">Select book</label>
-        <select id="book-select" aria-label="Select recipe book"></select>
-        <button id="manage-books-btn" class="outline btn-sm" title="Manage books" aria-label="Manage books">...</button>
-      </div>
-      <div class="search">
-        <label for="search-input" class="sr-only">Search recipes</label>
+  <div id="app-section" hidden>
+    <!-- Top bar -->
+    <nav class="topbar">
+      <span class="topbar-brand">Recipes</span>
+
+      <div class="topbar-search">
+        <span class="search-icon">&#128269;</span>
         <input type="search" id="search-input" placeholder="Search recipes..." aria-label="Search recipes" />
-      </div>
-      <ul id="recipe-list" role="listbox" aria-label="Recipe list"></ul>
-      <footer>
-        <span id="sync-badge" class="sync-badge" hidden role="status"></span>
-        <small id="recipe-count" aria-live="polite"></small>
-        <button id="account-btn" class="outline secondary btn-sm">Account</button>
-      </footer>
-    </aside>
-
-    <main class="main-content" role="main">
-      <div id="empty-state"><p>Select a recipe or create a new one</p></div>
-
-      <!-- Account -->
-      <div id="account-page" class="account-page" hidden>
-        <header>
-          <button id="account-back-btn" class="outline mobile-only btn-sm" aria-label="Back to recipe list">&larr; Back</button>
-          <h2>Account</h2>
-        </header>
-        <article>
-          <header><strong>Profile</strong></header>
-          <p>Logged in as <strong id="account-username"></strong></p>
-          <p><small>Device ID: <code id="account-device-id"></code></small></p>
-          <button id="logout-btn" class="secondary">Logout</button>
-        </article>
-        <article>
-          <header><strong>Change Passphrase</strong></header>
-          <form id="change-pw-form">
-            <label for="new-pw">New passphrase</label>
-            <input type="password" id="new-pw" required />
-            <label for="confirm-pw">Confirm passphrase</label>
-            <input type="password" id="confirm-pw" required />
-            <button type="submit">Change Passphrase</button>
-          </form>
-          <p id="pw-change-error" class="alert-error" role="alert" hidden></p>
-          <p id="pw-change-success" class="alert-success" role="alert" hidden></p>
-        </article>
-        <article>
-          <header><strong class="danger-label">Danger Zone</strong></header>
-          <p>Permanently delete <strong>all your data</strong> on every device. This cannot be undone.</p>
-          <form id="purge-form">
-            <label for="purge-confirm">Type your username to confirm</label>
-            <input type="text" id="purge-confirm" required placeholder="username" autocomplete="off" />
-            <button type="submit" class="btn-danger-fill">Purge All Data</button>
-          </form>
-          <p id="purge-error" class="alert-error" role="alert" hidden></p>
-        </article>
+        <ul id="search-results" class="search-results" role="listbox"></ul>
       </div>
 
-      <!-- Recipe detail -->
-      <div id="recipe-detail" hidden>
-        <header>
-          <div class="detail-title-row">
-            <button id="back-btn" class="outline mobile-only btn-sm" aria-label="Back to recipe list">&larr;</button>
-            <h2 id="recipe-title"></h2>
-            <button id="page-edit-btn" class="outline btn-sm">Edit</button>
-            <button id="edit-recipe-btn" class="outline btn-sm" hidden>Settings</button>
-            <button id="delete-recipe-btn" class="outline btn-sm btn-danger" hidden>Delete</button>
+      <div class="topbar-profile">
+        <button id="profile-btn" class="profile-btn" aria-label="Profile menu" title="Profile"></button>
+        <div id="profile-menu" class="profile-menu">
+          <div style="padding: 0.4rem 0.75rem; font-size: 0.75rem; color: var(--subtle);" id="profile-username"></div>
+          <div class="profile-menu-sep"></div>
+          <button class="profile-menu-item" id="menu-account">Account</button>
+          <button class="profile-menu-item" id="menu-theme">Theme</button>
+          <div class="profile-menu-sep"></div>
+          <button class="profile-menu-item danger-text" id="menu-logout">Logout</button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Shell: sidebar + main -->
+    <div id="app-shell" class="app-shell">
+      <aside class="sidebar" role="navigation" aria-label="Recipe navigation">
+        <div class="sidebar-header">
+          <label for="book-select" class="sr-only">Select book</label>
+          <select id="book-select" aria-label="Select recipe book"></select>
+          <button id="manage-books-btn" class="sm" title="Manage books" aria-label="Manage books">...</button>
+          <button id="add-recipe-btn" class="sm" aria-label="Add new recipe">+</button>
+        </div>
+        <ul id="recipe-list" class="sidebar-list" role="listbox" aria-label="Recipe list"></ul>
+        <div class="sidebar-footer">
+          <span id="sync-badge" class="sync-badge" hidden role="status"></span>
+          <small id="recipe-count" aria-live="polite"></small>
+        </div>
+      </aside>
+
+      <main class="main-content" role="main">
+        <div id="empty-state"><p>Select a recipe or create a new one</p></div>
+
+        <!-- Account -->
+        <div id="account-page" class="account-page" hidden>
+          <header>
+            <button id="account-back-btn" class="ghost mobile-only sm" aria-label="Back">&larr; Back</button>
+            <h2>Account</h2>
+          </header>
+
+          <article>
+            <header>Profile</header>
+            <p>Logged in as <strong id="account-username"></strong></p>
+            <p><small>Device: <code id="account-device-id"></code></small></p>
+            <button id="logout-btn">Logout</button>
+          </article>
+
+          <article>
+            <header>Theme</header>
+            <div id="theme-grid" class="theme-grid"></div>
+          </article>
+
+          <article>
+            <header>Change Passphrase</header>
+            <form id="change-pw-form">
+              <label for="new-pw">New passphrase</label>
+              <input type="password" id="new-pw" required />
+              <label for="confirm-pw">Confirm passphrase</label>
+              <input type="password" id="confirm-pw" required />
+              <button type="submit">Change Passphrase</button>
+            </form>
+            <p id="pw-change-error" class="alert-error" role="alert" hidden></p>
+            <p id="pw-change-success" class="alert-success" role="alert" hidden></p>
+          </article>
+
+          <article>
+            <header>Local Data</header>
+            <p style="font-size:0.8rem">Clear cached data on this device only. Your account and data on other devices are not affected. You will need to log in again.</p>
+            <button id="purge-local-btn" class="danger">Clear Local Data</button>
+          </article>
+
+          <article>
+            <header><span class="danger-text">Danger Zone</span></header>
+            <p style="font-size:0.8rem">Permanently delete <strong>all your data</strong> from the server and every device. This cannot be undone.</p>
+            <form id="purge-form">
+              <label for="purge-confirm">Type your username to confirm</label>
+              <input type="text" id="purge-confirm" required placeholder="username" autocomplete="off" />
+              <button type="submit" class="danger-fill">Purge All Data</button>
+            </form>
+            <p id="purge-error" class="alert-error" role="alert" hidden></p>
+          </article>
+        </div>
+
+        <!-- Recipe detail -->
+        <div id="recipe-detail" hidden>
+          <header>
+            <div class="detail-title-row">
+              <button id="back-btn" class="ghost mobile-only sm" aria-label="Back">&larr;</button>
+              <h2 id="recipe-title"></h2>
+              <button id="page-edit-btn" class="sm">Edit</button>
+              <button id="edit-recipe-btn" class="sm" hidden>Settings</button>
+              <button id="delete-recipe-btn" class="sm danger" hidden>Delete</button>
+            </div>
+            <div id="recipe-meta" class="meta"></div>
+          </header>
+
+          <div class="section-header">
+            <h3>Ingredients</h3>
+            <button id="add-ingredient-btn" class="sm" hidden aria-label="Add ingredient">+ Add</button>
           </div>
-          <div id="recipe-meta" class="meta"></div>
-        </header>
+          <ul id="ingredients-list"></ul>
+          <form id="ingredient-form" class="ingredient-form">
+            <div><label for="ing-qty">Qty</label><input type="text" id="ing-qty" placeholder="2" /></div>
+            <div><label for="ing-unit">Unit</label><input type="text" id="ing-unit" placeholder="cups" /></div>
+            <div><label for="ing-item">Ingredient</label><input type="text" id="ing-item" placeholder="flour" required /></div>
+            <button type="submit">Add</button>
+          </form>
 
-        <div class="section-header">
-          <h3>Ingredients</h3>
-          <button id="add-ingredient-btn" class="outline btn-sm" hidden aria-label="Add ingredient">+ Add</button>
-        </div>
-        <ul id="ingredients-list"></ul>
-        <form id="ingredient-form" class="ingredient-form">
-          <div><label for="ing-qty">Qty</label><input type="text" id="ing-qty" placeholder="2" /></div>
-          <div><label for="ing-unit">Unit</label><input type="text" id="ing-unit" placeholder="cups" /></div>
-          <div><label for="ing-item">Ingredient</label><input type="text" id="ing-item" placeholder="flour" required /></div>
-          <button type="submit">Add</button>
-        </form>
+          <div class="section-header"><h3>Instructions</h3></div>
+          <div id="editor-container" class="editor-wrap" hidden></div>
+          <div id="preview-container" class="preview-wrap preview-clickable"></div>
 
-        <div class="section-header">
-          <h3>Instructions</h3>
+          <div class="section-header"><h3>Notes</h3></div>
+          <div id="notes-editor-container" class="editor-wrap" hidden></div>
+          <div id="notes-preview-container" class="preview-wrap preview-clickable"></div>
         </div>
-        <div id="editor-container" class="editor-wrap" hidden></div>
-        <div id="preview-container" class="preview-wrap preview-clickable"></div>
-
-        <div class="section-header">
-          <h3>Notes</h3>
-        </div>
-        <div id="notes-editor-container" class="editor-wrap" hidden></div>
-        <div id="notes-preview-container" class="preview-wrap preview-clickable"></div>
-      </div>
-    </main>
+      </main>
+    </div>
   </div>
 
   <!-- Add recipe dialog -->
@@ -144,7 +172,7 @@
           <div><label for="new-cook">Cook (min)</label><input type="number" id="new-cook" value="0" min="0" /></div>
         </div>
         <footer class="dialog-footer">
-          <button type="button" class="secondary dialog-close-btn">Cancel</button>
+          <button type="button" class="dialog-close-btn">Cancel</button>
           <button type="submit">Create</button>
         </footer>
       </form>
@@ -166,7 +194,7 @@
           <div><label for="edit-cook">Cook (min)</label><input type="number" id="edit-cook" min="0" /></div>
         </div>
         <footer class="dialog-footer">
-          <button type="button" class="secondary dialog-close-btn">Cancel</button>
+          <button type="button" class="dialog-close-btn">Cancel</button>
           <button type="submit">Save</button>
         </footer>
       </form>
@@ -176,46 +204,46 @@
   <!-- Manage books dialog -->
   <dialog id="manage-books-dialog" aria-label="Manage books">
     <article>
-      <header><strong>Manage Books</strong></header>
+      <header class="dialog-header">
+        <strong>Manage Books</strong>
+        <button type="button" class="dialog-close-x dialog-close-btn" aria-label="Close">&times;</button>
+      </header>
       <ul id="book-list-manage"></ul>
-      <form id="create-book-form" class="inline-form">
+      <form id="create-book-form" style="margin-top:0.75rem">
         <label for="new-book-name" class="sr-only">New book name</label>
         <input type="text" id="new-book-name" placeholder="New book name" required />
-        <button type="submit" class="btn-sm">Create</button>
+        <button type="submit" style="width:100%;margin-top:0.4rem">Create Book</button>
       </form>
-      <footer class="dialog-footer">
-        <button type="button" class="secondary dialog-close-btn">Close</button>
-      </footer>
     </article>
   </dialog>
 
   <!-- Share book dialog -->
   <dialog id="share-book-dialog" aria-label="Share book">
     <article>
-      <header><strong>Share Book</strong></header>
-      <p>Book: <strong id="share-book-name"></strong></p>
-      <h4>Members</h4>
+      <header class="dialog-header">
+        <strong>Share Book</strong>
+        <button type="button" class="dialog-close-x dialog-close-btn" aria-label="Close">&times;</button>
+      </header>
+      <p style="font-size:0.8rem">Book: <strong id="share-book-name"></strong></p>
+      <h4 style="margin:0.75rem 0 0.4rem">Members</h4>
       <ul id="share-member-list"></ul>
-      <form id="invite-form" class="inline-form">
+      <form id="invite-form" class="inline-form" style="margin-top:0.75rem">
         <label for="invite-username" class="sr-only">Username to invite</label>
         <input type="text" id="invite-username" placeholder="Username to invite" required />
-        <button type="submit" class="btn-sm">Invite</button>
+        <button type="submit" class="sm">Invite</button>
       </form>
       <p id="invite-error" class="alert-error" role="alert" hidden></p>
       <p id="invite-success" class="alert-success" role="alert" hidden></p>
-      <footer class="dialog-footer">
-        <button type="button" class="secondary dialog-close-btn">Close</button>
-      </footer>
     </article>
   </dialog>
 
   <script type="module" src="/index.js"></script>
   <script>
-    // Close dialog buttons (replaces inline onclick handlers)
-    document.addEventListener("click", (e) => {
-      if (e.target.classList.contains("dialog-close-btn")) {
-        e.target.closest("dialog")?.close();
-      }
+    document.addEventListener("click", function(e) {
+      if (e.target.classList.contains("dialog-close-btn")) e.target.closest("dialog")?.close();
+      // Close profile menu on outside click
+      var pm = document.getElementById("profile-menu");
+      if (pm && !e.target.closest(".topbar-profile")) pm.classList.remove("open");
     });
   </script>
 </body>

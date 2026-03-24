@@ -4,7 +4,7 @@
  */
 const coopCoep = {
   "Cross-Origin-Opener-Policy": "same-origin",
-  "Cross-Origin-Embedder-Policy": "require-corp",
+  "Cross-Origin-Embedder-Policy": "credentialless",
 };
 const server = Bun.serve({
   port: 5000,

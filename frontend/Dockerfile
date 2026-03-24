@@ -11,7 +11,7 @@ COPY --from=build /app/dist ./dist
 COPY <<'EOF' serve.ts
 const coopCoep = {
   "Cross-Origin-Opener-Policy": "same-origin",
-  "Cross-Origin-Embedder-Policy": "require-corp",
+  "Cross-Origin-Embedder-Policy": "credentialless",
 };
 Bun.serve({
   port: 5000,

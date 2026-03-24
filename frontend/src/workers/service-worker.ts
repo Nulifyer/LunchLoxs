@@ -3,21 +3,23 @@ declare const self: ServiceWorkerGlobalScope;
 
 const CACHE_NAME = "recipes-v1";
 const VERSION_CHECK_INTERVAL = 60 * 1000;
+const STATIC_FALLBACK = ["/", "/index.html", "/index.js", "/app.css"];
 
 let knownVersion: string | null = null;
+const isDev = self.location.hostname === "localhost" || self.location.hostname === "127.0.0.1";
 
-// Install -- pre-cache shell using the generated asset manifest
+// Install -- pre-cache shell
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    fetch("/asset-manifest.json")
-      .then((res) => res.json())
-      .then((manifest: { assets: string[] }) =>
-        caches.open(CACHE_NAME).then((cache) => cache.addAll(manifest.assets))
-      )
-      .catch(() =>
-        // Fallback to known static assets if manifest fails
-        caches.open(CACHE_NAME).then((cache) => cache.addAll(["/", "/index.html", "/index.js", "/app.css"]))
-      )
+    caches.open(CACHE_NAME).then(async (cache) => {
+      try {
+        const res = await fetch("/asset-manifest.json");
+        const manifest = await res.json();
+        await cache.addAll(manifest.assets);
+      } catch {
+        await cache.addAll(STATIC_FALLBACK);
+      }
+    })
   );
   self.skipWaiting();
 });
@@ -30,7 +32,8 @@ self.addEventListener("activate", (event) => {
     )
   );
   self.clients.claim();
-  startVersionCheck();
+  // Only poll for version changes in production
+  if (!isDev) startVersionCheck();
 });
 
 // Fetch -- stale-while-revalidate for static assets
@@ -39,10 +42,25 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
-
-  // Never cache version.json or asset-manifest.json
   if (url.pathname === "/version.json" || url.pathname === "/asset-manifest.json") return;
 
+  // In dev, always go to network first so changes are picked up immediately
+  if (isDev) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.ok) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request).then((cached) => cached || new Response("Offline", { status: 503 })))
+    );
+    return;
+  }
+
+  // Production: stale-while-revalidate
   event.respondWith(
     caches.match(request).then((cached) => {
       const fetched = fetch(request).then((response) => {
@@ -58,9 +76,7 @@ self.addEventListener("fetch", (event) => {
 });
 
 self.addEventListener("message", (event) => {
-  if (event.data === "check-update") {
-    checkForUpdate();
-  }
+  if (event.data === "check-update") checkForUpdate();
 });
 
 function startVersionCheck() {
@@ -84,7 +100,6 @@ async function checkForUpdate() {
       const keys = await caches.keys();
       await Promise.all(keys.map((k) => caches.delete(k)));
 
-      // Re-cache from manifest
       try {
         const manifestRes = await fetch("/asset-manifest.json", { cache: "no-store" });
         const manifest = await manifestRes.json();
@@ -92,7 +107,7 @@ async function checkForUpdate() {
         await cache.addAll(manifest.assets);
       } catch {
         const cache = await caches.open(CACHE_NAME);
-        await cache.addAll(["/", "/index.html", "/index.js", "/app.css"]);
+        await cache.addAll(STATIC_FALLBACK);
       }
 
       const clients = await self.clients.matchAll({ type: "window" });
