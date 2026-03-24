@@ -1,71 +1,93 @@
 /**
- * Automerge document store with IndexedDB persistence — reusable across projects.
+ * Automerge document store with encrypted IndexedDB persistence — reusable across projects.
  *
- * Generic over the document shape. Provides:
+ * - Data at rest is AES-256-GCM encrypted
+ * - Each document has its own IndexedDB key (supports multi-document per user)
  * - CRDT document management (create, change, merge)
- * - Persistent storage in IndexedDB
  * - Change listeners for reactive UI updates
- * - Incremental change extraction for sync
  */
 
 // @ts-ignore — Force base64 entrypoint (Bun's bundler doesn't support WASM imports)
 import * as Automerge from "../../node_modules/@automerge/automerge/dist/mjs/entrypoints/fullfat_base64.js";
+import { encrypt, decrypt } from "./crypto";
 
-const DB_NAME = "e2ee-automerge";
-const DB_VERSION = 1;
 const STORE_NAME = "docs";
-const DOC_KEY = "primary";
-const META_KEY = "last_seq";
 
 type ChangeListener<T> = (doc: Automerge.Doc<T>) => void;
 
 export class AutomergeStore<T> {
   private doc: Automerge.Doc<T>;
-  private db: IDBDatabase | null = null;
+  private db: IDBDatabase;
+  private docId: string;
+  private encKey: CryptoKey;
   private listeners: Set<ChangeListener<T>> = new Set();
-  private lastSavedHeads: Automerge.Heads | null = null;
+  private initFn: ((doc: T) => void) | null = null;
 
-  private constructor(doc: Automerge.Doc<T>) {
+  private constructor(doc: Automerge.Doc<T>, db: IDBDatabase, docId: string, encKey: CryptoKey) {
     this.doc = doc;
+    this.db = db;
+    this.docId = docId;
+    this.encKey = encKey;
   }
 
   /**
-   * Initialize the store. Loads from IndexedDB if available,
-   * otherwise creates a new document with the provided init function.
+   * Open or create a document.
+   * @param db — shared IndexedDB connection
+   * @param docId — unique document identifier
+   * @param encKey — AES-256-GCM key for encrypting data at rest
+   * @param initFn — deferred until ensureInitialized() (after sync catchup)
    */
-  static async init<T>(initFn: (doc: T) => void): Promise<AutomergeStore<T>> {
-    const db = await openDB();
-
-    // Try to load existing doc from IndexedDB
-    const saved = await getFromDB<Uint8Array>(db, DOC_KEY);
+  static async open<T>(
+    db: IDBDatabase,
+    docId: string,
+    encKey: CryptoKey,
+    initFn: (doc: T) => void,
+  ): Promise<AutomergeStore<T>> {
+    const saved = await getFromDB<Uint8Array>(db, `doc:${docId}`);
     let doc: Automerge.Doc<T>;
+    let needsInit = true;
 
     if (saved) {
-      doc = Automerge.load<T>(saved);
+      try {
+        const plaintext = await decrypt(saved, encKey);
+        doc = Automerge.load<T>(plaintext);
+        needsInit = false;
+      } catch {
+        throw new Error("Wrong passphrase — could not decrypt local data.");
+      }
     } else {
-      doc = Automerge.change(Automerge.init<T>(), initFn);
+      doc = Automerge.init<T>();
     }
 
-    const store = new AutomergeStore(doc);
-    store.db = db;
-    store.lastSavedHeads = Automerge.getHeads(doc);
+    const store = new AutomergeStore(doc, db, docId, encKey);
+    store.initFn = needsInit ? initFn : null;
     await store.persist();
     return store;
   }
 
-  /** Get the current read-only document. */
+  ensureInitialized(): boolean {
+    if (!this.initFn) return false;
+    if (Automerge.getAllChanges(this.doc).length > 0) {
+      this.initFn = null;
+      return false;
+    }
+    this.doc = Automerge.change(this.doc, this.initFn);
+    this.initFn = null;
+    this.persist();
+    this.notify();
+    return true;
+  }
+
   getDoc(): Automerge.Doc<T> {
     return this.doc;
   }
 
-  /** Apply a local change to the document. */
   change(fn: (doc: T) => void, message?: string): void {
     this.doc = Automerge.change(this.doc, { message }, fn);
     this.persist();
     this.notify();
   }
 
-  /** Apply a remote Automerge change (from another device). */
   applyChange(change: Uint8Array): void {
     const [newDoc] = Automerge.applyChanges(this.doc, [change]);
     this.doc = newDoc;
@@ -73,7 +95,6 @@ export class AutomergeStore<T> {
     this.notify();
   }
 
-  /** Apply multiple remote changes (e.g., on catchup). */
   applyChanges(changes: Uint8Array[]): void {
     if (changes.length === 0) return;
     const [newDoc] = Automerge.applyChanges(this.doc, changes);
@@ -82,25 +103,18 @@ export class AutomergeStore<T> {
     this.notify();
   }
 
-  /** Get the last local change (for sending to sync server). */
   getLastLocalChange(): Uint8Array | undefined {
     return Automerge.getLastLocalChange(this.doc);
   }
 
-  /**
-   * Get all changes since the document was empty.
-   * Useful for initial sync of a new device to the relay.
-   */
   getAllChanges(): Uint8Array[] {
     return Automerge.getAllChanges(this.doc);
   }
 
-  /** Save the serialized full document (for snapshot-based sync). */
   save(): Uint8Array {
     return Automerge.save(this.doc);
   }
 
-  /** Load and merge a full document snapshot from another device. */
   merge(otherDoc: Uint8Array): void {
     const other = Automerge.load<T>(otherDoc);
     this.doc = Automerge.merge(this.doc, other);
@@ -108,23 +122,25 @@ export class AutomergeStore<T> {
     this.notify();
   }
 
-  /** Subscribe to document changes. Returns unsubscribe function. */
+  async clear(initFn: (doc: T) => void): Promise<void> {
+    this.doc = Automerge.change(Automerge.init<T>(), initFn);
+    await this.setLastSeq(0);
+    await this.persist();
+    this.notify();
+  }
+
   onChange(listener: ChangeListener<T>): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
-  /** Get last seen sync sequence number. */
   async getLastSeq(): Promise<number> {
-    if (!this.db) return 0;
-    const val = await getFromDB<number>(this.db, META_KEY);
+    const val = await getFromDB<number>(this.db, `seq:${this.docId}`);
     return val ?? 0;
   }
 
-  /** Store last seen sync sequence number. */
   async setLastSeq(seq: number): Promise<void> {
-    if (!this.db) return;
-    await putToDB(this.db, META_KEY, seq);
+    await putToDB(this.db, `seq:${this.docId}`, seq);
   }
 
   private notify(): void {
@@ -134,17 +150,18 @@ export class AutomergeStore<T> {
   }
 
   private async persist(): Promise<void> {
-    if (!this.db) return;
     const binary = Automerge.save(this.doc);
-    await putToDB(this.db, DOC_KEY, binary);
+    const encrypted = await encrypt(binary, this.encKey);
+    await putToDB(this.db, `doc:${this.docId}`, encrypted);
   }
 }
 
-// ── IndexedDB helpers ──
+// ── Shared IndexedDB opener ──
 
-function openDB(): Promise<IDBDatabase> {
+export function openStoreDB(userId: string): Promise<IDBDatabase> {
+  const dbName = `e2ee-${userId.slice(0, 16)}`;
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    const req = indexedDB.open(dbName, 1);
     req.onupgradeneeded = () => {
       req.result.createObjectStore(STORE_NAME);
     };
@@ -152,6 +169,8 @@ function openDB(): Promise<IDBDatabase> {
     req.onerror = () => reject(req.error);
   });
 }
+
+// ── IndexedDB helpers ──
 
 function getFromDB<T>(db: IDBDatabase, key: string): Promise<T | undefined> {
   return new Promise((resolve, reject) => {

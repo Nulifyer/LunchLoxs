@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 declare const self: ServiceWorkerGlobalScope;
 
-const CACHE_NAME = "todo-v2";
+const CACHE_NAME = "recipes-v1";
 const STATIC_ASSETS = ["/", "/index.html", "/index.js"];
 
 // Install — pre-cache shell
@@ -26,8 +26,10 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const { request } = event;
 
-  // Only cache GET requests for static assets
+  // Only cache same-origin GET requests
   if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
 
   event.respondWith(
     caches.match(request).then((cached) => {

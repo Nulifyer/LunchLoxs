@@ -2,6 +2,13 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "infra",
+      "type": "shell",
+      "command": "podman compose up -d postgres migrate pgadmin",
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
       "label": "run-backend",
       "type": "shell",
       "command": "go run ./backend/cmd/server",
@@ -12,6 +19,7 @@
           "FRONTEND_URL": "http://localhost:5173"
         }
       },
+      "dependsOn": "infra",
       "isBackground": true,
       "problemMatcher": {
         "pattern": { "regexp": ".", "file": 1, "location": 2, "message": 3 },
@@ -37,6 +45,31 @@
         }
       },
       "group": "build"
+    },
+    {
+      "label": "watch-frontend",
+      "type": "shell",
+      "command": "cd frontend && bun run watch",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": { "regexp": ".", "file": 1, "location": 2, "message": 3 },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "waiting for changes"
+        }
+      },
+      "group": "build"
+    },
+    {
+      "label": "dev",
+      "dependsOn": ["run-backend", "run-frontend", "watch-frontend"],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
     }
   ]
 }

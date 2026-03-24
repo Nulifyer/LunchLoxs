@@ -1,150 +1,295 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#1a1a2e" />
   <link rel="manifest" href="/manifest.json" />
-  <title>Todo App</title>
+  <title>Recipes</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: #1a1a2e;
-      color: #eee;
-      max-width: 600px;
-      margin: 0 auto;
-      padding: 2rem 1rem;
-    }
-    h1 { text-align: center; margin-bottom: 1.5rem; }
+    :root { --pico-font-family: system-ui, -apple-system, sans-serif; }
+    body { margin: 0; padding: 0; height: 100vh; overflow: hidden; }
 
     /* Login */
-    .login-section { max-width: 360px; margin: 0 auto; }
-    .login-section h2 { text-align: center; margin-bottom: 1rem; }
-    .login-section p { text-align: center; font-size: 0.85rem; color: #888; margin-bottom: 1.5rem; }
-    .field { margin-bottom: 1rem; }
-    .field label { display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.25rem; }
-    .field input {
-      width: 100%;
-      padding: 0.75rem;
-      border: 1px solid #333;
-      border-radius: 8px;
-      background: #16213e;
-      color: #eee;
-      font-size: 1rem;
+    .login-overlay {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: var(--pico-background-color); z-index: 100;
     }
-    .login-btn {
-      width: 100%;
-      padding: 0.75rem;
-      border: none;
-      border-radius: 8px;
-      background: #e94560;
-      color: white;
-      font-size: 1rem;
-      cursor: pointer;
-    }
-    .login-btn:hover { background: #c73650; }
-    .login-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-    .login-error { color: #e94560; text-align: center; font-size: 0.85rem; margin-top: 0.75rem; }
+    .login-card { max-width: 380px; width: 100%; padding: 2rem; }
 
-    /* App */
-    .app-header { display: flex; align-items: center; justify-content: center; gap: 0.75rem; margin-bottom: 1.5rem; }
-    .app-header h1 { margin-bottom: 0; }
-    .logout-btn {
-      background: none;
-      border: 1px solid #444;
-      color: #888;
-      padding: 0.25rem 0.75rem;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 0.8rem;
+    /* App layout */
+    .app-layout { display: grid; grid-template-columns: 320px 1fr; height: 100vh; }
+
+    /* Sidebar */
+    .sidebar {
+      display: flex; flex-direction: column; border-right: 1px solid var(--pico-muted-border-color);
+      overflow: hidden; height: 100vh;
     }
-    .logout-btn:hover { border-color: #e94560; color: #e94560; }
-    .add-form { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
-    .add-form input {
-      flex: 1;
-      padding: 0.75rem;
-      border: 1px solid #333;
-      border-radius: 8px;
-      background: #16213e;
-      color: #eee;
-      font-size: 1rem;
+    .sidebar header { padding: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+    .sidebar header h1 { font-size: 1.3rem; margin: 0; flex: 1; }
+    .sidebar .search { padding: 0 1rem; }
+    .sidebar .search input { margin-bottom: 0.5rem; }
+    .sidebar footer {
+      padding: 0.75rem 1rem; border-top: 1px solid var(--pico-muted-border-color);
+      display: flex; gap: 0.5rem; align-items: center;
     }
-    .add-form button {
-      padding: 0.75rem 1.25rem;
-      border: none;
-      border-radius: 8px;
-      background: #e94560;
-      color: white;
-      font-size: 1rem;
-      cursor: pointer;
+    .sidebar footer small { flex: 1; }
+
+    /* Recipe list */
+    #recipe-list { list-style: none; padding: 0; margin: 0; overflow-y: auto; flex: 1; }
+    #recipe-list li {
+      padding: 0.75rem 1rem; cursor: pointer; border-bottom: 1px solid var(--pico-muted-border-color);
+      display: flex; flex-direction: column; gap: 0.25rem;
     }
-    .add-form button:hover { background: #c73650; }
-    .todo-list { list-style: none; }
-    .todo-item {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      padding: 0.75rem;
-      border-bottom: 1px solid #222;
+    #recipe-list li:hover { background: var(--pico-card-background-color); }
+    #recipe-list li.selected { background: var(--pico-primary-background); color: var(--pico-primary-inverse); }
+    #recipe-list li strong { font-size: 0.95rem; }
+    #recipe-list li small { font-size: 0.75rem; opacity: 0.7; }
+    .tag { background: var(--pico-muted-border-color); padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.7rem; }
+
+    /* Main content */
+    .main-content { overflow-y: auto; height: 100vh; padding: 1.5rem 2rem; }
+    #empty-state { display: flex; align-items: center; justify-content: center; height: 100%; opacity: 0.5; }
+
+    /* Recipe detail */
+    #recipe-detail header { margin-bottom: 1.5rem; }
+    #recipe-detail .meta { font-size: 0.85rem; opacity: 0.7; margin-bottom: 1rem; }
+    .detail-title-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; }
+    .detail-title-row h2 { flex: 1; margin: 0; }
+
+    /* Section headers */
+    .section-header { display: flex; align-items: center; gap: 0.5rem; margin: 1.5rem 0 0.75rem; }
+    .section-header h3 { margin: 0; flex: 1; font-size: 1rem; }
+
+    /* Compact buttons */
+    .btn-sm { padding: 0.2rem 0.6rem; font-size: 0.75rem; }
+    .btn-danger { color: var(--pico-del-color); border-color: var(--pico-del-color); }
+    .btn-danger-fill { background: var(--pico-del-color); border-color: var(--pico-del-color); color: #fff; }
+
+    /* Editors */
+    .editor-wrap { border: 1px solid var(--pico-muted-border-color); border-radius: 8px; overflow: hidden; }
+    .editor-wrap .cm-editor { min-height: 200px; max-height: 50vh; }
+    .editor-wrap .cm-scroller { overflow: auto; }
+    .preview-wrap {
+      border: 1px solid var(--pico-muted-border-color); border-radius: 8px;
+      padding: 1rem; min-height: 100px; line-height: 1.6;
     }
-    .todo-item.completed span { text-decoration: line-through; opacity: 0.5; }
-    .todo-item input[type="checkbox"] { width: 1.25rem; height: 1.25rem; cursor: pointer; }
-    .todo-item span { flex: 1; }
-    .todo-item button {
-      background: none;
-      border: none;
-      color: #e94560;
-      cursor: pointer;
-      font-size: 1.2rem;
+
+    /* Ingredients */
+    #ingredients-list { padding-left: 0; list-style: none; margin: 0; }
+    #ingredients-list li {
+      display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0;
+      border-bottom: 1px solid var(--pico-muted-border-color); font-size: 0.9rem;
     }
-    .status { text-align: center; font-size: 0.85rem; color: #666; margin-top: 1rem; }
+    #ingredients-list li .ing-qty { font-weight: bold; min-width: 2.5rem; }
+    #ingredients-list li .ing-unit { opacity: 0.7; min-width: 2.5rem; }
+    #ingredients-list li .ing-text { flex: 1; }
+    #ingredients-list li button {
+      background: none; border: none; color: var(--pico-del-color);
+      cursor: pointer; padding: 0.1rem; font-size: 1rem; opacity: 0.5;
+    }
+    #ingredients-list li button:hover { opacity: 1; }
+
+    /* Ingredient form — compact */
+    .ingredient-form {
+      display: none; grid-template-columns: 4rem 4rem 1fr auto; gap: 0.4rem;
+      align-items: end; margin-top: 0.5rem;
+    }
+    .ingredient-form.open { display: grid; }
+    .ingredient-form label { font-size: 0.7rem; margin-bottom: 0.1rem; display: block; }
+    .ingredient-form input {
+      margin-bottom: 0; padding: 0.3rem 0.4rem; font-size: 0.85rem;
+      height: auto; min-height: 0;
+    }
+    .ingredient-form button { padding: 0.3rem 0.6rem; font-size: 0.8rem; height: auto; min-height: 0; }
+
+    /* Dialog forms */
+    .dialog-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; }
+    .dialog-footer { display: flex; gap: 0.5rem; justify-content: flex-end; }
+
+    /* Account page */
+    .account-page { max-width: 500px; }
+    .alert-error { color: var(--pico-del-color); }
+    .alert-success { color: var(--pico-ins-color); }
+    .danger-label { color: var(--pico-del-color); }
 
     /* Sync badge */
-    .sync-badge {
-      display: inline-block;
-      padding: 0.15rem 0.5rem;
-      border-radius: 4px;
-      font-size: 0.75rem;
-    }
+    .sync-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 4px; }
     .sync-badge.connecting { background: #f0a500; color: #000; }
     .sync-badge.disconnected { background: #e94560; color: #fff; }
-    .sync-badge.connected { display: none; }
+
+    /* Mobile */
+    @media (max-width: 768px) {
+      .app-layout { grid-template-columns: 1fr; }
+      .main-content { display: none; }
+      .app-layout.detail-open .sidebar { display: none; }
+      .app-layout.detail-open .main-content { display: block; }
+      .mobile-only { display: inline-flex !important; }
+    }
+    @media (min-width: 769px) {
+      .mobile-only { display: none !important; }
+    }
   </style>
 </head>
 <body>
   <!-- Login -->
-  <section id="login-section" class="login-section" hidden>
-    <h2>Todo App</h2>
-    <p>End-to-end encrypted. Your data never leaves your devices unencrypted.</p>
-    <form id="login-form">
-      <div class="field">
+  <div id="login-section" class="login-overlay">
+    <article class="login-card">
+      <h2>Recipes</h2>
+      <p><small>End-to-end encrypted. Your data never leaves your devices unencrypted.</small></p>
+      <form id="login-form">
         <label for="username-input">Username</label>
         <input type="text" id="username-input" required autocomplete="username" />
-      </div>
-      <div class="field">
         <label for="passphrase-input">Passphrase</label>
         <input type="password" id="passphrase-input" required autocomplete="current-password" />
-      </div>
-      <button type="submit" id="login-btn" class="login-btn">Login / Sign Up</button>
-      <p id="login-error" class="login-error" hidden></p>
-    </form>
-  </section>
+        <button type="submit" id="login-btn">Login / Sign Up</button>
+        <p id="login-error" role="alert" hidden></p>
+      </form>
+    </article>
+  </div>
 
   <!-- App -->
-  <section id="app-section" hidden>
-    <div class="app-header">
-      <h1>Todos</h1>
-      <span id="sync-badge" class="sync-badge" hidden></span>
-      <button id="logout-btn" class="logout-btn">Logout</button>
-    </div>
-    <form class="add-form" id="add-form">
-      <input type="text" id="todo-input" placeholder="What needs to be done?" required />
-      <button type="submit">Add</button>
-    </form>
-    <ul class="todo-list" id="todo-list"></ul>
-    <p class="status" id="status"></p>
-  </section>
+  <div id="app-section" class="app-layout" hidden>
+    <aside class="sidebar">
+      <header>
+        <h1>Recipes</h1>
+        <button id="add-recipe-btn" class="outline btn-sm">+ New</button>
+      </header>
+      <div class="search">
+        <input type="search" id="search-input" placeholder="Search recipes..." />
+      </div>
+      <ul id="recipe-list"></ul>
+      <footer>
+        <span id="sync-badge" class="sync-badge" hidden></span>
+        <small id="recipe-count"></small>
+        <button id="account-btn" class="outline secondary btn-sm">Account</button>
+      </footer>
+    </aside>
+
+    <main class="main-content">
+      <div id="empty-state"><p>Select a recipe or create a new one</p></div>
+
+      <!-- Account -->
+      <div id="account-page" class="account-page" hidden>
+        <header>
+          <button id="account-back-btn" class="outline mobile-only btn-sm">&larr; Back</button>
+          <h2>Account</h2>
+        </header>
+        <article>
+          <header><strong>Profile</strong></header>
+          <p>Logged in as <strong id="account-username"></strong></p>
+          <p><small>Device ID: <code id="account-device-id"></code></small></p>
+          <button id="logout-btn" class="secondary">Logout</button>
+        </article>
+        <article>
+          <header><strong>Change Passphrase</strong></header>
+          <form id="change-pw-form">
+            <label for="new-pw">New passphrase</label>
+            <input type="password" id="new-pw" required />
+            <label for="confirm-pw">Confirm passphrase</label>
+            <input type="password" id="confirm-pw" required />
+            <button type="submit">Change Passphrase</button>
+          </form>
+          <p id="pw-change-error" class="alert-error" role="alert" hidden></p>
+          <p id="pw-change-success" class="alert-success" role="alert" hidden></p>
+        </article>
+        <article>
+          <header><strong class="danger-label">Danger Zone</strong></header>
+          <p>Permanently delete <strong>all your data</strong> on every device. This cannot be undone.</p>
+          <form id="purge-form">
+            <label for="purge-confirm">Type your username to confirm</label>
+            <input type="text" id="purge-confirm" required placeholder="username" autocomplete="off" />
+            <button type="submit" class="btn-danger-fill">Purge All Data</button>
+          </form>
+          <p id="purge-error" class="alert-error" role="alert" hidden></p>
+        </article>
+      </div>
+
+      <!-- Recipe detail -->
+      <div id="recipe-detail" hidden>
+        <header>
+          <div class="detail-title-row">
+            <button id="back-btn" class="outline mobile-only btn-sm">&larr;</button>
+            <h2 id="recipe-title"></h2>
+            <button id="edit-recipe-btn" class="outline btn-sm">Edit</button>
+            <button id="delete-recipe-btn" class="outline btn-sm btn-danger">Delete</button>
+          </div>
+          <div id="recipe-meta" class="meta"></div>
+        </header>
+
+        <div class="section-header">
+          <h3>Ingredients</h3>
+          <button id="add-ingredient-btn" class="outline btn-sm">+ Add</button>
+        </div>
+        <ul id="ingredients-list"></ul>
+        <form id="ingredient-form" class="ingredient-form">
+          <div><label>Qty</label><input type="text" id="ing-qty" placeholder="2" /></div>
+          <div><label>Unit</label><input type="text" id="ing-unit" placeholder="cups" /></div>
+          <div><label>Ingredient</label><input type="text" id="ing-item" placeholder="flour" required /></div>
+          <button type="submit">Add</button>
+        </form>
+
+        <div class="section-header">
+          <h3>Instructions</h3>
+          <button id="mode-toggle" class="outline btn-sm">Edit</button>
+        </div>
+        <div id="editor-container" class="editor-wrap" hidden></div>
+        <div id="preview-container" class="preview-wrap"></div>
+
+        <div class="section-header">
+          <h3>Notes</h3>
+          <button id="notes-mode-toggle" class="outline btn-sm">Edit</button>
+        </div>
+        <div id="notes-editor-container" class="editor-wrap" hidden></div>
+        <div id="notes-preview-container" class="preview-wrap"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Add recipe dialog -->
+  <dialog id="add-recipe-dialog">
+    <article>
+      <header><strong>New Recipe</strong></header>
+      <form id="add-recipe-form" method="dialog">
+        <label for="new-title">Title</label>
+        <input type="text" id="new-title" required />
+        <label for="new-tags">Tags (comma separated)</label>
+        <input type="text" id="new-tags" placeholder="italian, pasta, quick" />
+        <div class="dialog-grid-3">
+          <div><label for="new-servings">Servings</label><input type="number" id="new-servings" value="4" min="1" /></div>
+          <div><label for="new-prep">Prep (min)</label><input type="number" id="new-prep" value="0" min="0" /></div>
+          <div><label for="new-cook">Cook (min)</label><input type="number" id="new-cook" value="0" min="0" /></div>
+        </div>
+        <footer class="dialog-footer">
+          <button type="button" class="secondary" onclick="this.closest('dialog').close()">Cancel</button>
+          <button type="submit">Create</button>
+        </footer>
+      </form>
+    </article>
+  </dialog>
+
+  <!-- Edit recipe dialog -->
+  <dialog id="edit-recipe-dialog">
+    <article>
+      <header><strong>Edit Recipe</strong></header>
+      <form id="edit-recipe-form" method="dialog">
+        <label for="edit-title">Title</label>
+        <input type="text" id="edit-title" required />
+        <label for="edit-tags">Tags (comma separated)</label>
+        <input type="text" id="edit-tags" />
+        <div class="dialog-grid-3">
+          <div><label for="edit-servings">Servings</label><input type="number" id="edit-servings" min="1" /></div>
+          <div><label for="edit-prep">Prep (min)</label><input type="number" id="edit-prep" min="0" /></div>
+          <div><label for="edit-cook">Cook (min)</label><input type="number" id="edit-cook" min="0" /></div>
+        </div>
+        <footer class="dialog-footer">
+          <button type="button" class="secondary" onclick="this.closest('dialog').close()">Cancel</button>
+          <button type="submit">Save</button>
+        </footer>
+      </form>
+    </article>
+  </dialog>
 
   <script type="module" src="/index.js"></script>
 </body>
