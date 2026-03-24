@@ -33,6 +33,10 @@
         <h1>Recipes</h1>
         <button id="add-recipe-btn" class="outline btn-sm">+ New</button>
       </header>
+      <div class="book-selector">
+        <select id="book-select"></select>
+        <button id="manage-books-btn" class="outline btn-sm" title="Manage books">...</button>
+      </div>
       <div class="search">
         <input type="search" id="search-input" placeholder="Search recipes..." />
       </div>
@@ -164,6 +168,40 @@
           <button type="submit">Save</button>
         </footer>
       </form>
+    </article>
+  </dialog>
+
+  <!-- Manage books dialog -->
+  <dialog id="manage-books-dialog">
+    <article>
+      <header><strong>Manage Books</strong></header>
+      <ul id="book-list-manage"></ul>
+      <form id="create-book-form" class="inline-form">
+        <input type="text" id="new-book-name" placeholder="New book name" required />
+        <button type="submit" class="btn-sm">Create</button>
+      </form>
+      <footer class="dialog-footer">
+        <button type="button" class="secondary" onclick="this.closest('dialog').close()">Close</button>
+      </footer>
+    </article>
+  </dialog>
+
+  <!-- Share book dialog -->
+  <dialog id="share-book-dialog">
+    <article>
+      <header><strong>Share Book</strong></header>
+      <p>Book: <strong id="share-book-name"></strong></p>
+      <h4>Members</h4>
+      <ul id="share-member-list"></ul>
+      <form id="invite-form" class="inline-form">
+        <input type="text" id="invite-username" placeholder="Username to invite" required />
+        <button type="submit" class="btn-sm">Invite</button>
+      </form>
+      <p id="invite-error" class="alert-error" role="alert" hidden></p>
+      <p id="invite-success" class="alert-success" role="alert" hidden></p>
+      <footer class="dialog-footer">
+        <button type="button" class="secondary" onclick="this.closest('dialog').close()">Close</button>
+      </footer>
     </article>
   </dialog>
 

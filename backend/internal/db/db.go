@@ -23,6 +23,23 @@ type AuthResult struct {
 	OK               bool
 	IsNew            bool
 	WrappedMasterKey []byte
+	PublicKey        []byte
+}
+
+// VaultInfo represents a vault and the user's access to it.
+type VaultInfo struct {
+	VaultID          string
+	EncryptedVaultKey []byte
+	SenderPublicKey  []byte
+	Role             string
+	CreatedBy        string
+}
+
+// VaultMember represents a member of a vault.
+type VaultMember struct {
+	UserID    string
+	Role      string
+	PublicKey []byte
 }
 
 type Queries struct {
@@ -37,9 +54,10 @@ func New(pool *pgxpool.Pool) *Queries {
 func (q *Queries) UpsertUser(ctx context.Context, userID, authHash string) (AuthResult, error) {
 	var existingHash string
 	var wrappedKey []byte
+	var publicKey []byte
 	err := q.pool.QueryRow(ctx,
-		`SELECT auth_hash, wrapped_master_key FROM users WHERE user_id = $1`, userID,
-	).Scan(&existingHash, &wrappedKey)
+		`SELECT auth_hash, wrapped_master_key, public_key FROM users WHERE user_id = $1`, userID,
+	).Scan(&existingHash, &wrappedKey, &publicKey)
 
 	if err == pgx.ErrNoRows {
 		_, err = q.pool.Exec(ctx,
@@ -56,6 +74,7 @@ func (q *Queries) UpsertUser(ctx context.Context, userID, authHash string) (Auth
 		OK:               existingHash == authHash,
 		IsNew:            false,
 		WrappedMasterKey: wrappedKey,
+		PublicKey:        publicKey,
 	}, nil
 }
 
@@ -131,6 +150,150 @@ func (q *Queries) UpdateAuthHash(ctx context.Context, userID, newAuthHash string
 		userID, newAuthHash,
 	)
 	return err
+}
+
+// SetIdentityKeys stores the user's public key and encrypted private key.
+func (q *Queries) SetIdentityKeys(ctx context.Context, userID string, publicKey, wrappedPrivateKey []byte) error {
+	_, err := q.pool.Exec(ctx,
+		`UPDATE users SET public_key = $2, wrapped_private_key = $3 WHERE user_id = $1`,
+		userID, publicKey, wrappedPrivateKey,
+	)
+	return err
+}
+
+// GetPublicKey returns a user's public key by user_id.
+func (q *Queries) GetPublicKey(ctx context.Context, userID string) ([]byte, error) {
+	var pk []byte
+	err := q.pool.QueryRow(ctx, `SELECT public_key FROM users WHERE user_id = $1`, userID).Scan(&pk)
+	return pk, err
+}
+
+// GetWrappedPrivateKey returns the user's encrypted private key.
+func (q *Queries) GetWrappedPrivateKey(ctx context.Context, userID string) ([]byte, error) {
+	var wpk []byte
+	err := q.pool.QueryRow(ctx, `SELECT wrapped_private_key FROM users WHERE user_id = $1`, userID).Scan(&wpk)
+	return wpk, err
+}
+
+// CreateVault creates a new vault and adds the creator as owner.
+func (q *Queries) CreateVault(ctx context.Context, vaultID, creatorUserID string, encryptedVaultKey, senderPublicKey []byte) error {
+	tx, err := q.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO vaults (vault_id, created_by) VALUES ($1, $2)`,
+		vaultID, creatorUserID,
+	)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO vault_members (vault_id, user_id, encrypted_vault_key, sender_public_key, role, invited_by)
+		 VALUES ($1, $2, $3, $4, 'owner', $2)`,
+		vaultID, creatorUserID, encryptedVaultKey, senderPublicKey,
+	)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// ListVaults returns all vaults a user is a member of.
+func (q *Queries) ListVaults(ctx context.Context, userID string) ([]VaultInfo, error) {
+	rows, err := q.pool.Query(ctx,
+		`SELECT vm.vault_id, vm.encrypted_vault_key, vm.sender_public_key, vm.role, v.created_by
+		 FROM vault_members vm
+		 JOIN vaults v ON v.vault_id = vm.vault_id
+		 WHERE vm.user_id = $1
+		 ORDER BY v.created_at ASC`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (VaultInfo, error) {
+		var v VaultInfo
+		err := row.Scan(&v.VaultID, &v.EncryptedVaultKey, &v.SenderPublicKey, &v.Role, &v.CreatedBy)
+		return v, err
+	})
+}
+
+// AddVaultMember adds a user to a vault with an encrypted vault key.
+func (q *Queries) AddVaultMember(ctx context.Context, vaultID, userID string, encryptedVaultKey, senderPublicKey []byte, role, invitedBy string) error {
+	_, err := q.pool.Exec(ctx,
+		`INSERT INTO vault_members (vault_id, user_id, encrypted_vault_key, sender_public_key, role, invited_by)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (vault_id, user_id) DO UPDATE SET encrypted_vault_key = $3, sender_public_key = $4, role = $5`,
+		vaultID, userID, encryptedVaultKey, senderPublicKey, role, invitedBy,
+	)
+	return err
+}
+
+// RemoveVaultMember removes a user from a vault.
+func (q *Queries) RemoveVaultMember(ctx context.Context, vaultID, userID string) error {
+	_, err := q.pool.Exec(ctx,
+		`DELETE FROM vault_members WHERE vault_id = $1 AND user_id = $2`,
+		vaultID, userID,
+	)
+	return err
+}
+
+// ListVaultMembers returns all members of a vault.
+func (q *Queries) ListVaultMembers(ctx context.Context, vaultID string) ([]VaultMember, error) {
+	rows, err := q.pool.Query(ctx,
+		`SELECT vm.user_id, vm.role, u.public_key
+		 FROM vault_members vm
+		 JOIN users u ON u.user_id = vm.user_id
+		 WHERE vm.vault_id = $1`,
+		vaultID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (VaultMember, error) {
+		var m VaultMember
+		err := row.Scan(&m.UserID, &m.Role, &m.PublicKey)
+		return m, err
+	})
+}
+
+// IsVaultMember checks if a user is a member of a vault.
+func (q *Queries) IsVaultMember(ctx context.Context, vaultID, userID string) (bool, string, error) {
+	var role string
+	err := q.pool.QueryRow(ctx,
+		`SELECT role FROM vault_members WHERE vault_id = $1 AND user_id = $2`,
+		vaultID, userID,
+	).Scan(&role)
+	if err == pgx.ErrNoRows {
+		return false, "", nil
+	}
+	return err == nil, role, err
+}
+
+// DeleteVault deletes a vault and all its members and sync messages.
+func (q *Queries) DeleteVault(ctx context.Context, vaultID string) error {
+	_, err := q.pool.Exec(ctx,
+		`DELETE FROM sync_messages WHERE vault_id = $1`, vaultID,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = q.pool.Exec(ctx, `DELETE FROM vaults WHERE vault_id = $1`, vaultID)
+	return err
+}
+
+// LookupUserByID checks if a user_id exists and returns their public key.
+func (q *Queries) LookupUserByID(ctx context.Context, userID string) ([]byte, error) {
+	var pk []byte
+	err := q.pool.QueryRow(ctx, `SELECT public_key FROM users WHERE user_id = $1`, userID).Scan(&pk)
+	return pk, err
 }
 
 // PurgeUser deletes all sync messages, devices, and the user record.

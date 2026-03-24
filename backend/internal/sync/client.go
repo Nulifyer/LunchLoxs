@@ -40,6 +40,15 @@ type ClientMessage struct {
 	LastSeq     int64           `json:"last_seq,omitempty"`
 	Payload     string          `json:"payload,omitempty"`
 	Presence    json.RawMessage `json:"presence,omitempty"`
+	// Identity keys
+	PublicKey         string `json:"public_key,omitempty"`
+	WrappedPrivateKey string `json:"wrapped_private_key,omitempty"`
+	// Vault fields
+	VaultID           string `json:"vault_id,omitempty"`
+	TargetUserID      string `json:"target_user_id,omitempty"`
+	EncryptedVaultKey string `json:"encrypted_vault_key,omitempty"`
+	SenderPublicKey   string `json:"sender_public_key,omitempty"`
+	Role              string `json:"role,omitempty"`
 }
 
 type ServerMessage struct {
@@ -51,6 +60,30 @@ type ServerMessage struct {
 	LatestSeq  int64           `json:"latest_seq,omitempty"`
 	Message    string          `json:"message,omitempty"`
 	Presence   json.RawMessage `json:"presence,omitempty"`
+	// Identity
+	PublicKey         string `json:"public_key,omitempty"`
+	WrappedPrivateKey string `json:"wrapped_private_key,omitempty"`
+	// Vault fields
+	VaultID           string              `json:"vault_id,omitempty"`
+	Vaults            []VaultInfoMsg      `json:"vaults,omitempty"`
+	Members           []VaultMemberMsg    `json:"members,omitempty"`
+	EncryptedVaultKey string              `json:"encrypted_vault_key,omitempty"`
+	Role              string              `json:"role,omitempty"`
+	TargetUserID      string              `json:"target_user_id,omitempty"`
+	TargetPublicKey   string              `json:"target_public_key,omitempty"`
+}
+
+type VaultInfoMsg struct {
+	VaultID           string `json:"vault_id"`
+	EncryptedVaultKey string `json:"encrypted_vault_key"`
+	SenderPublicKey   string `json:"sender_public_key"`
+	Role              string `json:"role"`
+}
+
+type VaultMemberMsg struct {
+	UserID    string `json:"user_id"`
+	Role      string `json:"role"`
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 // ReadPump reads messages from the WebSocket and processes them.
@@ -90,6 +123,22 @@ func (c *Client) ReadPump(ctx context.Context) {
 			c.handleChangePassword(ctx, msg)
 		case "purge":
 			c.handlePurge(ctx)
+		case "set_identity":
+			c.handleSetIdentity(ctx, msg)
+		case "create_vault":
+			c.handleCreateVault(ctx, msg)
+		case "list_vaults":
+			c.handleListVaults(ctx)
+		case "invite_to_vault":
+			c.handleInviteToVault(ctx, msg)
+		case "remove_from_vault":
+			c.handleRemoveFromVault(ctx, msg)
+		case "list_vault_members":
+			c.handleListVaultMembers(ctx, msg)
+		case "delete_vault":
+			c.handleDeleteVault(ctx, msg)
+		case "lookup_user":
+			c.handleLookupUser(ctx, msg)
 		case "presence":
 			c.handlePresence(msg)
 		default:
@@ -162,10 +211,18 @@ func (c *Client) handleConnect(ctx context.Context, msg ClientMessage) {
 	c.DeviceID = msg.DeviceID
 	c.Hub.Register(c)
 
-	// Send confirmation with wrapped key (so new devices can get the master key)
+	// Send confirmation with wrapped key and identity info
 	connMsg := ServerMessage{Type: "connected", FromDevice: c.DeviceID}
 	if authResult.WrappedMasterKey != nil {
 		connMsg.Payload = string(authResult.WrappedMasterKey)
+	}
+	if authResult.PublicKey != nil {
+		connMsg.PublicKey = string(authResult.PublicKey)
+	}
+	// Include wrapped private key so other devices can get it
+	wpk, _ := c.Queries.GetWrappedPrivateKey(ctx, msg.UserID)
+	if wpk != nil {
+		connMsg.WrappedPrivateKey = string(wpk)
 	}
 	c.sendJSON(connMsg)
 }
@@ -339,6 +396,236 @@ func (c *Client) handlePresence(msg ClientMessage) {
 		Presence:   msg.Presence,
 	})
 	c.Hub.BroadcastDoc(c.UserID, docID, c.DeviceID, relay)
+}
+
+// ── Identity key handlers ──
+
+func (c *Client) handleSetIdentity(ctx context.Context, msg ClientMessage) {
+	if c.UserID == "" {
+		c.sendError("must connect first")
+		return
+	}
+	if msg.PublicKey == "" || msg.WrappedPrivateKey == "" {
+		c.sendError("public_key and wrapped_private_key required")
+		return
+	}
+	if err := c.Queries.SetIdentityKeys(ctx, c.UserID, []byte(msg.PublicKey), []byte(msg.WrappedPrivateKey)); err != nil {
+		c.sendError("failed to store identity keys")
+		log.Printf("client %s: set identity error: %v", c.DeviceID, err)
+		return
+	}
+	c.sendJSON(ServerMessage{Type: "identity_stored"})
+}
+
+// ── Vault handlers ──
+
+func (c *Client) handleCreateVault(ctx context.Context, msg ClientMessage) {
+	if c.UserID == "" {
+		c.sendError("must connect first")
+		return
+	}
+	if msg.VaultID == "" || msg.EncryptedVaultKey == "" {
+		c.sendError("vault_id and encrypted_vault_key required")
+		return
+	}
+	if err := c.Queries.CreateVault(ctx, msg.VaultID, c.UserID, []byte(msg.EncryptedVaultKey), []byte(msg.SenderPublicKey)); err != nil {
+		c.sendError("failed to create vault")
+		log.Printf("client %s: create vault error: %v", c.DeviceID, err)
+		return
+	}
+	log.Printf("vault: created %s by user %s", msg.VaultID, c.UserID)
+	c.sendJSON(ServerMessage{Type: "vault_created", VaultID: msg.VaultID})
+}
+
+func (c *Client) handleListVaults(ctx context.Context) {
+	if c.UserID == "" {
+		c.sendError("must connect first")
+		return
+	}
+	vaults, err := c.Queries.ListVaults(ctx, c.UserID)
+	if err != nil {
+		c.sendError("failed to list vaults")
+		log.Printf("client %s: list vaults error: %v", c.DeviceID, err)
+		return
+	}
+	var vaultMsgs []VaultInfoMsg
+	for _, v := range vaults {
+		vaultMsgs = append(vaultMsgs, VaultInfoMsg{
+			VaultID:           v.VaultID,
+			EncryptedVaultKey: string(v.EncryptedVaultKey),
+			SenderPublicKey:   string(v.SenderPublicKey),
+			Role:              v.Role,
+		})
+	}
+	c.sendJSON(ServerMessage{Type: "vault_list", Vaults: vaultMsgs})
+}
+
+func (c *Client) handleInviteToVault(ctx context.Context, msg ClientMessage) {
+	if c.UserID == "" {
+		c.sendError("must connect first")
+		return
+	}
+	if msg.VaultID == "" || msg.TargetUserID == "" || msg.EncryptedVaultKey == "" {
+		c.sendError("vault_id, target_user_id, and encrypted_vault_key required")
+		return
+	}
+
+	// Check inviter is owner/editor of this vault
+	isMember, role, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	if err != nil || !isMember {
+		c.sendError("not a member of this vault")
+		return
+	}
+	if role != "owner" && role != "editor" {
+		c.sendError("insufficient permissions to invite")
+		return
+	}
+
+	// Check target user exists
+	_, err = c.Queries.LookupUserByID(ctx, msg.TargetUserID)
+	if err != nil {
+		c.sendError("target user not found")
+		return
+	}
+
+	inviteRole := msg.Role
+	if inviteRole == "" {
+		inviteRole = "editor"
+	}
+
+	if err := c.Queries.AddVaultMember(ctx, msg.VaultID, msg.TargetUserID, []byte(msg.EncryptedVaultKey), []byte(msg.SenderPublicKey), inviteRole, c.UserID); err != nil {
+		c.sendError("failed to invite user")
+		log.Printf("client %s: invite error: %v", c.DeviceID, err)
+		return
+	}
+
+	log.Printf("vault: user %s invited %s to vault %s as %s", c.UserID, msg.TargetUserID, msg.VaultID, inviteRole)
+	c.sendJSON(ServerMessage{Type: "vault_invite_ok", VaultID: msg.VaultID, TargetUserID: msg.TargetUserID})
+
+	// Notify the invited user's connected devices
+	relay, _ := json.Marshal(ServerMessage{
+		Type:              "vault_invited",
+		VaultID:           msg.VaultID,
+		EncryptedVaultKey: msg.EncryptedVaultKey,
+		Role:              inviteRole,
+	})
+	c.Hub.Broadcast(msg.TargetUserID, "", relay)
+}
+
+func (c *Client) handleRemoveFromVault(ctx context.Context, msg ClientMessage) {
+	if c.UserID == "" {
+		c.sendError("must connect first")
+		return
+	}
+	if msg.VaultID == "" || msg.TargetUserID == "" {
+		c.sendError("vault_id and target_user_id required")
+		return
+	}
+
+	isMember, role, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	if err != nil || !isMember || role != "owner" {
+		c.sendError("only the owner can remove members")
+		return
+	}
+
+	if err := c.Queries.RemoveVaultMember(ctx, msg.VaultID, msg.TargetUserID); err != nil {
+		c.sendError("failed to remove member")
+		log.Printf("client %s: remove member error: %v", c.DeviceID, err)
+		return
+	}
+
+	log.Printf("vault: user %s removed %s from vault %s", c.UserID, msg.TargetUserID, msg.VaultID)
+	c.sendJSON(ServerMessage{Type: "vault_member_removed", VaultID: msg.VaultID, TargetUserID: msg.TargetUserID})
+
+	// Notify removed user
+	relay, _ := json.Marshal(ServerMessage{Type: "vault_removed", VaultID: msg.VaultID})
+	c.Hub.Broadcast(msg.TargetUserID, "", relay)
+}
+
+func (c *Client) handleListVaultMembers(ctx context.Context, msg ClientMessage) {
+	if c.UserID == "" {
+		c.sendError("must connect first")
+		return
+	}
+	if msg.VaultID == "" {
+		c.sendError("vault_id required")
+		return
+	}
+
+	isMember, _, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	if err != nil || !isMember {
+		c.sendError("not a member of this vault")
+		return
+	}
+
+	members, err := c.Queries.ListVaultMembers(ctx, msg.VaultID)
+	if err != nil {
+		c.sendError("failed to list members")
+		log.Printf("client %s: list members error: %v", c.DeviceID, err)
+		return
+	}
+
+	var memberMsgs []VaultMemberMsg
+	for _, m := range members {
+		memberMsgs = append(memberMsgs, VaultMemberMsg{
+			UserID:    m.UserID,
+			Role:      m.Role,
+			PublicKey: string(m.PublicKey),
+		})
+	}
+	c.sendJSON(ServerMessage{Type: "vault_members", VaultID: msg.VaultID, Members: memberMsgs})
+}
+
+func (c *Client) handleDeleteVault(ctx context.Context, msg ClientMessage) {
+	if c.UserID == "" {
+		c.sendError("must connect first")
+		return
+	}
+	if msg.VaultID == "" {
+		c.sendError("vault_id required")
+		return
+	}
+
+	isMember, role, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	if err != nil || !isMember || role != "owner" {
+		c.sendError("only the owner can delete a vault")
+		return
+	}
+
+	// Notify all members before deleting
+	members, _ := c.Queries.ListVaultMembers(ctx, msg.VaultID)
+	for _, m := range members {
+		if m.UserID != c.UserID {
+			relay, _ := json.Marshal(ServerMessage{Type: "vault_deleted", VaultID: msg.VaultID})
+			c.Hub.Broadcast(m.UserID, "", relay)
+		}
+	}
+
+	if err := c.Queries.DeleteVault(ctx, msg.VaultID); err != nil {
+		c.sendError("failed to delete vault")
+		log.Printf("client %s: delete vault error: %v", c.DeviceID, err)
+		return
+	}
+
+	log.Printf("vault: deleted %s by user %s", msg.VaultID, c.UserID)
+	c.sendJSON(ServerMessage{Type: "vault_deleted", VaultID: msg.VaultID})
+}
+
+func (c *Client) handleLookupUser(ctx context.Context, msg ClientMessage) {
+	if c.UserID == "" {
+		c.sendError("must connect first")
+		return
+	}
+	if msg.TargetUserID == "" {
+		c.sendError("target_user_id required")
+		return
+	}
+	pk, err := c.Queries.LookupUserByID(ctx, msg.TargetUserID)
+	if err != nil || pk == nil {
+		c.sendError("user not found or no public key")
+		return
+	}
+	c.sendJSON(ServerMessage{Type: "user_lookup", TargetUserID: msg.TargetUserID, TargetPublicKey: string(pk)})
 }
 
 func (c *Client) sendJSON(msg ServerMessage) {

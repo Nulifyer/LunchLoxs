@@ -124,6 +124,116 @@ async function wrapKey(masterKey: CryptoKey, wrappingKey: CryptoKey): Promise<Ui
   return encrypt(new Uint8Array(rawBytes), wrappingKey);
 }
 
+// ── Identity keypair (ECDH P-256) ──
+
+/**
+ * Generate an ECDH P-256 identity keypair for key exchange.
+ * Returns the raw public key (for sharing) and the private key (to encrypt locally).
+ */
+export async function generateIdentityKeypair(): Promise<{
+  publicKey: Uint8Array;
+  privateKey: Uint8Array;
+}> {
+  const keyPair = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  );
+  const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
+  const privPkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
+  return { publicKey: pubRaw, privateKey: privPkcs8 };
+}
+
+/**
+ * Wrap (encrypt) a private key with the master key for safe storage.
+ */
+export async function wrapPrivateKey(privateKey: Uint8Array, masterKey: CryptoKey): Promise<Uint8Array> {
+  return encrypt(privateKey, masterKey);
+}
+
+/**
+ * Unwrap (decrypt) a private key using the master key.
+ */
+export async function unwrapPrivateKey(wrapped: Uint8Array, masterKey: CryptoKey): Promise<Uint8Array> {
+  return decrypt(wrapped, masterKey);
+}
+
+// ── Book (vault) key management ──
+
+/**
+ * Generate a random AES-256 book key for encrypting a vault's data.
+ */
+export async function generateBookKey(): Promise<{ bookKey: CryptoKey; bookKeyRaw: Uint8Array }> {
+  const raw = crypto.getRandomValues(new Uint8Array(32));
+  const bookKey = await crypto.subtle.importKey(
+    "raw", raw, { name: "AES-GCM" }, true, ["encrypt", "decrypt"],
+  );
+  return { bookKey, bookKeyRaw: raw };
+}
+
+/**
+ * Import a raw book key from bytes.
+ */
+export async function importBookKey(raw: Uint8Array): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw", raw, { name: "AES-GCM" }, true, ["encrypt", "decrypt"],
+  );
+}
+
+/**
+ * Encrypt a book key for a recipient using ECDH key agreement.
+ * senderPrivateKey: PKCS8 bytes of our private key
+ * recipientPublicKey: raw bytes of recipient's public key
+ * bookKeyRaw: 32-byte raw book key
+ * Returns encrypted book key.
+ */
+export async function encryptBookKeyForUser(
+  senderPrivateKey: Uint8Array,
+  recipientPublicKey: Uint8Array,
+  bookKeyRaw: Uint8Array,
+): Promise<Uint8Array> {
+  const sharedKey = await deriveSharedKey(senderPrivateKey, recipientPublicKey);
+  return encrypt(bookKeyRaw, sharedKey);
+}
+
+/**
+ * Decrypt a book key that was encrypted for us via ECDH.
+ * recipientPrivateKey: our PKCS8 private key
+ * senderPublicKey: raw bytes of the sender's public key
+ * encryptedBookKey: the encrypted book key
+ */
+export async function decryptBookKeyFromUser(
+  recipientPrivateKey: Uint8Array,
+  senderPublicKey: Uint8Array,
+  encryptedBookKey: Uint8Array,
+): Promise<Uint8Array> {
+  const sharedKey = await deriveSharedKey(recipientPrivateKey, senderPublicKey);
+  return decrypt(encryptedBookKey, sharedKey);
+}
+
+/**
+ * Derive a shared AES-256-GCM key from ECDH key agreement.
+ */
+async function deriveSharedKey(privateKeyPkcs8: Uint8Array, publicKeyRaw: Uint8Array): Promise<CryptoKey> {
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8", privateKeyPkcs8,
+    { name: "ECDH", namedCurve: "P-256" },
+    false, ["deriveBits"],
+  );
+  const publicKey = await crypto.subtle.importKey(
+    "raw", publicKeyRaw,
+    { name: "ECDH", namedCurve: "P-256" },
+    false, [],
+  );
+  const sharedBits = await crypto.subtle.deriveBits(
+    { name: "ECDH", public: publicKey },
+    privateKey, 256,
+  );
+  return crypto.subtle.importKey(
+    "raw", sharedBits, { name: "AES-GCM" }, false, ["encrypt", "decrypt"],
+  );
+}
+
 // ── Encrypt / Decrypt ──
 
 /**

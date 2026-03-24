@@ -11,6 +11,19 @@ import { encrypt, decrypt } from "./crypto";
 
 export type SyncStatus = "connecting" | "connected" | "disconnected";
 
+export interface VaultInfo {
+  vaultId: string;
+  encryptedVaultKey: string;
+  senderPublicKey: string;
+  role: string;
+}
+
+export interface VaultMemberInfo {
+  userId: string;
+  role: string;
+  publicKey?: string;
+}
+
 export interface SyncClientOptions {
   url: string;
   userId: string;
@@ -18,13 +31,25 @@ export interface SyncClientOptions {
   authHash: string;
   encKey: CryptoKey;
   wrappedKey?: string;
-  onConnected?: (wrappedKeyFromServer: string | undefined) => Promise<void> | void;
+  onConnected?: (data: {
+    wrappedKey?: string;
+    publicKey?: string;
+    wrappedPrivateKey?: string;
+  }) => Promise<void> | void;
   onRemoteChange: (docId: string, snapshot: Uint8Array, seq: number) => Promise<void>;
   onCaughtUp: (docId: string, latestSeq: number) => void;
   onStatusChange: (status: SyncStatus) => void;
   onPurged?: () => void;
   onPresence?: (docId: string, deviceId: string, data: any) => void;
   onPasswordChanged?: () => void;
+  // Vault callbacks
+  onVaultList?: (vaults: VaultInfo[]) => void;
+  onVaultCreated?: (vaultId: string) => void;
+  onVaultInvited?: (vaultId: string, encryptedVaultKey: string, role: string) => void;
+  onVaultRemoved?: (vaultId: string) => void;
+  onVaultDeleted?: (vaultId: string) => void;
+  onVaultMembers?: (vaultId: string, members: VaultMemberInfo[]) => void;
+  onUserLookup?: (userId: string, publicKey: string) => void;
 }
 
 interface ServerMessage {
@@ -36,6 +61,17 @@ interface ServerMessage {
   latest_seq?: number;
   message?: string;
   presence?: any;
+  // Identity
+  public_key?: string;
+  wrapped_private_key?: string;
+  // Vault fields
+  vault_id?: string;
+  vaults?: Array<{ vault_id: string; encrypted_vault_key: string; sender_public_key: string; role: string }>;
+  members?: Array<{ user_id: string; role: string; public_key?: string }>;
+  encrypted_vault_key?: string;
+  role?: string;
+  target_user_id?: string;
+  target_public_key?: string;
 }
 
 export class SyncClient {
@@ -99,7 +135,11 @@ export class SyncClient {
     switch (msg.type) {
       case "connected":
         this.opts.onStatusChange("connected");
-        await this.opts.onConnected?.(msg.payload || undefined);
+        await this.opts.onConnected?.({
+          wrappedKey: msg.payload || undefined,
+          publicKey: msg.public_key || undefined,
+          wrappedPrivateKey: msg.wrapped_private_key || undefined,
+        });
         // Resubscribe to all documents
         await this.resubscribeAll();
         await this.flushPending();
@@ -143,6 +183,53 @@ export class SyncClient {
 
       case "password_change_ok":
       case "key_stored":
+      case "identity_stored":
+        break;
+
+      case "vault_list":
+        this.opts.onVaultList?.(
+          (msg.vaults ?? []).map((v) => ({
+            vaultId: v.vault_id,
+            encryptedVaultKey: v.encrypted_vault_key,
+            senderPublicKey: v.sender_public_key,
+            role: v.role,
+          }))
+        );
+        break;
+
+      case "vault_created":
+        this.opts.onVaultCreated?.(msg.vault_id ?? "");
+        break;
+
+      case "vault_invited":
+        this.opts.onVaultInvited?.(msg.vault_id ?? "", msg.encrypted_vault_key ?? "", msg.role ?? "editor");
+        break;
+
+      case "vault_removed":
+        this.opts.onVaultRemoved?.(msg.vault_id ?? "");
+        break;
+
+      case "vault_deleted":
+        this.opts.onVaultDeleted?.(msg.vault_id ?? "");
+        break;
+
+      case "vault_members":
+        this.opts.onVaultMembers?.(
+          msg.vault_id ?? "",
+          (msg.members ?? []).map((m) => ({
+            userId: m.user_id,
+            role: m.role,
+            publicKey: m.public_key,
+          }))
+        );
+        break;
+
+      case "user_lookup":
+        this.opts.onUserLookup?.(msg.target_user_id ?? "", msg.target_public_key ?? "");
+        break;
+
+      case "vault_invite_ok":
+      case "vault_member_removed":
         break;
 
       case "error":
@@ -202,6 +289,46 @@ export class SyncClient {
         new_auth_hash: newAuthHash,
         wrapped_key: wrappedKey,
       }));
+    }
+  }
+
+  // ── Vault operations ──
+
+  setIdentity(publicKey: string, wrappedPrivateKey: string): void {
+    this.sendMsg({ type: "set_identity", public_key: publicKey, wrapped_private_key: wrappedPrivateKey });
+  }
+
+  listVaults(): void {
+    this.sendMsg({ type: "list_vaults" });
+  }
+
+  createVault(vaultId: string, encryptedVaultKey: string, senderPublicKey: string): void {
+    this.sendMsg({ type: "create_vault", vault_id: vaultId, encrypted_vault_key: encryptedVaultKey, sender_public_key: senderPublicKey });
+  }
+
+  inviteToVault(vaultId: string, targetUserId: string, encryptedVaultKey: string, senderPublicKey: string, role = "editor"): void {
+    this.sendMsg({ type: "invite_to_vault", vault_id: vaultId, target_user_id: targetUserId, encrypted_vault_key: encryptedVaultKey, sender_public_key: senderPublicKey, role });
+  }
+
+  removeFromVault(vaultId: string, targetUserId: string): void {
+    this.sendMsg({ type: "remove_from_vault", vault_id: vaultId, target_user_id: targetUserId });
+  }
+
+  listVaultMembers(vaultId: string): void {
+    this.sendMsg({ type: "list_vault_members", vault_id: vaultId });
+  }
+
+  deleteVault(vaultId: string): void {
+    this.sendMsg({ type: "delete_vault", vault_id: vaultId });
+  }
+
+  lookupUser(targetUserId: string): void {
+    this.sendMsg({ type: "lookup_user", target_user_id: targetUserId });
+  }
+
+  private sendMsg(obj: Record<string, any>): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(obj));
     }
   }
 

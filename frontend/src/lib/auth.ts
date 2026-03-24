@@ -74,6 +74,29 @@ export function hasSession(): boolean {
   return sessionKeys !== null;
 }
 
+// ── Identity key storage (in-memory only for private key) ──
+
+let identityPrivateKey: Uint8Array | null = null;
+let identityPublicKey: Uint8Array | null = null;
+
+export function setIdentityKeys(publicKey: Uint8Array, privateKey: Uint8Array): void {
+  identityPublicKey = publicKey;
+  identityPrivateKey = privateKey;
+}
+
+export function getIdentityPublicKey(): Uint8Array | null {
+  return identityPublicKey;
+}
+
+export function getIdentityPrivateKey(): Uint8Array | null {
+  return identityPrivateKey;
+}
+
+export function clearIdentityKeys(): void {
+  identityPublicKey = null;
+  identityPrivateKey = null;
+}
+
 export function updateWrappedKey(userId: string, wrapped: Uint8Array): void {
   storeWrappedKey(userId, wrapped);
   if (sessionKeys) {

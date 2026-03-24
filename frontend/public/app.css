@@ -58,6 +58,25 @@ body {
   flex: 1;
 }
 
+.book-selector {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0 1rem;
+  margin-bottom: 0.25rem;
+}
+
+.book-selector select {
+  flex: 1;
+  margin-bottom: 0;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.5rem;
+}
+
+.book-selector button {
+  padding: 0.3rem 0.5rem;
+  margin-bottom: 0;
+}
+
 .sidebar .search {
   padding: 0 1rem;
 }
@@ -377,6 +396,51 @@ input.ing-edit.ing-text {
 .sync-badge.disconnected {
   background: #e94560;
   color: #fff;
+}
+
+/* -- Inline forms (create book, invite user) -- */
+.inline-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.inline-form input {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.inline-form button {
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+
+#book-list-manage li,
+#share-member-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.3rem 0;
+}
+
+/* -- Update banner -- */
+.update-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 200;
+  background: var(--pico-primary-background);
+  color: var(--pico-primary-inverse);
+  text-align: center;
+  padding: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.update-banner button {
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.8rem;
 }
 
 /* -- Mobile -- */

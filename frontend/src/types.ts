@@ -1,3 +1,11 @@
+/** Book (vault) — a collection of recipes with its own encryption key */
+export interface Book {
+  vaultId: string;
+  name: string;
+  role: string;
+  encKey?: CryptoKey;
+}
+
 /** Recipe catalog entry — stored in the shared catalog Automerge doc */
 export interface RecipeMeta {
   id: string;
@@ -12,6 +20,7 @@ export interface RecipeMeta {
 
 /** Recipe catalog Automerge document */
 export interface RecipeCatalog {
+  name: string;
   recipes: RecipeMeta[];
 }
 
