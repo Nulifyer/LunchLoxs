@@ -21,40 +21,42 @@
         <label for="passphrase-input">Passphrase</label>
         <input type="password" id="passphrase-input" required autocomplete="current-password" />
         <button type="submit" id="login-btn">Login / Sign Up</button>
-        <p id="login-error" role="alert" hidden></p>
+        <p id="login-error" class="alert-error" role="alert" hidden></p>
       </form>
     </article>
   </div>
 
   <!-- App -->
   <div id="app-section" class="app-layout" hidden>
-    <aside class="sidebar">
+    <aside class="sidebar" role="navigation" aria-label="Recipe navigation">
       <header>
         <h1>Recipes</h1>
-        <button id="add-recipe-btn" class="outline btn-sm">+ New</button>
+        <button id="add-recipe-btn" class="outline btn-sm" aria-label="Add new recipe">+ New</button>
       </header>
       <div class="book-selector">
-        <select id="book-select"></select>
-        <button id="manage-books-btn" class="outline btn-sm" title="Manage books">...</button>
+        <label for="book-select" class="sr-only">Select book</label>
+        <select id="book-select" aria-label="Select recipe book"></select>
+        <button id="manage-books-btn" class="outline btn-sm" title="Manage books" aria-label="Manage books">...</button>
       </div>
       <div class="search">
-        <input type="search" id="search-input" placeholder="Search recipes..." />
+        <label for="search-input" class="sr-only">Search recipes</label>
+        <input type="search" id="search-input" placeholder="Search recipes..." aria-label="Search recipes" />
       </div>
-      <ul id="recipe-list"></ul>
+      <ul id="recipe-list" role="listbox" aria-label="Recipe list"></ul>
       <footer>
-        <span id="sync-badge" class="sync-badge" hidden></span>
-        <small id="recipe-count"></small>
+        <span id="sync-badge" class="sync-badge" hidden role="status"></span>
+        <small id="recipe-count" aria-live="polite"></small>
         <button id="account-btn" class="outline secondary btn-sm">Account</button>
       </footer>
     </aside>
 
-    <main class="main-content">
+    <main class="main-content" role="main">
       <div id="empty-state"><p>Select a recipe or create a new one</p></div>
 
       <!-- Account -->
       <div id="account-page" class="account-page" hidden>
         <header>
-          <button id="account-back-btn" class="outline mobile-only btn-sm">&larr; Back</button>
+          <button id="account-back-btn" class="outline mobile-only btn-sm" aria-label="Back to recipe list">&larr; Back</button>
           <h2>Account</h2>
         </header>
         <article>
@@ -91,7 +93,7 @@
       <div id="recipe-detail" hidden>
         <header>
           <div class="detail-title-row">
-            <button id="back-btn" class="outline mobile-only btn-sm">&larr;</button>
+            <button id="back-btn" class="outline mobile-only btn-sm" aria-label="Back to recipe list">&larr;</button>
             <h2 id="recipe-title"></h2>
             <button id="page-edit-btn" class="outline btn-sm">Edit</button>
             <button id="edit-recipe-btn" class="outline btn-sm" hidden>Settings</button>
@@ -102,13 +104,13 @@
 
         <div class="section-header">
           <h3>Ingredients</h3>
-          <button id="add-ingredient-btn" class="outline btn-sm" hidden>+ Add</button>
+          <button id="add-ingredient-btn" class="outline btn-sm" hidden aria-label="Add ingredient">+ Add</button>
         </div>
         <ul id="ingredients-list"></ul>
         <form id="ingredient-form" class="ingredient-form">
-          <div><label>Qty</label><input type="text" id="ing-qty" placeholder="2" /></div>
-          <div><label>Unit</label><input type="text" id="ing-unit" placeholder="cups" /></div>
-          <div><label>Ingredient</label><input type="text" id="ing-item" placeholder="flour" required /></div>
+          <div><label for="ing-qty">Qty</label><input type="text" id="ing-qty" placeholder="2" /></div>
+          <div><label for="ing-unit">Unit</label><input type="text" id="ing-unit" placeholder="cups" /></div>
+          <div><label for="ing-item">Ingredient</label><input type="text" id="ing-item" placeholder="flour" required /></div>
           <button type="submit">Add</button>
         </form>
 
@@ -128,7 +130,7 @@
   </div>
 
   <!-- Add recipe dialog -->
-  <dialog id="add-recipe-dialog">
+  <dialog id="add-recipe-dialog" aria-label="New recipe">
     <article>
       <header><strong>New Recipe</strong></header>
       <form id="add-recipe-form" method="dialog">
@@ -142,7 +144,7 @@
           <div><label for="new-cook">Cook (min)</label><input type="number" id="new-cook" value="0" min="0" /></div>
         </div>
         <footer class="dialog-footer">
-          <button type="button" class="secondary" onclick="this.closest('dialog').close()">Cancel</button>
+          <button type="button" class="secondary dialog-close-btn">Cancel</button>
           <button type="submit">Create</button>
         </footer>
       </form>
@@ -150,7 +152,7 @@
   </dialog>
 
   <!-- Edit recipe dialog -->
-  <dialog id="edit-recipe-dialog">
+  <dialog id="edit-recipe-dialog" aria-label="Edit recipe">
     <article>
       <header><strong>Edit Recipe</strong></header>
       <form id="edit-recipe-form" method="dialog">
@@ -164,7 +166,7 @@
           <div><label for="edit-cook">Cook (min)</label><input type="number" id="edit-cook" min="0" /></div>
         </div>
         <footer class="dialog-footer">
-          <button type="button" class="secondary" onclick="this.closest('dialog').close()">Cancel</button>
+          <button type="button" class="secondary dialog-close-btn">Cancel</button>
           <button type="submit">Save</button>
         </footer>
       </form>
@@ -172,39 +174,49 @@
   </dialog>
 
   <!-- Manage books dialog -->
-  <dialog id="manage-books-dialog">
+  <dialog id="manage-books-dialog" aria-label="Manage books">
     <article>
       <header><strong>Manage Books</strong></header>
       <ul id="book-list-manage"></ul>
       <form id="create-book-form" class="inline-form">
+        <label for="new-book-name" class="sr-only">New book name</label>
         <input type="text" id="new-book-name" placeholder="New book name" required />
         <button type="submit" class="btn-sm">Create</button>
       </form>
       <footer class="dialog-footer">
-        <button type="button" class="secondary" onclick="this.closest('dialog').close()">Close</button>
+        <button type="button" class="secondary dialog-close-btn">Close</button>
       </footer>
     </article>
   </dialog>
 
   <!-- Share book dialog -->
-  <dialog id="share-book-dialog">
+  <dialog id="share-book-dialog" aria-label="Share book">
     <article>
       <header><strong>Share Book</strong></header>
       <p>Book: <strong id="share-book-name"></strong></p>
       <h4>Members</h4>
       <ul id="share-member-list"></ul>
       <form id="invite-form" class="inline-form">
+        <label for="invite-username" class="sr-only">Username to invite</label>
         <input type="text" id="invite-username" placeholder="Username to invite" required />
         <button type="submit" class="btn-sm">Invite</button>
       </form>
       <p id="invite-error" class="alert-error" role="alert" hidden></p>
       <p id="invite-success" class="alert-success" role="alert" hidden></p>
       <footer class="dialog-footer">
-        <button type="button" class="secondary" onclick="this.closest('dialog').close()">Close</button>
+        <button type="button" class="secondary dialog-close-btn">Close</button>
       </footer>
     </article>
   </dialog>
 
   <script type="module" src="/index.js"></script>
+  <script>
+    // Close dialog buttons (replaces inline onclick handlers)
+    document.addEventListener("click", (e) => {
+      if (e.target.classList.contains("dialog-close-btn")) {
+        e.target.closest("dialog")?.close();
+      }
+    });
+  </script>
 </body>
 </html>

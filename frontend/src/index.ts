@@ -2,19 +2,22 @@ import {
   deriveKeys, deriveUserId, generateMasterKey, unwrapMasterKey, rewrapMasterKey,
   generateIdentityKeypair, wrapPrivateKey, unwrapPrivateKey,
   generateBookKey, importBookKey, encryptBookKeyForUser, decryptBookKeyFromUser,
+  keyFingerprint,
 } from "./lib/crypto";
 import {
   getStoredUsername, getStoredWrappedKey, getDeviceId, saveSession, clearSession,
   updateWrappedKey, clearWrappedKey, setIdentityKeys, getIdentityPrivateKey,
-  getIdentityPublicKey, clearIdentityKeys,
+  getIdentityPublicKey, clearIdentityKeys, getSessionKeys,
 } from "./lib/auth";
 import { DocumentManager } from "./lib/document-manager";
 import { SyncClient, type SyncStatus, type VaultInfo } from "./lib/sync-client";
 import { initRecipeList, renderRecipeList } from "./views/recipe-list";
 import { initRecipeDetail, openRecipe, closeRecipe, handlePresence, isOpen as isDetailOpen } from "./views/recipe-detail";
-import type { RecipeCatalog, RecipeContent, Book } from "./types";
+import { toBase64, fromBase64 } from "./lib/encoding";
+import { exportBook, importFromZip } from "./lib/export";
+import type { RecipeCatalog, RecipeContent, RecipeMeta, Book } from "./types";
 
-// ── State ──
+// -- State --
 let docMgr: DocumentManager | null = null;
 let syncClient: SyncClient | null = null;
 let syncStatus: SyncStatus = "disconnected";
@@ -22,7 +25,7 @@ let selectedRecipeId: string | null = null;
 let books: Book[] = [];
 let activeBook: Book | null = null;
 
-// ── DOM refs ──
+// -- DOM refs --
 const loginSection = document.getElementById("login-section") as HTMLElement;
 const appSection = document.getElementById("app-section") as HTMLElement;
 const loginForm = document.getElementById("login-form") as HTMLFormElement;
@@ -59,11 +62,8 @@ const inviteForm = document.getElementById("invite-form") as HTMLFormElement;
 const inviteError = document.getElementById("invite-error") as HTMLElement;
 const inviteSuccess = document.getElementById("invite-success") as HTMLElement;
 
-// ── Base64 helpers ──
-const toB64 = (b: Uint8Array) => { let s = ""; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s); };
-const fromB64 = (s: string) => { const b = atob(s); const a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; };
+// -- Book management --
 
-// ── Book management ──
 function renderBookSelect() {
   const addRecipeBtn = document.getElementById("add-recipe-btn") as HTMLButtonElement;
   addRecipeBtn.disabled = !activeBook;
@@ -85,7 +85,6 @@ function renderBookSelect() {
 }
 
 async function switchBook(vaultId: string) {
-  // Close current book
   if (selectedRecipeId) deselectRecipe();
   if (activeBook && syncClient) {
     syncClient.unsubscribe(`${activeBook.vaultId}/catalog`);
@@ -96,14 +95,12 @@ async function switchBook(vaultId: string) {
   if (!book || !book.encKey) return;
   activeBook = book;
 
-  // Open catalog for this book (doc_id = "vaultId/catalog")
   if (docMgr) {
     const catalogDocId = `${vaultId}/catalog`;
     const catalog = await docMgr.open<RecipeCatalog>(catalogDocId, (doc) => {
       doc.name = book.name;
       doc.recipes = [];
     });
-    // Update book name from catalog if available
     const catDoc = catalog.getDoc();
     if (catDoc.name) book.name = catDoc.name;
     catalog.onChange(() => renderCatalog());
@@ -122,16 +119,13 @@ async function createBook(name: string) {
   const vaultId = crypto.randomUUID();
   const { bookKey, bookKeyRaw } = await generateBookKey();
 
-  // Encrypt book key for ourselves using ECDH (sender = recipient = us)
   const encryptedVaultKey = await encryptBookKeyForUser(privKey, pubKey, bookKeyRaw);
-
-  syncClient.createVault(vaultId, toB64(encryptedVaultKey), toB64(pubKey));
+  syncClient.createVault(vaultId, toBase64(encryptedVaultKey), toBase64(pubKey));
 
   const book: Book = { vaultId, name, role: "owner", encKey: bookKey };
   books.push(book);
   renderBookSelect();
 
-  // Store the book name in the catalog doc
   const catalogDocId = `${vaultId}/catalog`;
   const catalog = await docMgr.open<RecipeCatalog>(catalogDocId, (doc) => {
     doc.name = name;
@@ -146,7 +140,7 @@ async function createBook(name: string) {
   renderCatalog();
 }
 
-// ── Debounced push ──
+// -- Debounced push --
 const pushTimers = new Map<string, ReturnType<typeof setTimeout>>();
 function pushSnapshot(docId: string) {
   if (!docMgr || !syncClient) return;
@@ -159,7 +153,7 @@ function pushSnapshot(docId: string) {
   }, 200));
 }
 
-// ── Render catalog ──
+// -- Render catalog --
 function catalogDocId(): string {
   return activeBook ? `${activeBook.vaultId}/catalog` : "catalog";
 }
@@ -181,16 +175,14 @@ function updateSyncBadge() {
   syncBadge.hidden = syncStatus === "connected";
 }
 
-// ── Recipe selection ──
+// -- Recipe selection --
 async function selectRecipe(id: string) {
   if (!docMgr || !syncClient || !activeBook) return;
-  // Hide account page if open
   accountPage.hidden = true;
   selectedRecipeId = id;
   appSection.classList.add("detail-open");
   renderCatalog();
 
-  // Open the recipe content document scoped to vault
   const contentDocId = `${activeBook.vaultId}/${id}`;
   const contentStore = await docMgr.open<RecipeContent>(contentDocId, (doc) => {
     doc.description = "";
@@ -200,12 +192,10 @@ async function selectRecipe(id: string) {
     doc.notes = "";
   });
 
-  // Subscribe to sync for this recipe
   await syncClient.subscribe(contentDocId);
 
-  // Get metadata from catalog
   const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
-  const meta = catalog?.getDoc().recipes.find((r: any) => r.id === id);
+  const meta = catalog?.getDoc()?.recipes?.find((r: any) => r.id === id);
   const title = meta?.title ?? "Untitled";
   const metaText = [
     meta?.servings ? `${meta.servings} servings` : "",
@@ -229,7 +219,7 @@ function deselectRecipe() {
   renderCatalog();
 }
 
-// ── Login flow ──
+// -- Login flow --
 async function login(username: string, passphrase: string) {
   loginBtn.disabled = true;
   loginBtn.textContent = "Deriving keys...";
@@ -255,7 +245,7 @@ async function login(username: string, passphrase: string) {
     }
 
     const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProtocol}//${location.hostname}:8080/ws`;
+    const wsUrl = `${wsProtocol}//${location.hostname}:8000/ws`;
 
     syncClient = new SyncClient({
       url: wsUrl,
@@ -263,13 +253,13 @@ async function login(username: string, passphrase: string) {
       deviceId: getDeviceId(),
       authHash: derived.authHash,
       encKey: masterKey as any,
-      wrappedKey: wrappedMasterKey ? toB64(wrappedMasterKey) : undefined,
+      wrappedKey: wrappedMasterKey ? toBase64(wrappedMasterKey) : undefined,
+
       onConnected: async ({ wrappedKey: serverWrappedKey, publicKey: serverPubKey, wrappedPrivateKey: serverWrappedPrivKey }) => {
-        // 1. Resolve master key
         if (!masterKey) {
           if (serverWrappedKey) {
             try {
-              const serverBytes = fromB64(serverWrappedKey);
+              const serverBytes = fromBase64(serverWrappedKey);
               masterKey = await unwrapMasterKey(serverBytes, derived.wrappingKey);
               wrappedMasterKey = serverBytes;
             } catch {
@@ -286,34 +276,24 @@ async function login(username: string, passphrase: string) {
         syncClient!.opts.encKey = masterKey!;
 
         if (wrappedMasterKey && !serverWrappedKey) {
-          syncClient!.sendMsg?.({ type: "set_key", wrapped_key: toB64(wrappedMasterKey) });
-          // fallback direct send
-          if (syncClient!.ws?.readyState === WebSocket.OPEN) {
-            syncClient!.ws.send(JSON.stringify({ type: "set_key", wrapped_key: toB64(wrappedMasterKey) }));
-          }
+          syncClient!.setKey(toBase64(wrappedMasterKey));
         }
 
-        // 2. Resolve identity keypair
         if (serverPubKey && serverWrappedPrivKey) {
-          // Have identity keys on server — decrypt private key with master key
-          const wrappedPriv = fromB64(serverWrappedPrivKey);
+          const wrappedPriv = fromBase64(serverWrappedPrivKey);
           const privKeyBytes = await unwrapPrivateKey(wrappedPriv, masterKey!);
-          setIdentityKeys(fromB64(serverPubKey), privKeyBytes);
+          setIdentityKeys(fromBase64(serverPubKey), privKeyBytes);
         } else {
-          // Generate new identity keypair
           const { publicKey: pubBytes, privateKey: privBytes } = await generateIdentityKeypair();
           const wrappedPriv = await wrapPrivateKey(privBytes, masterKey!);
           setIdentityKeys(pubBytes, privBytes);
-          // Store on server
-          syncClient!.setIdentity(toB64(pubBytes), toB64(wrappedPriv));
+          syncClient!.setIdentity(toBase64(pubBytes), toBase64(wrappedPriv));
         }
 
-        // 3. Init document manager
         if (!docMgr) {
           docMgr = await DocumentManager.init(userId, masterKey!);
         }
 
-        // 4. Request vault list
         syncClient!.listVaults();
       },
 
@@ -324,8 +304,8 @@ async function login(username: string, passphrase: string) {
         books = [];
         for (const vi of vaultInfos) {
           try {
-            const encKey = fromB64(vi.encryptedVaultKey);
-            const senderPub = fromB64(vi.senderPublicKey);
+            const encKey = fromBase64(vi.encryptedVaultKey);
+            const senderPub = fromBase64(vi.senderPublicKey);
             const rawBookKey = await decryptBookKeyFromUser(privKey, senderPub, encKey);
             const bookKey = await importBookKey(rawBookKey);
             books.push({ vaultId: vi.vaultId, name: vi.vaultId.slice(0, 8), role: vi.role, encKey: bookKey });
@@ -335,31 +315,15 @@ async function login(username: string, passphrase: string) {
         }
 
         renderBookSelect();
-
-        // Auto-select first book
         if (books.length > 0 && !activeBook) {
           await switchBook(books[0].vaultId);
         }
       },
 
-      onVaultCreated: (vaultId: string) => {
-        // Already added optimistically in createBook()
-      },
+      onVaultCreated: () => {},
 
-      onVaultInvited: async (vaultId, encryptedVaultKey, role) => {
-        // We've been invited to a new vault
-        const privKey = getIdentityPrivateKey();
-        const pubKey = getIdentityPublicKey();
-        if (!privKey || !pubKey) return;
-        try {
-          // The inviter encrypted the book key using ECDH(inviter_priv, our_pub)
-          // To decrypt we need ECDH(our_priv, inviter_pub)
-          // But we don't have the inviter's public key here...
-          // For now, we'll re-request the vault list to get the proper key
-          syncClient?.listVaults();
-        } catch (e) {
-          console.warn("Failed to process vault invite:", e);
-        }
+      onVaultInvited: async () => {
+        syncClient?.listVaults();
       },
 
       onVaultRemoved: (vaultId) => {
@@ -372,38 +336,7 @@ async function login(username: string, passphrase: string) {
       },
 
       onVaultMembers: (_vaultId, members) => {
-        shareMemberList.innerHTML = "";
-        for (const m of members) {
-          const li = document.createElement("li");
-          li.textContent = `${m.userId.slice(0, 12)}... (${m.role})`;
-          shareMemberList.appendChild(li);
-        }
-        if (members.length === 0) {
-          shareMemberList.innerHTML = "<li>No members</li>";
-        }
-      },
-
-      onUserLookup: async (targetUserId, targetPublicKey) => {
-        if (!pendingInvite || pendingInvite.targetUserId !== targetUserId) return;
-        const privKey = getIdentityPrivateKey();
-        const pubKey = getIdentityPublicKey();
-        if (!privKey || !pubKey || !sharingBook?.encKey) {
-          pendingInvite = null;
-          return;
-        }
-        try {
-          const rawBookKey = new Uint8Array(await crypto.subtle.exportKey("raw", sharingBook.encKey));
-          const targetPubBytes = fromB64(targetPublicKey);
-          const encryptedForTarget = await encryptBookKeyForUser(privKey, targetPubBytes, rawBookKey);
-          syncClient!.inviteToVault(pendingInvite.vaultId, targetUserId, toB64(encryptedForTarget), toB64(pubKey));
-          inviteSuccess.textContent = "User invited!";
-          inviteSuccess.hidden = false;
-          syncClient!.listVaultMembers(pendingInvite.vaultId);
-        } catch (e: any) {
-          inviteError.textContent = "Failed to encrypt key for user: " + (e.message ?? e);
-          inviteError.hidden = false;
-        }
-        pendingInvite = null;
+        renderMemberList(members);
       },
 
       onVaultDeleted: (vaultId) => {
@@ -415,12 +348,25 @@ async function login(username: string, passphrase: string) {
         renderBookSelect();
       },
 
+      onOwnershipTransferred: (vaultId, newOwnerUserId) => {
+        const book = books.find((b) => b.vaultId === vaultId);
+        if (book) {
+          // Refresh vault list to get updated roles
+          syncClient?.listVaults();
+        }
+      },
+
+      onRoleChanged: (vaultId, _targetUserId, _newRole) => {
+        syncClient?.listVaults();
+      },
+
       onRemoteChange: async (docId, snapshot, seq) => {
         const store = docMgr?.get(docId);
         if (!store) return;
         store.merge(snapshot);
         await store.setLastSeq(seq);
       },
+
       onCaughtUp: (docId, latestSeq) => {
         const store = docMgr?.get(docId);
         if (!store) return;
@@ -429,11 +375,13 @@ async function login(username: string, passphrase: string) {
         if (docId.endsWith("/catalog")) renderCatalog();
         pushSnapshot(docId);
       },
+
       onPresence: (docId, deviceId, data) => {
         if (activeBook && selectedRecipeId && docId === `${activeBook.vaultId}/${selectedRecipeId}`) {
           handlePresence(deviceId, data);
         }
       },
+
       onPurged: async () => {
         if (activeBook) {
           const catalog = docMgr?.get<RecipeCatalog>(catalogDocId());
@@ -441,11 +389,13 @@ async function login(username: string, passphrase: string) {
         }
         logout();
       },
+
       onPasswordChanged: () => {
         clearWrappedKey(userId);
         alert("Password was changed on another device. Please log in with the new passphrase.");
         logout();
       },
+
       onStatusChange: (s) => {
         syncStatus = s;
         updateSyncBadge();
@@ -457,7 +407,6 @@ async function login(username: string, passphrase: string) {
       return store ? store.getLastSeq() : 0;
     });
 
-    // If we have the master key locally, init doc manager before connecting
     if (masterKey) {
       docMgr = await DocumentManager.init(userId, masterKey);
     }
@@ -491,7 +440,7 @@ function logout() {
   appSection.hidden = true;
 }
 
-// ── Event handlers ──
+// -- Event handlers --
 loginForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   await login(usernameInput.value.trim(), passphraseInput.value);
@@ -499,7 +448,7 @@ loginForm.addEventListener("submit", async (e) => {
 
 logoutBtn.addEventListener("click", logout);
 
-// ── Account page ──
+// -- Account page --
 function showAccountPage() {
   if (isDetailOpen()) deselectRecipe();
   accountUsername.textContent = getStoredUsername() ?? "";
@@ -545,13 +494,11 @@ changePwForm.addEventListener("submit", async (e) => {
       deriveKeys(username, newPw),
       deriveUserId(username),
     ]);
-    const { getSessionKeys } = await import("./lib/auth");
     const session = getSessionKeys();
     if (!session) return;
     const newWrapped = await rewrapMasterKey(session.masterKey, newDerived.wrappingKey);
-    const toB64 = (b: Uint8Array) => { let s = ""; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s); };
     updateWrappedKey(userId, newWrapped);
-    syncClient.changePassword(newDerived.authHash, toB64(newWrapped));
+    syncClient.changePassword(newDerived.authHash, toBase64(newWrapped));
     pwSuccess.textContent = "Passphrase changed. Other devices will need the new passphrase.";
     pwSuccess.hidden = false;
     changePwForm.reset();
@@ -577,7 +524,7 @@ purgeForm.addEventListener("submit", (e) => {
   syncClient?.purge();
 });
 
-// ── Recipe list callbacks ──
+// -- Recipe list callbacks --
 initRecipeList({
   onSelect: selectRecipe,
   onAdd: () => {
@@ -590,7 +537,7 @@ initRecipeList({
   onSearch: () => renderCatalog(),
 });
 
-// ── Recipe detail callbacks ──
+// -- Recipe detail callbacks --
 initRecipeDetail({
   onBack: deselectRecipe,
   onPushSnapshot: () => {
@@ -604,11 +551,9 @@ initRecipeDetail({
   onEditRecipe: () => {
     if (!selectedRecipeId || !docMgr || !activeBook) return;
     const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
-    if (!catalog) return;
-    const recipe = catalog.getDoc().recipes.find((r: any) => r.id === selectedRecipeId);
+    const recipe = catalog?.getDoc()?.recipes?.find((r: any) => r.id === selectedRecipeId);
     if (!recipe) return;
 
-    // Pre-fill edit form
     (document.getElementById("edit-title") as HTMLInputElement).value = recipe.title;
     (document.getElementById("edit-tags") as HTMLInputElement).value = recipe.tags.join(", ");
     (document.getElementById("edit-servings") as HTMLInputElement).value = String(recipe.servings);
@@ -633,7 +578,7 @@ initRecipeDetail({
   },
 });
 
-// ── Add recipe dialog ──
+// -- Add recipe dialog --
 addForm.addEventListener("submit", () => {
   const titleInput = document.getElementById("new-title") as HTMLInputElement;
   const tagsInput = document.getElementById("new-tags") as HTMLInputElement;
@@ -667,18 +612,16 @@ addForm.addEventListener("submit", () => {
 
   pushSnapshot(catalogDocId());
 
-  // Reset form
   titleInput.value = "";
   tagsInput.value = "";
   servingsInput.value = "4";
   prepInput.value = "0";
   cookInput.value = "0";
 
-  // Open the new recipe
   selectRecipe(id);
 });
 
-// ── Edit recipe dialog ──
+// -- Edit recipe dialog --
 editForm.addEventListener("submit", () => {
   if (!selectedRecipeId || !docMgr || !activeBook) return;
   const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
@@ -704,7 +647,6 @@ editForm.addEventListener("submit", () => {
 
   pushSnapshot(catalogDocId());
 
-  // Update detail view header
   const meta = [
     servings ? `${servings} servings` : "",
     prepMinutes ? `${prepMinutes}m prep` : "",
@@ -715,7 +657,7 @@ editForm.addEventListener("submit", () => {
   (document.getElementById("recipe-meta") as HTMLElement).textContent = meta;
 });
 
-// ── Book management ──
+// -- Book management --
 bookSelect.addEventListener("change", () => {
   const vaultId = bookSelect.value;
   if (vaultId) switchBook(vaultId);
@@ -738,7 +680,6 @@ function renderBookManageList() {
     btnGroup.style.display = "flex";
     btnGroup.style.gap = "0.25rem";
 
-    // Rename (anyone with edit access)
     if (book.role === "owner" || book.role === "editor") {
       const renameBtn = document.createElement("button");
       renameBtn.className = "outline btn-sm";
@@ -758,7 +699,6 @@ function renderBookManageList() {
       btnGroup.appendChild(renameBtn);
     }
 
-    // Share (owner and editors)
     if (book.role === "owner" || book.role === "editor") {
       const shareBtn = document.createElement("button");
       shareBtn.className = "outline btn-sm";
@@ -767,7 +707,22 @@ function renderBookManageList() {
       btnGroup.appendChild(shareBtn);
     }
 
-    // Delete (owner only)
+    // Export (anyone)
+    const exportBtn = document.createElement("button");
+    exportBtn.className = "outline btn-sm";
+    exportBtn.textContent = "Export";
+    exportBtn.addEventListener("click", () => handleExportBook(book));
+    btnGroup.appendChild(exportBtn);
+
+    // Import (owner/editor)
+    if (book.role === "owner" || book.role === "editor") {
+      const importBtn = document.createElement("button");
+      importBtn.className = "outline btn-sm";
+      importBtn.textContent = "Import";
+      importBtn.addEventListener("click", () => handleImportToBook(book));
+      btnGroup.appendChild(importBtn);
+    }
+
     if (book.role === "owner") {
       const deleteBtn = document.createElement("button");
       deleteBtn.className = "outline btn-sm btn-danger";
@@ -802,6 +757,7 @@ createBookForm.addEventListener("submit", (e) => {
   renderBookManageList();
 });
 
+// -- Share dialog --
 let sharingBook: Book | null = null;
 
 function openShareDialog(book: Book) {
@@ -814,10 +770,82 @@ function openShareDialog(book: Book) {
   syncClient?.listVaultMembers(book.vaultId);
 }
 
-// Handle vault members response
-const origOnVaultMembers = syncClient?.opts?.onVaultMembers;
-// We set onVaultMembers in the SyncClient options, but also need to handle it for the share dialog
-// This is done via the onVaultMembers callback in the sync client opts
+function renderMemberList(members: Array<{ userId: string; role: string; publicKey?: string }>) {
+  shareMemberList.innerHTML = "";
+  if (members.length === 0) {
+    shareMemberList.innerHTML = "<li>No members</li>";
+    return;
+  }
+
+  const currentUserId = getSessionKeys()?.userId;
+  const isOwner = sharingBook?.role === "owner";
+
+  for (const m of members) {
+    const li = document.createElement("li");
+
+    const infoSpan = document.createElement("span");
+    infoSpan.textContent = `${m.userId.slice(0, 12)}... (${m.role})`;
+    li.appendChild(infoSpan);
+
+    const actions = document.createElement("span");
+    actions.style.display = "flex";
+    actions.style.gap = "0.25rem";
+
+    if (isOwner && m.userId !== currentUserId) {
+      // Transfer ownership
+      if (m.role !== "owner") {
+        const transferBtn = document.createElement("button");
+        transferBtn.className = "outline btn-sm";
+        transferBtn.textContent = "Make Owner";
+        transferBtn.addEventListener("click", () => {
+          if (!sharingBook || !syncClient) return;
+          if (confirm(`Transfer ownership of "${sharingBook.name}" to this user? You will become an editor.`)) {
+            syncClient.transferOwnership(sharingBook.vaultId, m.userId);
+            setTimeout(() => syncClient?.listVaultMembers(sharingBook!.vaultId), 500);
+          }
+        });
+        actions.appendChild(transferBtn);
+      }
+
+      // Change role
+      if (m.role === "editor") {
+        const demoteBtn = document.createElement("button");
+        demoteBtn.className = "outline btn-sm";
+        demoteBtn.textContent = "Viewer";
+        demoteBtn.addEventListener("click", () => {
+          if (!sharingBook || !syncClient) return;
+          syncClient.changeRole(sharingBook.vaultId, m.userId, "viewer");
+          setTimeout(() => syncClient?.listVaultMembers(sharingBook!.vaultId), 500);
+        });
+        actions.appendChild(demoteBtn);
+      } else if (m.role === "viewer") {
+        const promoteBtn = document.createElement("button");
+        promoteBtn.className = "outline btn-sm";
+        promoteBtn.textContent = "Editor";
+        promoteBtn.addEventListener("click", () => {
+          if (!sharingBook || !syncClient) return;
+          syncClient.changeRole(sharingBook.vaultId, m.userId, "editor");
+          setTimeout(() => syncClient?.listVaultMembers(sharingBook!.vaultId), 500);
+        });
+        actions.appendChild(promoteBtn);
+      }
+
+      // Remove
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "outline btn-sm btn-danger";
+      removeBtn.textContent = "Remove";
+      removeBtn.addEventListener("click", () => {
+        if (!sharingBook || !syncClient) return;
+        syncClient.removeFromVault(sharingBook.vaultId, m.userId);
+        setTimeout(() => syncClient?.listVaultMembers(sharingBook!.vaultId), 500);
+      });
+      actions.appendChild(removeBtn);
+    }
+
+    li.appendChild(actions);
+    shareMemberList.appendChild(li);
+  }
+}
 
 inviteForm.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -825,39 +853,153 @@ inviteForm.addEventListener("submit", async (e) => {
   inviteSuccess.hidden = true;
 
   if (!sharingBook || !syncClient) return;
-  const usernameInput = document.getElementById("invite-username") as HTMLInputElement;
-  const targetUsername = usernameInput.value.trim();
+  const targetInput = document.getElementById("invite-username") as HTMLInputElement;
+  const targetUsername = targetInput.value.trim();
   if (!targetUsername) return;
 
   try {
     const targetUserId = await deriveUserId(targetUsername);
-    // Look up the target user's public key, then encrypt the book key for them
-    // For now, use a promise-based flow with the lookup callback
-    pendingInvite = { vaultId: sharingBook.vaultId, targetUserId };
-    syncClient.lookupUser(targetUserId);
-    usernameInput.value = "";
+    const { publicKey: targetPublicKey } = await syncClient.lookupUser(targetUserId);
+
+    const privKey = getIdentityPrivateKey();
+    const pubKey = getIdentityPublicKey();
+    if (!privKey || !pubKey || !sharingBook.encKey) {
+      inviteError.textContent = "Missing encryption keys.";
+      inviteError.hidden = false;
+      return;
+    }
+
+    const rawBookKey = new Uint8Array(await crypto.subtle.exportKey("raw", sharingBook.encKey));
+    const targetPubBytes = fromBase64(targetPublicKey);
+
+    // Show fingerprint for verification
+    const fp = await keyFingerprint(targetPubBytes);
+    inviteSuccess.textContent = `Key fingerprint: ${fp}`;
+    inviteSuccess.hidden = false;
+
+    const encryptedForTarget = await encryptBookKeyForUser(privKey, targetPubBytes, rawBookKey);
+    syncClient.inviteToVault(sharingBook.vaultId, targetUserId, toBase64(encryptedForTarget), toBase64(pubKey));
+    inviteSuccess.textContent = `User invited! Key fingerprint: ${fp}`;
+    syncClient.listVaultMembers(sharingBook.vaultId);
+    targetInput.value = "";
   } catch (e: any) {
     inviteError.textContent = e.message ?? "Invite failed";
     inviteError.hidden = false;
   }
 });
 
-let pendingInvite: { vaultId: string; targetUserId: string } | null = null;
+// -- Export --
+async function handleExportBook(book: Book) {
+  if (!docMgr) return;
+  const catalog = docMgr.get<RecipeCatalog>(`${book.vaultId}/catalog`);
+  if (!catalog) {
+    alert("Open this book first before exporting.");
+    return;
+  }
 
-// Service worker + update detection
+  const recipes = catalog.getDoc().recipes ?? [];
+  if (recipes.length === 0) {
+    alert("No recipes to export.");
+    return;
+  }
+
+  try {
+    const blob = await exportBook(book.name, book.vaultId, recipes, docMgr);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${book.name}.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e: any) {
+    alert("Export failed: " + (e.message ?? e));
+  }
+}
+
+// -- Import --
+async function handleImportToBook(book: Book) {
+  if (!docMgr || !syncClient) return;
+
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".zip";
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+
+    try {
+      const parsed = await importFromZip(file);
+      if (parsed.length === 0) {
+        alert("No recipes found in the ZIP file.");
+        return;
+      }
+
+      const catalog = docMgr!.get<RecipeCatalog>(`${book.vaultId}/catalog`);
+      if (!catalog) {
+        alert("Open this book first before importing.");
+        return;
+      }
+
+      for (const { meta, content } of parsed) {
+        const id = crypto.randomUUID();
+        const now = Date.now();
+
+        catalog.change((doc) => {
+          if (!doc.recipes) doc.recipes = [];
+          doc.recipes.push({
+            id,
+            title: meta.title ?? "Imported Recipe",
+            tags: meta.tags ?? [],
+            servings: meta.servings ?? 4,
+            prepMinutes: meta.prepMinutes ?? 0,
+            cookMinutes: meta.cookMinutes ?? 0,
+            createdAt: meta.createdAt ?? now,
+            updatedAt: meta.updatedAt ?? now,
+          });
+        });
+
+        // Create content document
+        const contentDocId = `${book.vaultId}/${id}`;
+        const contentStore = await docMgr!.open<RecipeContent>(contentDocId, (doc) => {
+          doc.description = content.description ?? "";
+          doc.ingredients = (content.ingredients ?? []) as any;
+          doc.instructions = content.instructions ?? "";
+          doc.imageUrls = [];
+          doc.notes = content.notes ?? "";
+        });
+        contentStore.ensureInitialized();
+        pushSnapshot(contentDocId);
+        docMgr!.close(contentDocId);
+      }
+
+      pushSnapshot(`${book.vaultId}/catalog`);
+      renderCatalog();
+      alert(`Imported ${parsed.length} recipe${parsed.length !== 1 ? "s" : ""}.`);
+    } catch (e: any) {
+      alert("Import failed: " + (e.message ?? e));
+    }
+  });
+  input.click();
+}
+
+// -- Service worker + update detection --
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/service-worker.js").catch(console.error);
   navigator.serviceWorker.addEventListener("message", (event) => {
     if (event.data?.type === "update-available") {
       const banner = document.createElement("div");
       banner.className = "update-banner";
-      banner.innerHTML = `A new version is available. <button onclick="location.reload()">Refresh</button>`;
+      banner.textContent = "A new version is available. ";
+      const refreshBtn = document.createElement("button");
+      refreshBtn.textContent = "Refresh";
+      refreshBtn.addEventListener("click", () => location.reload());
+      banner.appendChild(refreshBtn);
       document.body.prepend(banner);
     }
   });
 }
 
-// ── Boot ──
+// -- Boot --
 const savedUsername = getStoredUsername();
 if (savedUsername) usernameInput.value = savedUsername;
 loginSection.hidden = false;

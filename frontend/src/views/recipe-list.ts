@@ -3,6 +3,7 @@
  */
 
 import type { RecipeMeta } from "../types";
+import { escapeHtml } from "../lib/html";
 
 export interface RecipeListCallbacks {
   onSelect: (id: string) => void;
@@ -43,16 +44,19 @@ export function renderRecipeList(recipes: RecipeMeta[], selectedId: string | nul
     const li = document.createElement("li");
     li.dataset.recipeId = recipe.id;
     li.className = recipe.id === selectedId ? "selected" : "";
-    li.innerHTML = `
-      <strong>${escapeHtml(recipe.title)}</strong>
-      <small>${recipe.tags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join(" ")}${recipe.prepMinutes + recipe.cookMinutes > 0 ? ` · ${recipe.prepMinutes + recipe.cookMinutes}m` : ""}</small>
-    `;
+
+    const strong = document.createElement("strong");
+    strong.textContent = recipe.title;
+    li.appendChild(strong);
+
+    const small = document.createElement("small");
+    const tagHtml = recipe.tags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
+    const timeStr = recipe.prepMinutes + recipe.cookMinutes > 0
+      ? ` · ${recipe.prepMinutes + recipe.cookMinutes}m`
+      : "";
+    small.innerHTML = tagHtml + timeStr;
+    li.appendChild(small);
+
     container.appendChild(li);
   }
-}
-
-function escapeHtml(s: string): string {
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
 }

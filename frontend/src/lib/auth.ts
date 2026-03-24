@@ -1,16 +1,18 @@
 /**
- * Auth session management — reusable across projects.
+ * Auth session management.
  *
  * Username + wrapped master key stored in localStorage (encrypted, safe to persist).
  * Passphrase is NEVER stored. Wrapping key + master key held in memory only.
  * Closing the tab = keys gone = must re-enter passphrase.
  */
 
+import { toBase64, fromBase64 } from "./encoding";
+
 const STORAGE_KEY_USERNAME = "e2ee_username";
 const STORAGE_KEY_DEVICE_ID = "e2ee_device_id";
 const STORAGE_KEY_WRAPPED_KEY = "e2ee_wrapped_master_key";
 
-/** In-memory session — destroyed on tab close */
+/** In-memory session -- destroyed on tab close */
 let sessionKeys: {
   authHash: string;
   masterKey: CryptoKey;
@@ -34,16 +36,11 @@ export function getDeviceId(): string {
 export function getStoredWrappedKey(userId: string): Uint8Array | null {
   const b64 = localStorage.getItem(`${STORAGE_KEY_WRAPPED_KEY}_${userId.slice(0, 16)}`);
   if (!b64) return null;
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+  return fromBase64(b64);
 }
 
 export function storeWrappedKey(userId: string, wrapped: Uint8Array): void {
-  let binary = "";
-  for (let i = 0; i < wrapped.length; i++) binary += String.fromCharCode(wrapped[i]);
-  localStorage.setItem(`${STORAGE_KEY_WRAPPED_KEY}_${userId.slice(0, 16)}`, btoa(binary));
+  localStorage.setItem(`${STORAGE_KEY_WRAPPED_KEY}_${userId.slice(0, 16)}`, toBase64(wrapped));
 }
 
 export function clearWrappedKey(userId: string): void {
@@ -74,7 +71,7 @@ export function hasSession(): boolean {
   return sessionKeys !== null;
 }
 
-// ── Identity key storage (in-memory only for private key) ──
+// -- Identity key storage (in-memory only for private key) --
 
 let identityPrivateKey: Uint8Array | null = null;
 let identityPublicKey: Uint8Array | null = null;

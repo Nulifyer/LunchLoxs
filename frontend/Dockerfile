@@ -14,7 +14,7 @@ const coopCoep = {
   "Cross-Origin-Embedder-Policy": "require-corp",
 };
 Bun.serve({
-  port: 5173,
+  port: 5000,
   async fetch(req) {
     const url = new URL(req.url);
     let path = url.pathname === "/" ? "/index.html" : url.pathname;
@@ -24,5 +24,5 @@ Bun.serve({
   },
 });
 EOF
-EXPOSE 5173
+EXPOSE 5000
 CMD ["bun", "run", "serve.ts"]

@@ -1,13 +1,14 @@
 /**
  * Minimal Bun dev server.
- * Serves static files. WebSocket connects directly to backend on :8080.
+ * Serves static files. WebSocket connects directly to backend on :8000.
  */
 const coopCoep = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
 };
 const server = Bun.serve({
-  port: 5173,
+  port: 5000,
+  hostname: "127.0.0.1",
   async fetch(req) {
     const url = new URL(req.url);
     let filePath = url.pathname === "/" ? "/index.html" : url.pathname;

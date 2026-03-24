@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,43 +21,49 @@ func main() {
 	defer cancel()
 
 	databaseURL := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/todos?sslmode=disable")
-	port := getEnv("PORT", "8080")
-	frontendURL := getEnv("FRONTEND_URL", "http://localhost:5173")
+	port := getEnv("PORT", "8000")
+	bindHost := getEnv("BIND_HOST", "127.0.0.1")
+	frontendURL := getEnv("FRONTEND_URL", "http://localhost:5000")
 
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		slog.Error("failed to connect to database", "error", err)
+		os.Exit(1)
 	}
 	defer pool.Close()
 
 	if err := pool.Ping(ctx); err != nil {
-		log.Fatalf("failed to ping database: %v", err)
+		slog.Error("failed to ping database", "error", err)
+		os.Exit(1)
 	}
-	log.Println("connected to database")
+	slog.Info("connected to database")
 
 	queries := db.New(pool)
 	mux := server.NewMux(queries, frontendURL)
 
+	addr := fmt.Sprintf("%s:%s", bindHost, port)
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%s", port),
+		Addr:    addr,
 		Handler: mux,
 	}
 
 	go func() {
-		log.Printf("server listening on :%s", port)
+		slog.Info("server listening", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+			slog.Error("server error", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("shutting down...")
+	slog.Info("shutting down...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("shutdown error: %v", err)
+		slog.Error("shutdown error", "error", err)
+		os.Exit(1)
 	}
 }
 

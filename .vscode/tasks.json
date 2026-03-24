@@ -15,8 +15,9 @@
       "options": {
         "env": {
           "DATABASE_URL": "postgres://postgres:postgres@localhost:5432/todos?sslmode=disable",
-          "PORT": "8080",
-          "FRONTEND_URL": "http://localhost:5173"
+          "PORT": "8000",
+          "FRONTEND_URL": "http://localhost:5000",
+          "BIND_HOST": "127.0.0.1"
         }
       },
       "dependsOn": "infra",

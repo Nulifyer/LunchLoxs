@@ -1,4 +1,17 @@
 services:
+  traefik:
+    image: traefik:v3.3
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.frontend.address=:5000"
+      - "--entrypoints.backend.address=:8000"
+    ports:
+      - "127.0.0.1:5000:5000"
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
   postgres:
     image: postgres:18-alpine
     environment:
@@ -6,7 +19,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: todos
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s
@@ -36,10 +49,14 @@ services:
         condition: service_completed_successfully
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/todos?sslmode=disable
-      PORT: "8080"
-      FRONTEND_URL: http://localhost:5173
-    ports:
-      - "8080:8080"
+      PORT: "8000"
+      FRONTEND_URL: http://localhost:5000
+      BIND_HOST: "0.0.0.0"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`localhost`)"
+      - "traefik.http.routers.backend.entrypoints=backend"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
 
   frontend:
     build:
@@ -47,8 +64,11 @@ services:
       dockerfile: Dockerfile
     depends_on:
       - backend
-    ports:
-      - "5173:5173"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`localhost`)"
+      - "traefik.http.routers.frontend.entrypoints=frontend"
+      - "traefik.http.services.frontend.loadbalancer.server.port=5000"
 
   pgadmin:
     image: dpage/pgadmin4
@@ -58,7 +78,7 @@ services:
       PGADMIN_CONFIG_SERVER_MODE: "False"
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
     ports:
-      - "5050:80"
+      - "127.0.0.1:5050:80"
     depends_on:
       postgres:
         condition: service_healthy

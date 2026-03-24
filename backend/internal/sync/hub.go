@@ -1,13 +1,13 @@
 package sync
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 )
 
 // Hub manages WebSocket clients grouped by user_id with per-document subscriptions.
 type Hub struct {
-	mu   sync.RWMutex
+	mu    sync.RWMutex
 	// user_id -> set of clients (for user-level broadcasts: purge, password change)
 	users map[string]map[*Client]struct{}
 	// user_id -> doc_id -> set of clients (for document-scoped sync)
@@ -28,8 +28,7 @@ func (h *Hub) Register(c *Client) {
 		h.users[c.UserID] = make(map[*Client]struct{})
 	}
 	h.users[c.UserID][c] = struct{}{}
-	log.Printf("hub: registered device %s for user %s (%d devices)",
-		c.DeviceID, c.UserID, len(h.users[c.UserID]))
+	slog.Info("hub: registered device", "device", c.DeviceID, "user", c.UserID, "devices", len(h.users[c.UserID]))
 }
 
 func (h *Hub) Unregister(c *Client) {
@@ -54,7 +53,7 @@ func (h *Hub) Unregister(c *Client) {
 			delete(h.docs, c.UserID)
 		}
 	}
-	log.Printf("hub: unregistered device %s for user %s", c.DeviceID, c.UserID)
+	slog.Info("hub: unregistered device", "device", c.DeviceID, "user", c.UserID)
 }
 
 // Subscribe a client to a specific document.
@@ -100,7 +99,7 @@ func (h *Hub) BroadcastDoc(userID, docID, senderDeviceID string, msg []byte) {
 		select {
 		case c.Send <- msg:
 		default:
-			log.Printf("hub: dropping message for slow client %s", c.DeviceID)
+			slog.Warn("hub: dropping message for slow client", "device", c.DeviceID)
 		}
 	}
 }
@@ -121,7 +120,7 @@ func (h *Hub) Broadcast(userID string, senderDeviceID string, msg []byte) {
 		select {
 		case c.Send <- msg:
 		default:
-			log.Printf("hub: dropping message for slow client %s", c.DeviceID)
+			slog.Warn("hub: dropping message for slow client", "device", c.DeviceID)
 		}
 	}
 }

@@ -9,5 +9,5 @@ RUN go build -o /server ./backend/cmd/server
 
 FROM alpine:3
 COPY --from=build /server /server
-EXPOSE 8080
+EXPOSE 8000
 CMD ["/server"]

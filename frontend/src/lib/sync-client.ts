@@ -1,13 +1,15 @@
 /**
- * E2EE WebSocket sync client with per-document channels — reusable across projects.
+ * E2EE WebSocket sync client with per-document channels.
  *
  * - Connects to a relay server, sends/receives encrypted Automerge snapshots
  * - Supports subscribing to specific documents (per-recipe sync)
  * - Handles reconnection with exponential backoff
  * - Messages processed sequentially to ensure ordering
+ * - Promise-based user lookup for invite flow
  */
 
 import { encrypt, decrypt } from "./crypto";
+import { toBase64, fromBase64 } from "./encoding";
 
 export type SyncStatus = "connecting" | "connected" | "disconnected";
 
@@ -42,14 +44,14 @@ export interface SyncClientOptions {
   onPurged?: () => void;
   onPresence?: (docId: string, deviceId: string, data: any) => void;
   onPasswordChanged?: () => void;
-  // Vault callbacks
   onVaultList?: (vaults: VaultInfo[]) => void;
   onVaultCreated?: (vaultId: string) => void;
   onVaultInvited?: (vaultId: string, encryptedVaultKey: string, role: string) => void;
   onVaultRemoved?: (vaultId: string) => void;
   onVaultDeleted?: (vaultId: string) => void;
   onVaultMembers?: (vaultId: string, members: VaultMemberInfo[]) => void;
-  onUserLookup?: (userId: string, publicKey: string) => void;
+  onOwnershipTransferred?: (vaultId: string, newOwnerUserId: string) => void;
+  onRoleChanged?: (vaultId: string, targetUserId: string, newRole: string) => void;
 }
 
 interface ServerMessage {
@@ -61,15 +63,14 @@ interface ServerMessage {
   latest_seq?: number;
   message?: string;
   presence?: any;
-  // Identity
   public_key?: string;
   wrapped_private_key?: string;
-  // Vault fields
   vault_id?: string;
   vaults?: Array<{ vault_id: string; encrypted_vault_key: string; sender_public_key: string; role: string }>;
   members?: Array<{ user_id: string; role: string; public_key?: string }>;
   encrypted_vault_key?: string;
   role?: string;
+  new_role?: string;
   target_user_id?: string;
   target_public_key?: string;
 }
@@ -83,15 +84,20 @@ export class SyncClient {
   private pendingPushes: Array<{ docId: string; data: Uint8Array }> = [];
   private messageQueue: Promise<void> = Promise.resolve();
   private subscriptions = new Set<string>();
-  /** Stored per-doc last_seq for resubscribe on reconnect */
   private lastSeqs = new Map<string, number>();
   private getLastSeq: (docId: string) => Promise<number> = () => Promise.resolve(0);
+
+  /** Pending user lookup promises keyed by target user ID */
+  private lookupResolvers = new Map<string, {
+    resolve: (result: { userId: string; publicKey: string }) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
   constructor(opts: SyncClientOptions) {
     this.opts = opts;
   }
 
-  /** Set the function to get last seq per document (called on subscribe/reconnect). */
   setLastSeqGetter(fn: (docId: string) => Promise<number>): void {
     this.getLastSeq = fn;
   }
@@ -140,7 +146,6 @@ export class SyncClient {
           publicKey: msg.public_key || undefined,
           wrappedPrivateKey: msg.wrapped_private_key || undefined,
         });
-        // Resubscribe to all documents
         await this.resubscribeAll();
         await this.flushPending();
         break;
@@ -148,7 +153,7 @@ export class SyncClient {
       case "sync":
         if (msg.payload && msg.seq !== undefined && msg.doc_id && this.opts.encKey) {
           try {
-            const encrypted = base64ToBytes(msg.payload);
+            const encrypted = fromBase64(msg.payload);
             const plaintext = await decrypt(encrypted, this.opts.encKey);
             await this.opts.onRemoteChange(msg.doc_id, plaintext, msg.seq);
           } catch (e) {
@@ -224,28 +229,50 @@ export class SyncClient {
         );
         break;
 
-      case "user_lookup":
-        this.opts.onUserLookup?.(msg.target_user_id ?? "", msg.target_public_key ?? "");
+      case "user_lookup": {
+        const targetId = msg.target_user_id ?? "";
+        const pending = this.lookupResolvers.get(targetId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.lookupResolvers.delete(targetId);
+          pending.resolve({ userId: targetId, publicKey: msg.target_public_key ?? "" });
+        }
+        break;
+      }
+
+      case "ownership_transferred":
+        this.opts.onOwnershipTransferred?.(msg.vault_id ?? "", msg.target_user_id ?? "");
+        break;
+
+      case "role_changed":
+        this.opts.onRoleChanged?.(msg.vault_id ?? "", msg.target_user_id ?? "", msg.new_role ?? "");
         break;
 
       case "vault_invite_ok":
       case "vault_member_removed":
+      case "transfer_ok":
+      case "role_change_ok":
         break;
 
       case "error":
         if (msg.message === "auth_failed") {
-          console.error("sync: authentication failed — wrong passphrase?");
+          console.error("sync: authentication failed");
           this.intentionalClose = true;
           this.ws?.close();
           this.opts.onStatusChange("disconnected");
         } else {
           console.error("sync: server error:", msg.message);
+          // Reject any pending lookup that might have caused this
+          for (const [id, pending] of this.lookupResolvers) {
+            clearTimeout(pending.timer);
+            pending.reject(new Error(msg.message ?? "Server error"));
+            this.lookupResolvers.delete(id);
+          }
         }
         break;
     }
   }
 
-  /** Subscribe to a document's changes. */
   async subscribe(docId: string, lastSeq?: number): Promise<void> {
     this.subscriptions.add(docId);
     const seq = lastSeq ?? await this.getLastSeq(docId);
@@ -259,7 +286,6 @@ export class SyncClient {
     }
   }
 
-  /** Unsubscribe from a document. */
   unsubscribe(docId: string): void {
     this.subscriptions.delete(docId);
     this.lastSeqs.delete(docId);
@@ -268,14 +294,13 @@ export class SyncClient {
     }
   }
 
-  /** Push an encrypted snapshot for a specific document. */
   async push(docId: string, snapshot: Uint8Array): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN && this.opts.encKey) {
       const encrypted = await encrypt(snapshot, this.opts.encKey);
       this.ws.send(JSON.stringify({
         type: "push",
         doc_id: docId,
-        payload: bytesToBase64(encrypted),
+        payload: toBase64(encrypted),
       }));
     } else {
       this.pendingPushes.push({ docId, data: snapshot });
@@ -283,19 +308,17 @@ export class SyncClient {
   }
 
   changePassword(newAuthHash: string, wrappedKey: string): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        type: "change_password",
-        new_auth_hash: newAuthHash,
-        wrapped_key: wrappedKey,
-      }));
-    }
+    this.sendMsg({ type: "change_password", new_auth_hash: newAuthHash, wrapped_key: wrappedKey });
   }
 
-  // ── Vault operations ──
+  // -- Vault operations --
 
   setIdentity(publicKey: string, wrappedPrivateKey: string): void {
     this.sendMsg({ type: "set_identity", public_key: publicKey, wrapped_private_key: wrappedPrivateKey });
+  }
+
+  setKey(wrappedKey: string): void {
+    this.sendMsg({ type: "set_key", wrapped_key: wrappedKey });
   }
 
   listVaults(): void {
@@ -322,14 +345,28 @@ export class SyncClient {
     this.sendMsg({ type: "delete_vault", vault_id: vaultId });
   }
 
-  lookupUser(targetUserId: string): void {
-    this.sendMsg({ type: "lookup_user", target_user_id: targetUserId });
+  transferOwnership(vaultId: string, newOwnerUserId: string): void {
+    this.sendMsg({ type: "transfer_ownership", vault_id: vaultId, target_user_id: newOwnerUserId });
   }
 
-  private sendMsg(obj: Record<string, any>): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(obj));
-    }
+  changeRole(vaultId: string, targetUserId: string, newRole: string): void {
+    this.sendMsg({ type: "change_role", vault_id: vaultId, target_user_id: targetUserId, new_role: newRole });
+  }
+
+  /**
+   * Look up a user's public key by their user ID.
+   * Returns a Promise that resolves with the user info or rejects on timeout/error.
+   */
+  lookupUser(targetUserId: string): Promise<{ userId: string; publicKey: string }> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.lookupResolvers.delete(targetUserId);
+        reject(new Error("User lookup timed out"));
+      }, 10000);
+
+      this.lookupResolvers.set(targetUserId, { resolve, reject, timer });
+      this.sendMsg({ type: "lookup_user", target_user_id: targetUserId });
+    });
   }
 
   sendPresence(docId: string, data: any): void {
@@ -339,9 +376,7 @@ export class SyncClient {
   }
 
   purge(): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: "purge" }));
-    }
+    this.sendMsg({ type: "purge" });
   }
 
   disconnect(): void {
@@ -350,7 +385,19 @@ export class SyncClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    // Reject all pending lookups
+    for (const [, pending] of this.lookupResolvers) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Disconnected"));
+    }
+    this.lookupResolvers.clear();
     this.ws?.close();
+  }
+
+  private sendMsg(obj: Record<string, any>): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(obj));
+    }
   }
 
   private async resubscribeAll(): Promise<void> {
@@ -379,17 +426,4 @@ export class SyncClient {
       this.connect();
     }, this.reconnectDelay);
   }
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
-}
-
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
 }

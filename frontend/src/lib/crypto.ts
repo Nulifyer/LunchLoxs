@@ -213,6 +213,8 @@ export async function decryptBookKeyFromUser(
 
 /**
  * Derive a shared AES-256-GCM key from ECDH key agreement.
+ * Uses HKDF to properly derive the encryption key from the shared secret,
+ * preventing related-key attacks (matches Proton Pass model).
  */
 async function deriveSharedKey(privateKeyPkcs8: Uint8Array, publicKeyRaw: Uint8Array): Promise<CryptoKey> {
   const privateKey = await crypto.subtle.importKey(
@@ -229,8 +231,20 @@ async function deriveSharedKey(privateKeyPkcs8: Uint8Array, publicKeyRaw: Uint8A
     { name: "ECDH", public: publicKey },
     privateKey, 256,
   );
-  return crypto.subtle.importKey(
-    "raw", sharedBits, { name: "AES-GCM" }, false, ["encrypt", "decrypt"],
+  const hkdfKey = await crypto.subtle.importKey(
+    "raw", sharedBits, "HKDF", false, ["deriveKey"],
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: new Uint8Array(32),
+      info: new TextEncoder().encode("RecipePWA-vault-key"),
+    },
+    hkdfKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
   );
 }
 
@@ -289,6 +303,17 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
-function bytesToHex(bytes: Uint8Array): string {
+export function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Compute a short fingerprint for a public key (for out-of-band verification).
+ * Returns first 16 hex chars of SHA-256 digest, grouped in 4-char blocks.
+ */
+export async function keyFingerprint(publicKeyRaw: Uint8Array): Promise<string> {
+  const buf = new Uint8Array(publicKeyRaw).buffer as ArrayBuffer;
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  const hex = bytesToHex(new Uint8Array(digest)).slice(0, 16);
+  return hex.match(/.{4}/g)!.join(" ");
 }

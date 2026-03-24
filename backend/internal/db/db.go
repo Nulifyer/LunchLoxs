@@ -2,6 +2,9 @@ package db
 
 import (
 	"context"
+	"crypto/subtle"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -28,11 +31,11 @@ type AuthResult struct {
 
 // VaultInfo represents a vault and the user's access to it.
 type VaultInfo struct {
-	VaultID          string
+	VaultID           string
 	EncryptedVaultKey []byte
-	SenderPublicKey  []byte
-	Role             string
-	CreatedBy        string
+	SenderPublicKey   []byte
+	Role              string
+	CreatedBy         string
 }
 
 // VaultMember represents a member of a vault.
@@ -70,8 +73,10 @@ func (q *Queries) UpsertUser(ctx context.Context, userID, authHash string) (Auth
 		return AuthResult{}, err
 	}
 
+	hashMatch := subtle.ConstantTimeCompare([]byte(existingHash), []byte(authHash)) == 1
+
 	return AuthResult{
-		OK:               existingHash == authHash,
+		OK:               hashMatch,
 		IsNew:            false,
 		WrappedMasterKey: wrappedKey,
 		PublicKey:        publicKey,
@@ -279,14 +284,23 @@ func (q *Queries) IsVaultMember(ctx context.Context, vaultID, userID string) (bo
 
 // DeleteVault deletes a vault and all its members and sync messages.
 func (q *Queries) DeleteVault(ctx context.Context, vaultID string) error {
-	_, err := q.pool.Exec(ctx,
-		`DELETE FROM sync_messages WHERE vault_id = $1`, vaultID,
-	)
+	tx, err := q.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = q.pool.Exec(ctx, `DELETE FROM vaults WHERE vault_id = $1`, vaultID)
-	return err
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `DELETE FROM sync_messages WHERE vault_id = $1`, vaultID)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `DELETE FROM vaults WHERE vault_id = $1`, vaultID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 // LookupUserByID checks if a user_id exists and returns their public key.
@@ -296,16 +310,141 @@ func (q *Queries) LookupUserByID(ctx context.Context, userID string) ([]byte, er
 	return pk, err
 }
 
-// PurgeUser deletes all sync messages, devices, and the user record.
+// PurgeUser deletes all vault memberships, owned empty vaults, sync messages, devices, and the user record.
 func (q *Queries) PurgeUser(ctx context.Context, userID string) error {
-	_, err := q.pool.Exec(ctx, `DELETE FROM sync_messages WHERE user_id = $1`, userID)
+	tx, err := q.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = q.pool.Exec(ctx, `DELETE FROM devices WHERE user_id = $1`, userID)
+	defer tx.Rollback(ctx)
+
+	// Remove user from all vault memberships
+	_, err = tx.Exec(ctx, `DELETE FROM vault_members WHERE user_id = $1`, userID)
 	if err != nil {
 		return err
 	}
-	_, err = q.pool.Exec(ctx, `DELETE FROM users WHERE user_id = $1`, userID)
+
+	// Delete owned vaults that have no remaining members
+	_, err = tx.Exec(ctx,
+		`DELETE FROM vaults
+		 WHERE vault_id IN (
+		   SELECT vault_id FROM vaults
+		   WHERE created_by = $1
+		   AND vault_id NOT IN (SELECT DISTINCT vault_id FROM vault_members WHERE user_id != $1)
+		 )`,
+		userID,
+	)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `DELETE FROM sync_messages WHERE user_id = $1`, userID)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `DELETE FROM devices WHERE user_id = $1`, userID)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `DELETE FROM users WHERE user_id = $1`, userID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// TransferOwnership transfers vault ownership from currentOwner to newOwner.
+func (q *Queries) TransferOwnership(ctx context.Context, vaultID, currentOwnerID, newOwnerID string) error {
+	tx, err := q.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Verify current owner
+	var currentRole string
+	err = tx.QueryRow(ctx,
+		`SELECT role FROM vault_members WHERE vault_id = $1 AND user_id = $2`,
+		vaultID, currentOwnerID,
+	).Scan(&currentRole)
+	if err != nil {
+		return fmt.Errorf("current owner not found: %w", err)
+	}
+	if currentRole != "owner" {
+		return fmt.Errorf("user %s is not the owner", currentOwnerID)
+	}
+
+	// Verify new owner is a member
+	var newRole string
+	err = tx.QueryRow(ctx,
+		`SELECT role FROM vault_members WHERE vault_id = $1 AND user_id = $2`,
+		vaultID, newOwnerID,
+	).Scan(&newRole)
+	if err != nil {
+		return fmt.Errorf("new owner is not a member: %w", err)
+	}
+
+	// Demote current owner to editor
+	_, err = tx.Exec(ctx,
+		`UPDATE vault_members SET role = 'editor' WHERE vault_id = $1 AND user_id = $2`,
+		vaultID, currentOwnerID,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Promote new owner
+	_, err = tx.Exec(ctx,
+		`UPDATE vault_members SET role = 'owner' WHERE vault_id = $1 AND user_id = $2`,
+		vaultID, newOwnerID,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Update vaults.created_by
+	_, err = tx.Exec(ctx,
+		`UPDATE vaults SET created_by = $2 WHERE vault_id = $1`,
+		vaultID, newOwnerID,
+	)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// ChangeRole updates a vault member's role.
+func (q *Queries) ChangeRole(ctx context.Context, vaultID, targetUserID, newRole string) error {
+	_, err := q.pool.Exec(ctx,
+		`UPDATE vault_members SET role = $3 WHERE vault_id = $1 AND user_id = $2`,
+		vaultID, targetUserID, newRole,
+	)
 	return err
 }
+
+// CountVaultOwners returns the number of owners in a vault.
+func (q *Queries) CountVaultOwners(ctx context.Context, vaultID string) (int, error) {
+	var count int
+	err := q.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM vault_members WHERE vault_id = $1 AND role = 'owner'`,
+		vaultID,
+	).Scan(&count)
+	return count, err
+}
+
+// GetVaultOwner returns the user_id of an owner of the vault.
+func (q *Queries) GetVaultOwner(ctx context.Context, vaultID string) (string, error) {
+	var ownerID string
+	err := q.pool.QueryRow(ctx,
+		`SELECT user_id FROM vault_members WHERE vault_id = $1 AND role = 'owner' LIMIT 1`,
+		vaultID,
+	).Scan(&ownerID)
+	return ownerID, err
+}
+
+// Ensure slog is used (compile-time check).
+var _ = slog.Info

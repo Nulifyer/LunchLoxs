@@ -2,15 +2,22 @@
 declare const self: ServiceWorkerGlobalScope;
 
 const CACHE_NAME = "recipes-v1";
-const STATIC_ASSETS = ["/", "/index.html", "/index.js", "/app.css"];
-const VERSION_CHECK_INTERVAL = 60 * 1000; // check every 60s
+const VERSION_CHECK_INTERVAL = 60 * 1000;
 
 let knownVersion: string | null = null;
 
-// Install -- pre-cache shell
+// Install -- pre-cache shell using the generated asset manifest
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
+    fetch("/asset-manifest.json")
+      .then((res) => res.json())
+      .then((manifest: { assets: string[] }) =>
+        caches.open(CACHE_NAME).then((cache) => cache.addAll(manifest.assets))
+      )
+      .catch(() =>
+        // Fallback to known static assets if manifest fails
+        caches.open(CACHE_NAME).then((cache) => cache.addAll(["/", "/index.html", "/index.js", "/app.css"]))
+      )
   );
   self.skipWaiting();
 });
@@ -33,8 +40,8 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // Never cache version.json
-  if (url.pathname === "/version.json") return;
+  // Never cache version.json or asset-manifest.json
+  if (url.pathname === "/version.json" || url.pathname === "/asset-manifest.json") return;
 
   event.respondWith(
     caches.match(request).then((cached) => {
@@ -50,14 +57,12 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
-// Listen for manual update check from the page
 self.addEventListener("message", (event) => {
   if (event.data === "check-update") {
     checkForUpdate();
   }
 });
 
-// Periodically check for new version
 function startVersionCheck() {
   checkForUpdate();
   setInterval(checkForUpdate, VERSION_CHECK_INTERVAL);
@@ -70,28 +75,33 @@ async function checkForUpdate() {
     const { version } = await res.json();
 
     if (knownVersion === null) {
-      // First check -- just record the version
       knownVersion = version;
       return;
     }
 
     if (version !== knownVersion) {
       knownVersion = version;
-      // Clear cache and notify all clients
       const keys = await caches.keys();
       await Promise.all(keys.map((k) => caches.delete(k)));
-      // Re-cache new assets
-      const cache = await caches.open(CACHE_NAME);
-      await cache.addAll(STATIC_ASSETS);
 
-      // Notify all open tabs
+      // Re-cache from manifest
+      try {
+        const manifestRes = await fetch("/asset-manifest.json", { cache: "no-store" });
+        const manifest = await manifestRes.json();
+        const cache = await caches.open(CACHE_NAME);
+        await cache.addAll(manifest.assets);
+      } catch {
+        const cache = await caches.open(CACHE_NAME);
+        await cache.addAll(["/", "/index.html", "/index.js", "/app.css"]);
+      }
+
       const clients = await self.clients.matchAll({ type: "window" });
       for (const client of clients) {
         client.postMessage({ type: "update-available", version });
       }
     }
   } catch {
-    // Offline or fetch failed -- ignore
+    // Offline or fetch failed
   }
 }
 

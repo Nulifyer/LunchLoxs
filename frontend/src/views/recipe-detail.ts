@@ -6,13 +6,15 @@ import type { RecipeContent } from "../types";
 import { AutomergeStore } from "../lib/automerge-store";
 import { createAutomergeMirror } from "../lib/codemirror-automerge";
 import { remoteCursorsExtension, updateRemoteCursors, shortDeviceName, type RemoteCursor } from "../lib/remote-cursors";
+import { escapeHtml, escapeAttr } from "../lib/html";
 import { EditorView, keymap, drawSelection, highlightActiveLine } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 
-// ── DOM refs ──
+// -- DOM refs --
 const detailView = document.getElementById("recipe-detail") as HTMLElement;
 const emptyState = document.getElementById("empty-state") as HTMLElement;
 const backBtn = document.getElementById("back-btn") as HTMLButtonElement;
@@ -34,7 +36,7 @@ const instrPreviewContainer = document.getElementById("preview-container") as HT
 const notesEditorContainer = document.getElementById("notes-editor-container") as HTMLElement;
 const notesPreviewContainer = document.getElementById("notes-preview-container") as HTMLElement;
 
-// ── State ──
+// -- State --
 let store: AutomergeStore<RecipeContent> | null = null;
 let instrEditorView: EditorView | null = null;
 let instrBridge: ReturnType<typeof createAutomergeMirror> | null = null;
@@ -60,10 +62,8 @@ export function initRecipeDetail(cb: DetailCallbacks) {
   onPushSnapshot = cb.onPushSnapshot;
   onSendPresence = cb.onSendPresence;
 
-  // Page-level edit toggle
   pageEditBtn.addEventListener("click", () => setPageEditing(!pageEditing));
 
-  // Click on preview while editing to focus the editor
   instrPreviewContainer.addEventListener("click", () => {
     if (pageEditing) instrEditorView?.focus();
   });
@@ -71,7 +71,6 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     if (pageEditing) notesEditorView?.focus();
   });
 
-  // Ingredient add form toggle
   addIngredientBtn.addEventListener("click", () => {
     if (!pageEditing) setPageEditing(true);
     const showing = ingredientForm.classList.contains("open");
@@ -79,7 +78,6 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     if (!showing) ingItemInput.focus();
   });
 
-  // Add ingredient
   ingredientForm.addEventListener("submit", (e) => {
     e.preventDefault();
     if (!store) return;
@@ -96,7 +94,6 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     onPushSnapshot?.();
   });
 
-  // Delete ingredient
   ingredientsList.addEventListener("click", (e) => {
     const btn = (e.target as HTMLElement).closest("[data-delete-ing]") as HTMLElement;
     if (!btn || !store) return;
@@ -109,7 +106,6 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     onPushSnapshot?.();
   });
 
-  // Inline edit ingredient fields
   ingredientsList.addEventListener("input", (e) => {
     const input = e.target as HTMLInputElement;
     if (!input.dataset.ingIdx || !input.dataset.ingField || !store) return;
@@ -136,7 +132,6 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
 
   const doc = store.getDoc();
 
-  // Create instruction editor + bridge
   const iBridge = createAutomergeMirror<RecipeContent>({
     getDoc: () => store!.getDoc(),
     getText: (d) => d.instructions ?? "",
@@ -165,7 +160,6 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
     parent: instrEditorContainer,
   });
 
-  // Create notes editor + bridge
   const nBridge = createAutomergeMirror<RecipeContent>({
     getDoc: () => store!.getDoc(),
     getText: (d) => d.notes ?? "",
@@ -188,10 +182,8 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
     parent: notesEditorContainer,
   });
 
-  // Default to preview
   setPageEditing(false);
 
-  // Listen for remote changes
   store.onChange((doc) => {
     renderIngredients(doc);
     if (pageEditing) {
@@ -245,14 +237,13 @@ export function isOpen(): boolean {
   return store !== null;
 }
 
-// ── Page-level edit/preview toggle ──
+// -- Page-level edit/preview toggle --
 
 function setPageEditing(editing: boolean) {
   pageEditing = editing;
   detailView.classList.toggle("editing", editing);
   pageEditBtn.textContent = editing ? "Done" : "Edit";
 
-  // Edit-only elements
   addIngredientBtn.hidden = !editing;
   deleteRecipeBtn.hidden = !editing;
   editRecipeBtn.hidden = !editing;
@@ -260,7 +251,6 @@ function setPageEditing(editing: boolean) {
     ingredientForm.classList.remove("open");
   }
 
-  // Instructions
   instrEditorContainer.hidden = !editing;
   instrPreviewContainer.hidden = editing;
   if (editing) {
@@ -269,18 +259,16 @@ function setPageEditing(editing: boolean) {
     renderPreviews();
   }
 
-  // Notes
   notesEditorContainer.hidden = !editing;
   notesPreviewContainer.hidden = editing;
   if (editing) {
     notesBridge?.applyRemoteText();
   }
 
-  // Ingredients render mode
   renderIngredients(store?.getDoc() ?? { description: "", ingredients: [], instructions: "", imageUrls: [], notes: "" });
 }
 
-// ── Render ──
+// -- Render --
 
 function renderIngredients(doc: RecipeContent) {
   const ingredients = doc.ingredients ?? [];
@@ -292,7 +280,6 @@ function renderIngredients(doc: RecipeContent) {
   }
 
   if (pageEditing) {
-    // Editable inputs
     const focused = document.activeElement as HTMLInputElement | null;
     const focusKey = focused?.dataset.ingIdx && focused?.dataset.ingField
       ? `${focused.dataset.ingIdx}:${focused.dataset.ingField}` : null;
@@ -313,7 +300,6 @@ function renderIngredients(doc: RecipeContent) {
       if (el) { el.focus(); el.setSelectionRange(focusPos, focusPos); }
     }
   } else {
-    // Read-only display
     ingredientsList.innerHTML = ingredients
       .map((ing) => `<li>
         <span class="ing-qty">${escapeHtml(ing.quantity)}</span>
@@ -328,17 +314,9 @@ function renderPreviews() {
   if (!store) return;
   const doc = store.getDoc();
   const instrMd = doc.instructions ?? "";
-  instrPreviewContainer.innerHTML = (marked.parse(instrMd) as string) || "<em>No instructions yet.</em>";
+  const instrHtml = DOMPurify.sanitize(marked.parse(instrMd) as string);
+  instrPreviewContainer.innerHTML = instrHtml || "<em>No instructions yet.</em>";
   const notesMd = doc.notes ?? "";
-  notesPreviewContainer.innerHTML = (marked.parse(notesMd) as string) || "<em>No notes yet.</em>";
-}
-
-function escapeHtml(s: string): string {
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-function escapeAttr(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  const notesHtml = DOMPurify.sanitize(marked.parse(notesMd) as string);
+  notesPreviewContainer.innerHTML = notesHtml || "<em>No notes yet.</em>";
 }

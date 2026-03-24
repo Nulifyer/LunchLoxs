@@ -1,6 +1,11 @@
 .PHONY: build-backend build-frontend dev-backend dev-frontend migrate-up migrate-down migrate-create dev
 
 # Backend
+# Env defaults (set in shell or .env):
+#   DATABASE_URL=postgres://postgres:postgres@localhost:5432/todos?sslmode=disable
+#   PORT=8000
+#   FRONTEND_URL=http://localhost:5000
+#   BIND_HOST=127.0.0.1
 build-backend:
 	go build -o backend/bin/server ./backend/cmd/server
 
