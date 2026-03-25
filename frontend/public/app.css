@@ -486,10 +486,13 @@ dialog label + select {
   color: var(--bg);
 }
 
-.sidebar-list li.selected small,
-.sidebar-list li.selected .tag {
+.sidebar-list li.selected small {
   color: inherit;
-  opacity: 0.8;
+}
+
+.sidebar-list li.selected .tag {
+  color: var(--accent);
+  background: var(--bg);
 }
 
 .sidebar-list li strong {
@@ -509,7 +512,6 @@ dialog label + select {
   border-radius: 3px;
   font-size: 0.65rem;
   color: var(--text);
-  opacity: 0.85;
 }
 
 .sidebar-footer {

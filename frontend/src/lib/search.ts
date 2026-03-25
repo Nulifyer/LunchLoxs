@@ -78,16 +78,25 @@ function fzfScore(pattern: string, text: string): number {
     }
   }
 
+  // Reject if the match span is too spread out
+  const matchSpan = endIdx - startIdx;
+  const maxSpan = pLen * 8;  // Allow up to 8x the pattern length
+  if (matchSpan > maxSpan) return 0;
+
   // Score the match region
   let score = 0;
   let consecutive = 0;
   let firstBonus = 0;
+  let gapLen = 0;
+  const maxGap = 16;  // Max characters between two consecutive matched chars
   let prevClass = startIdx > 0 ? charClass(text[startIdx - 1]) : CH_WHITE;
   pi = 0;
 
   for (let ti = startIdx; ti < endIdx && pi < pLen; ti++) {
     const curClass = charClass(text[ti]);
     if (text[ti].toLowerCase() === pattern[pi]) {
+      if (pi > 0 && gapLen > maxGap) return 0;  // Single gap too large
+      gapLen = 0;
       const bonus = bonusFor(prevClass, curClass);
       score += SCORE_MATCH;
 
@@ -112,6 +121,7 @@ function fzfScore(pattern: string, text: string): number {
       pi++;
     } else {
       // Gap
+      gapLen++;
       if (consecutive > 0) {
         score += SCORE_GAP_START;
         consecutive = 0;
