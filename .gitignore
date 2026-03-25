@@ -31,7 +31,6 @@ Thumbs.db
 *.dylib
 
 # Bun
-bun.lockb
 
 # Podman/Docker
 pgdata/
