@@ -175,44 +175,71 @@ export interface SearchResult {
 }
 
 /**
+ * Score a single token against all fields of an entry.
+ * Returns the best weighted score, matched field, and optional tag.
+ */
+function scoreToken(token: string, entry: SearchEntry): { score: number; field: SearchResult["matchField"]; tag?: string } {
+  let best = 0;
+  let field: SearchResult["matchField"] = "title";
+  let tag: string | undefined;
+
+  const titleScore = fzfScore(token, entry.title) * 4;
+  if (titleScore > best) { best = titleScore; field = "title"; }
+
+  for (const t of entry.tags) {
+    const s = fzfScore(token, t) * 3;
+    if (s > best) { best = s; field = "tag"; tag = t; }
+  }
+
+  const bookScore = fzfScore(token, entry.bookName);
+  if (bookScore > best) { best = bookScore; field = "book"; }
+
+  return { score: best, field, tag };
+}
+
+/**
  * Search across all indexed recipes using fzf-style fuzzy matching.
- * Searches: title, tags, book name.
+ * Multi-word queries score each word independently and sum results,
+ * so "plant-based fry" matches tag "plant-based" + title "stir-fry".
  */
 export function search(query: string, limit = 15): SearchResult[] {
   if (!query) return [];
-  const q = query.toLowerCase();
+  const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return [];
   const results: SearchResult[] = [];
 
+  // Score the full query as a single phrase for multi-word bonus
+  const fullQuery = tokens.join(" ");
+  const isMultiWord = tokens.length > 1;
+
   for (const entry of index.values()) {
-    let bestScore = 0;
-    let matchField: SearchResult["matchField"] = "title";
+    let totalScore = 0;
+    let bestField: SearchResult["matchField"] = "title";
+    let bestFieldScore = 0;
     let matchTag: string | undefined;
 
-    // Title (highest priority via weight)
-    const titleScore = fzfScore(q, entry.title);
-    if (titleScore > 0 && titleScore * 4 > bestScore) {
-      bestScore = titleScore * 4;
-      matchField = "title";
-    }
-
-    // Tags
-    for (const tag of entry.tags) {
-      const tagScore = fzfScore(q, tag);
-      if (tagScore > 0 && tagScore * 3 > bestScore) {
-        bestScore = tagScore * 3;
-        matchField = "tag";
+    // Per-token scoring (cross-field)
+    for (const token of tokens) {
+      const { score, field, tag } = scoreToken(token, entry);
+      totalScore += score;
+      if (score > bestFieldScore) {
+        bestFieldScore = score;
+        bestField = field;
         matchTag = tag;
       }
     }
 
-    // Book name
-    const bookScore = fzfScore(q, entry.bookName);
-    if (bookScore > 0 && bookScore > bestScore) {
-      bestScore = bookScore;
-      matchField = "book";
+    // Full phrase bonus: if the entire query matches a single field, boost it
+    if (isMultiWord && totalScore > 0) {
+      const { score: phraseScore, field, tag } = scoreToken(fullQuery, entry);
+      if (phraseScore > 0) {
+        totalScore += phraseScore;
+        bestField = field;
+        matchTag = tag;
+      }
     }
 
-    if (bestScore > 0) results.push({ entry, score: bestScore, matchField, matchTag });
+    if (totalScore > 0) results.push({ entry, score: totalScore, matchField: bestField, matchTag });
   }
 
   results.sort((a, b) => b.score - a.score);
