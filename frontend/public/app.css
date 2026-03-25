@@ -169,6 +169,17 @@ button.ghost:hover {
   background: var(--bg-hover);
 }
 
+.btn-spinner {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  vertical-align: middle;
+}
+
 button.sm {
   padding: 0.2rem 0.5rem;
   font-size: 0.75rem;
@@ -295,21 +306,50 @@ dialog label + select {
   position: relative;
 }
 
-.topbar-search input[type="search"] {
-  width: 100%;
-  margin: 0;
-  padding-left: 2rem;
-  background: var(--bg);
+/* -- Input wrapper: icon + input + trailing elements in a single box -- */
+.input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 0.6rem;
+  transition: border-color 0.15s;
 }
 
-.topbar-search .search-icon {
-  position: absolute;
-  left: 0.6rem;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--muted);
+.input-wrap:focus-within {
+  border-color: var(--accent);
+}
+
+.input-wrap input {
+  border: none !important;
+  background: none !important;
+  padding: 0.4rem 0 !important;
+  flex: 1;
+  min-width: 0;
+}
+
+.input-wrap input:focus {
+  outline: none;
+  border: none !important;
+}
+
+.input-icon {
   font-size: 0.8rem;
-  pointer-events: none;
+  color: var(--muted);
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.input-spinner {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: conic-gradient(var(--accent) calc(var(--progress, 0) * 1%), var(--border) 0%);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
 }
 
 .search-results {
@@ -329,17 +369,6 @@ dialog label + select {
 
 .search-results.open { display: block; }
 
-.search-book-header {
-  padding: 0.3rem 0.75rem;
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: var(--subtle);
-  background: var(--bg-hover);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  border-bottom: 1px solid var(--border);
-}
-
 .search-result-item {
   padding: 0.4rem 0.75rem;
   cursor: pointer;
@@ -352,6 +381,21 @@ dialog label + select {
 .search-result-title {
   font-size: 0.85rem;
   font-weight: 500;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.search-result-book {
+  font-size: 0.65rem;
+  font-weight: 400;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.search-result-book::before {
+  content: "\00b7";
+  margin-right: 0.1rem;
 }
 
 .search-result-snippet {
@@ -451,15 +495,24 @@ dialog label + select {
 .sidebar-header {
   padding: 0.75rem;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 0.4rem;
   border-bottom: 1px solid var(--border);
 }
 
 .sidebar-header select {
-  flex: 1;
+  width: 100%;
   font-size: 0.8rem;
   padding: 0.3rem 1.5rem 0.3rem 0.5rem;
+}
+
+.sidebar-header-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.sidebar-header-actions button {
+  flex: 1;
 }
 
 .sidebar-list {
@@ -593,8 +646,36 @@ dialog label + select {
 }
 
 .login-card h2 { margin-bottom: 0.25rem; }
+
+.login-tabs {
+  display: flex;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.login-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--subtle);
+  cursor: pointer;
+  border-radius: 0;
+}
+
+.login-tab:hover { color: var(--text); }
+.login-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
 .login-card p { color: var(--subtle); margin-bottom: 1.25rem; }
-.login-card label + input { margin-bottom: 0.75rem; }
+.login-card form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
 .login-card button[type="submit"] { width: 100%; margin-top: 0.5rem; }
 
 /* ============================================================
@@ -968,6 +1049,36 @@ input.ing-edit.ing-text { flex: 1; }
   margin: 0;
   line-height: 1.5;
 }
+
+/* -- Loading overlay -- */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(2px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.loading-text {
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* -- Utility -- */
 .sr-only {

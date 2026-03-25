@@ -15,13 +15,30 @@
     <div class="login-card">
       <h2>Recipes</h2>
       <p><small>End-to-end encrypted. Your data stays yours.</small></p>
+
+      <div class="login-tabs">
+        <button id="tab-login" class="login-tab active" type="button">Login</button>
+        <button id="tab-signup" class="login-tab" type="button">Sign Up</button>
+      </div>
+
       <form id="login-form">
-        <label for="username-input">Username</label>
-        <input type="text" id="username-input" required autocomplete="username" />
-        <label for="passphrase-input">Passphrase</label>
-        <input type="password" id="passphrase-input" required autocomplete="current-password" />
-        <button type="submit" id="login-btn">Login / Sign Up</button>
+        <label for="login-username">Username</label>
+        <input type="text" id="login-username" name="username" required autocomplete="username" />
+        <label for="login-password">Password</label>
+        <input type="password" id="login-password" name="password" required autocomplete="current-password" />
+        <button type="submit" id="login-btn">Login</button>
         <p id="login-error" class="alert-error" role="alert" hidden></p>
+      </form>
+
+      <form id="signup-form" hidden>
+        <label for="signup-username">Username</label>
+        <input type="text" id="signup-username" name="username" required autocomplete="username" />
+        <label for="signup-password">Password</label>
+        <input type="password" id="signup-password" name="new-password" required autocomplete="new-password" />
+        <label for="signup-confirm">Confirm Password</label>
+        <input type="password" id="signup-confirm" name="new-password-confirm" required autocomplete="new-password" />
+        <button type="submit" id="signup-btn">Sign Up</button>
+        <p id="signup-error" class="alert-error" role="alert" hidden></p>
       </form>
     </div>
   </div>
@@ -33,8 +50,11 @@
       <span class="topbar-brand">Recipes</span>
 
       <div class="topbar-search">
-        <span class="search-icon">&#128269;</span>
-        <input type="search" id="search-input" placeholder="Search recipes..." aria-label="Search recipes" />
+        <div class="input-wrap">
+          <span class="input-icon">&#128269;</span>
+          <input type="search" id="search-input" placeholder="Search recipes..." aria-label="Search recipes" />
+          <span id="search-indexing" class="input-spinner" hidden title="Indexing recipes..."></span>
+        </div>
         <ul id="search-results" class="search-results" role="listbox"></ul>
       </div>
 
@@ -57,8 +77,10 @@
         <div class="sidebar-header">
           <label for="book-select" class="sr-only">Select book</label>
           <select id="book-select" aria-label="Select recipe book"></select>
-          <button id="manage-books-btn" class="sm" title="Manage books" aria-label="Manage books">...</button>
-          <button id="add-recipe-btn" class="sm" aria-label="Add new recipe">+</button>
+          <div class="sidebar-header-actions">
+            <button id="manage-books-btn" class="sm">Manage</button>
+            <button id="add-recipe-btn" class="sm">Recipe +</button>
+          </div>
         </div>
         <ul id="recipe-list" class="sidebar-list" role="listbox" aria-label="Recipe list"></ul>
         <div class="sidebar-footer">
@@ -90,13 +112,13 @@
           </article>
 
           <article>
-            <header>Change Passphrase</header>
+            <header>Change Password</header>
             <form id="change-pw-form">
-              <label for="new-pw">New passphrase</label>
+              <label for="new-pw">New password</label>
               <input type="password" id="new-pw" required />
-              <label for="confirm-pw">Confirm passphrase</label>
+              <label for="confirm-pw">Confirm password</label>
               <input type="password" id="confirm-pw" required />
-              <button type="submit">Change Passphrase</button>
+              <button type="submit">Change Password</button>
             </form>
             <p id="pw-change-error" class="alert-error" role="alert" hidden></p>
             <p id="pw-change-success" class="alert-success" role="alert" hidden></p>

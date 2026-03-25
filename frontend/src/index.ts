@@ -25,6 +25,7 @@ import { toastSuccess, toastError, toastWarning, toastInfo } from "./lib/toast";
 import { showAlert, showConfirm, showPrompt } from "./lib/dialogs";
 import { createDropdown } from "./lib/dropdown";
 import { openModal, closeModal } from "./lib/modal";
+import { showLoading } from "./lib/spinner";
 import type { RecipeCatalog, RecipeContent, RecipeMeta, Book } from "./types";
 
 // -- State --
@@ -44,9 +45,14 @@ const loginSection = document.getElementById("login-section") as HTMLElement;
 const appSection = document.getElementById("app-section") as HTMLElement;
 const appShell = document.getElementById("app-shell") as HTMLElement;
 const loginForm = document.getElementById("login-form") as HTMLFormElement;
-const usernameInput = document.getElementById("username-input") as HTMLInputElement;
-const passphraseInput = document.getElementById("passphrase-input") as HTMLInputElement;
+const signupForm = document.getElementById("signup-form") as HTMLFormElement;
+const loginUsernameInput = document.getElementById("login-username") as HTMLInputElement;
+const loginPasswordInput = document.getElementById("login-password") as HTMLInputElement;
+const signupUsernameInput = document.getElementById("signup-username") as HTMLInputElement;
+const signupPasswordInput = document.getElementById("signup-password") as HTMLInputElement;
+const signupConfirmInput = document.getElementById("signup-confirm") as HTMLInputElement;
 const loginError = document.getElementById("login-error") as HTMLElement;
+const signupError = document.getElementById("signup-error") as HTMLElement;
 const loginBtn = document.getElementById("login-btn") as HTMLButtonElement;
 const logoutBtn = document.getElementById("logout-btn") as HTMLButtonElement;
 const accountPage = document.getElementById("account-page") as HTMLElement;
@@ -140,11 +146,13 @@ function writeSelfToCatalog(vaultId: string) {
 /** Background-index all recipe content for deep search. Yields between each recipe. */
 let indexAbort: AbortController | null = null;
 
+const searchIndexingEl = document.getElementById("search-indexing") as HTMLElement;
+
 async function backgroundIndexAllContent() {
-  // Cancel any previous run
   if (indexAbort) indexAbort.abort();
   indexAbort = new AbortController();
   const signal = indexAbort.signal;
+  searchIndexingEl.hidden = false;
 
   const queue: Array<{ vaultId: string; recipeId: string }> = [];
   for (const book of books) {
@@ -157,9 +165,10 @@ async function backgroundIndexAllContent() {
   }
 
   log("[search] background indexing", queue.length, "recipes");
+  let indexed = 0;
 
   for (const { vaultId, recipeId } of queue) {
-    if (signal.aborted || !docMgr) return;
+    if (signal.aborted || !docMgr) { searchIndexingEl.hidden = true; return; }
 
     const contentDocId = `${vaultId}/${recipeId}`;
     let needsClose = false;
@@ -177,11 +186,13 @@ async function backgroundIndexAllContent() {
 
     // Wait for sync to deliver content (one tick)
     await new Promise((r) => setTimeout(r, 100));
-    if (signal.aborted) { if (needsClose) docMgr.close(contentDocId); return; }
+    if (signal.aborted) { if (needsClose) docMgr.close(contentDocId); searchIndexingEl.hidden = true; return; }
 
     const doc = store.getDoc();
     const ingText = (doc.ingredients ?? []).map((i: any) => `${i.quantity} ${i.unit} ${i.item}`).join(" ");
     indexRecipeContent(vaultId, recipeId, ingText, doc.instructions ?? "");
+    indexed++;
+    searchIndexingEl.style.setProperty("--progress", String(Math.round((indexed / queue.length) * 100)));
 
     if (needsClose) {
       if (syncClient) syncClient.unsubscribe(contentDocId);
@@ -192,6 +203,7 @@ async function backgroundIndexAllContent() {
     await new Promise((r) => typeof requestIdleCallback !== "undefined" ? requestIdleCallback(() => r(undefined)) : setTimeout(r, 10));
   }
 
+  searchIndexingEl.hidden = true;
   log("[search] background indexing complete, index size:", getIndexSize());
 }
 
@@ -283,7 +295,8 @@ function renderBookSelect() {
   const addRecipeBtn = document.getElementById("add-recipe-btn") as HTMLButtonElement;
   addRecipeBtn.disabled = !activeBook;
   bookSelect.innerHTML = "";
-  for (const book of books) {
+  const sortedBooks = [...books].sort((a, b) => a.name.localeCompare(b.name));
+  for (const book of sortedBooks) {
     const opt = document.createElement("option");
     opt.value = book.vaultId;
     opt.textContent = book.name + (book.role === "owner" ? "" : ` (${book.role})`);
@@ -445,10 +458,34 @@ function deselectRecipe() {
 }
 
 // -- Login --
+function resetLoginForm() {
+  loginBtn.disabled = false;
+  loginBtn.textContent = "Login";
+  (document.getElementById("signup-btn") as HTMLButtonElement).disabled = false;
+  (document.getElementById("signup-btn") as HTMLButtonElement).textContent = "Sign Up";
+  loginUsernameInput.disabled = false;
+  loginPasswordInput.disabled = false;
+  signupUsernameInput.disabled = false;
+  signupPasswordInput.disabled = false;
+  signupConfirmInput.disabled = false;
+  tabLogin.disabled = false;
+  tabSignup.disabled = false;
+}
+
 async function login(username: string, passphrase: string) {
   log("[login] starting for", username);
+  // Disable all login/signup inputs during auth
   loginBtn.disabled = true;
-  loginBtn.textContent = "Deriving keys...";
+  (document.getElementById("signup-btn") as HTMLButtonElement).disabled = true;
+  loginUsernameInput.disabled = true;
+  loginPasswordInput.disabled = true;
+  signupUsernameInput.disabled = true;
+  signupPasswordInput.disabled = true;
+  signupConfirmInput.disabled = true;
+  tabLogin.disabled = true;
+  tabSignup.disabled = true;
+  const activeBtn = isSignup ? document.getElementById("signup-btn") as HTMLButtonElement : loginBtn;
+  activeBtn.innerHTML = '<span class="btn-spinner"></span> Authenticating...';
   loginError.hidden = true;
   try {
     log("[login] deriving keys...");
@@ -468,7 +505,7 @@ async function login(username: string, passphrase: string) {
     const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProtocol}//${location.hostname}:8000/ws`;
     syncClient = new SyncClient({
-      url: wsUrl, userId, deviceId: getDeviceId(), authHash: derived.authHash,
+      url: wsUrl, userId, deviceId: getDeviceId(), authHash: derived.authHash, isSignup,
       encKey: masterKey as any, wrappedKey: wrappedMasterKey ? toBase64(wrappedMasterKey) : undefined,
       getDocKey: (docId: string) => {
         // Vault-scoped docs (format: vaultId/subDoc) use the vault's book key
@@ -517,6 +554,19 @@ async function login(username: string, passphrase: string) {
           log("[ws] generated new signing keys");
         }
         if (!docMgr) { docMgr = await DocumentManager.init(userId, masterKey!); log("[ws] docMgr initialized"); }
+
+        // Auth succeeded -- switch to app UI
+        log("[login] auth success, switching to app view");
+        loginPasswordInput.value = "";
+        signupPasswordInput.value = "";
+        signupConfirmInput.value = "";
+        loginSection.hidden = true;
+        appSection.hidden = false;
+        resetLoginForm();
+        profileBtn.textContent = username.charAt(0).toUpperCase();
+        profileUsername.textContent = username;
+        renderBookSelect();
+
         syncClient!.listVaults();
       },
       onVaultList: async (vaultInfos: VaultInfo[]) => {
@@ -612,8 +662,24 @@ async function login(username: string, passphrase: string) {
       },
       onPresence: (docId, deviceId, data) => { if (activeBook && selectedRecipeId && docId === `${activeBook.vaultId}/${selectedRecipeId}`) handlePresence(deviceId, data); },
       onPurged: async () => { log("[ws] purged"); await purgeLocalData(); location.reload(); },
-      onPasswordChanged: () => { clearWrappedKey(userId); showAlert("Password was changed on another device. Please log in with the new passphrase.", "Password Changed").then(() => logout()); },
+      onPasswordChanged: () => { clearWrappedKey(userId); showAlert("Password was changed on another device. Please log in with the new password.", "Password Changed").then(() => logout()); },
       onStatusChange: (s) => { log("[ws] status:", s); syncStatus = s; updateSyncBadge(); },
+      onAuthError: (msg) => {
+        log("[ws] auth error:", msg);
+        let text: string;
+        if (msg === "user_already_exists") {
+          // Signup-specific: safe to reveal since the user is trying to create
+          text = "Username already taken.";
+        } else {
+          // Login: don't distinguish between wrong password and missing user
+          text = "Invalid username or password.";
+        }
+        const errEl = isSignup ? signupError : loginError;
+        errEl.textContent = text;
+        errEl.hidden = false;
+        resetLoginForm();
+        logout();
+      },
     });
     syncClient.setLastSeqGetter(async (docId) => { const s = docMgr?.get(docId); return s ? s.getLastSeq() : 0; });
     if (masterKey) {
@@ -622,19 +688,13 @@ async function login(username: string, passphrase: string) {
       log("[login] DocumentManager ready");
     }
     log("[login] connecting WebSocket to", wsUrl);
+    loginBtn.textContent = "Connecting...";
     syncClient.connect();
-    log("[login] switching to app view");
-    passphraseInput.value = "";
-    loginSection.hidden = true;
-    appSection.hidden = false;
-    profileBtn.textContent = username.charAt(0).toUpperCase();
-    profileUsername.textContent = username;
-    renderBookSelect();
   } catch (e: any) {
     error("[login] ERROR:", e);
-    loginError.textContent = e.message ?? "Login failed"; loginError.hidden = false;
-  } finally {
-    loginBtn.disabled = false; loginBtn.textContent = "Login / Sign Up";
+    const errEl = isSignup ? signupError : loginError;
+    errEl.textContent = e.message ?? "Login failed"; errEl.hidden = false;
+    resetLoginForm();
   }
 }
 
@@ -665,7 +725,44 @@ async function purgeLocalData() {
 }
 
 // -- Event handlers --
-loginForm.addEventListener("submit", async (e) => { e.preventDefault(); await login(usernameInput.value.trim(), passphraseInput.value); });
+// -- Login / Signup tabs --
+let isSignup = false;
+const tabLogin = document.getElementById("tab-login") as HTMLButtonElement;
+const tabSignup = document.getElementById("tab-signup") as HTMLButtonElement;
+
+function setLoginMode(signup: boolean) {
+  isSignup = signup;
+  tabLogin.classList.toggle("active", !signup);
+  tabSignup.classList.toggle("active", signup);
+  loginForm.hidden = signup;
+  signupForm.hidden = !signup;
+  loginError.hidden = true;
+  signupError.hidden = true;
+}
+
+tabLogin.addEventListener("click", () => setLoginMode(false));
+tabSignup.addEventListener("click", () => setLoginMode(true));
+
+loginForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await login(loginUsernameInput.value.trim(), loginPasswordInput.value);
+});
+
+signupForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (signupPasswordInput.value !== signupConfirmInput.value) {
+    signupError.textContent = "Passwords don't match.";
+    signupError.hidden = false;
+    return;
+  }
+  if (signupPasswordInput.value.length < 8) {
+    signupError.textContent = "Password must be at least 8 characters.";
+    signupError.hidden = false;
+    return;
+  }
+  await login(signupUsernameInput.value.trim(), signupPasswordInput.value);
+});
+
 logoutBtn.addEventListener("click", logout);
 
 // -- Account page --
@@ -687,14 +784,14 @@ changePwForm.addEventListener("submit", async (e) => {
   e.preventDefault(); pwError.hidden = true; pwSuccess.hidden = true;
   const newPw = (document.getElementById("new-pw") as HTMLInputElement).value;
   const confirmPw = (document.getElementById("confirm-pw") as HTMLInputElement).value;
-  if (newPw !== confirmPw) { pwError.textContent = "Passphrases don't match."; pwError.hidden = false; return; }
+  if (newPw !== confirmPw) { pwError.textContent = "Passwords don't match."; pwError.hidden = false; return; }
   const username = getStoredUsername(); if (!username || !syncClient) return;
   try {
     const [nd, uid] = await Promise.all([deriveKeys(username, newPw), deriveUserId(username)]);
     const session = getSessionKeys(); if (!session) return;
     const nw = await rewrapMasterKey(session.masterKey, nd.wrappingKey);
     updateWrappedKey(uid, nw); syncClient.changePassword(nd.authHash, toBase64(nw));
-    pwSuccess.textContent = "Passphrase changed."; pwSuccess.hidden = false; changePwForm.reset();
+    pwSuccess.textContent = "Password changed."; pwSuccess.hidden = false; changePwForm.reset();
   } catch (e: any) { pwError.textContent = "Failed: " + (e.message ?? e); pwError.hidden = false; }
 });
 
@@ -881,7 +978,8 @@ function renderBookManageList() {
   selectedBookIds.clear();
   updateBulkToolbar();
 
-  for (const book of books) {
+  const sorted = [...books].sort((a, b) => a.name.localeCompare(b.name));
+  for (const book of sorted) {
     const li = document.createElement("li");
 
     // Checkbox
@@ -1193,29 +1291,30 @@ async function importRecipesIntoBook(book: Book, recipes: Array<{ meta: Partial<
  * - If zip has flat .md files (no folders), import into targetBook if provided, or create one.
  */
 async function handleZipImport(file: File, targetBook?: Book): Promise<void> {
-  const importedBooks = await importFromZip(file);
-  if (importedBooks.length === 0) { toastWarning("No recipes found in file."); return; }
+  const dismiss = showLoading("Importing recipes...");
+  try {
+    const importedBooks = await importFromZip(file);
+    if (importedBooks.length === 0) { toastWarning("No recipes found in file."); return; }
 
-  let totalImported = 0;
+    let totalImported = 0;
 
-  // If all recipes are in the root (no folder name), import into target book
-  const allRootLevel = importedBooks.length === 1 && importedBooks[0].name === "";
-  if (allRootLevel && targetBook) {
-    totalImported = await importRecipesIntoBook(targetBook, importedBooks[0].recipes);
-    toastSuccess(`Imported ${totalImported} recipe${totalImported !== 1 ? "s" : ""} into "${targetBook.name}"`);
-  } else {
-    // Create a book per folder
-    for (const ib of importedBooks) {
-      const bookName = ib.name || file.name.replace(/\.zip$/i, "");
-      await createBook(bookName);
-      const newBook = books.find((b) => b.name === bookName);
-      if (newBook) {
-        totalImported += await importRecipesIntoBook(newBook, ib.recipes);
+    const allRootLevel = importedBooks.length === 1 && importedBooks[0].name === "";
+    if (allRootLevel && targetBook) {
+      totalImported = await importRecipesIntoBook(targetBook, importedBooks[0].recipes);
+      toastSuccess(`Imported ${totalImported} recipe${totalImported !== 1 ? "s" : ""} into "${targetBook.name}"`);
+    } else {
+      for (const ib of importedBooks) {
+        const bookName = ib.name || file.name.replace(/\.zip$/i, "");
+        await createBook(bookName);
+        const newBook = books.find((b) => b.name === bookName);
+        if (newBook) {
+          totalImported += await importRecipesIntoBook(newBook, ib.recipes);
+        }
       }
+      renderBookSelect();
+      toastSuccess(`Imported ${totalImported} recipes into ${importedBooks.length} book${importedBooks.length !== 1 ? "s" : ""}`);
     }
-    renderBookSelect();
-    toastSuccess(`Imported ${totalImported} recipes into ${importedBooks.length} book${importedBooks.length !== 1 ? "s" : ""}`);
-  }
+  } finally { dismiss(); }
   renderCatalog();
   renderBookManageList();
 }
@@ -1225,6 +1324,7 @@ async function handleImportToBook(book: Book) {
   const input = document.createElement("input"); input.type = "file"; input.accept = ".zip,.md";
   input.addEventListener("change", async () => {
     const file = input.files?.[0]; if (!file) return;
+    const dismiss = showLoading("Importing recipes...");
     try {
       if (file.name.endsWith(".md")) {
         const text = await file.text();
@@ -1237,7 +1337,7 @@ async function handleImportToBook(book: Book) {
       } else {
         await handleZipImport(file, book);
       }
-    } catch (e: any) { toastError("Import failed: " + (e.message ?? e)); }
+    } catch (e: any) { toastError("Import failed: " + (e.message ?? e)); } finally { dismiss(); }
   });
   input.click();
 }
@@ -1274,6 +1374,6 @@ for (const form of document.querySelectorAll("form[method=dialog]")) {
 
 // -- Boot --
 const savedUsername = getStoredUsername();
-if (savedUsername) usernameInput.value = savedUsername;
+if (savedUsername) loginUsernameInput.value = savedUsername;
 loginSection.hidden = false;
 appSection.hidden = true;

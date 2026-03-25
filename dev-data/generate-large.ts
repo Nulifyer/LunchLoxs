@@ -242,29 +242,91 @@ function generateRecipe(dishName: string, cuisine: string): { title: string; tag
   };
 }
 
+// -- Name generation for unlimited unique books and recipes --
+
+const bookAdjectives = [
+  "Rustic", "Modern", "Classic", "Simple", "Bold", "Fresh", "Cozy", "Elegant",
+  "Vibrant", "Wholesome", "Savory", "Sweet", "Golden", "Midnight", "Sunday",
+  "Summer", "Winter", "Harvest", "Garden", "Kitchen", "Fireside", "Coastal",
+  "Mountain", "Village", "Royal", "Humble", "Wild", "Secret", "Family", "Old World",
+  "New Wave", "Artisan", "Heritage", "Prairie", "Tropical", "Nomad", "Urban",
+];
+
+const bookNouns = [
+  "Recipes", "Kitchen", "Cookbook", "Table", "Pantry", "Feast", "Flavors",
+  "Bites", "Plates", "Bowls", "Dishes", "Gatherings", "Suppers", "Meals",
+  "Eats", "Creations", "Delights", "Traditions", "Classics", "Adventures",
+  "Treasures", "Essentials", "Favorites", "Staples", "Comfort Foods", "Spreads",
+];
+
+const recipeAdjectives = [
+  "Roasted", "Grilled", "Braised", "Seared", "Baked", "Smoked", "Crispy",
+  "Creamy", "Spicy", "Tangy", "Herbed", "Garlic", "Honey", "Lemon", "Maple",
+  "Sesame", "Ginger", "Chili", "Butter", "Caramelized", "Pan-Fried", "Slow-Cooked",
+  "Stuffed", "Glazed", "Marinated", "Steamed", "Charred", "Whipped", "Toasted",
+  "Pickled", "Fermented", "Smashed", "Loaded", "Rustic", "Classic", "Quick",
+  "One-Pot", "Sheet Pan", "Skillet", "No-Bake", "Overnight", "Five-Spice",
+];
+
+const recipeNouns = [
+  "Chicken", "Salmon", "Beef", "Pork", "Shrimp", "Tofu", "Lamb",
+  "Pasta", "Rice", "Noodles", "Bowl", "Salad", "Soup", "Stew",
+  "Tacos", "Curry", "Stir-Fry", "Casserole", "Pie", "Bread", "Cake",
+  "Muffins", "Pancakes", "Sandwich", "Wrap", "Burger", "Pizza", "Risotto",
+  "Dumplings", "Frittata", "Quiche", "Gratin", "Skewers", "Chowder",
+  "Flatbread", "Fajitas", "Enchiladas", "Ramen", "Pho", "Gnocchi",
+  "Polenta", "Couscous", "Hummus", "Bruschetta", "Crostini", "Tartare",
+  "Ceviche", "Tempura", "Wontons", "Spring Rolls", "Scallops", "Ribs",
+];
+
+const recipeSuffixes = [
+  "", "", "", "", // Weighted toward no suffix
+  "with Herbs", "with Greens", "with Mushrooms", "with Peppers",
+  "and Vegetables", "and Rice", "and Noodles", "al Fresco",
+  "Supreme", "Florentine", "Provencal", "Mediterranean Style",
+];
+
+function generateBookName(index: number): string {
+  if (index < bookThemes.length) return bookThemes[index].name;
+  const adj = pick(bookAdjectives);
+  const noun = pick(bookNouns);
+  return `${adj} ${noun} ${index - bookThemes.length + 1}`;
+}
+
+function generateRecipeName(usedNames: Set<string>): string {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const adj = pick(recipeAdjectives);
+    const noun = pick(recipeNouns);
+    const suffix = pick(recipeSuffixes);
+    const name = suffix ? `${adj} ${noun} ${suffix}` : `${adj} ${noun}`;
+    if (!usedNames.has(name)) return name;
+  }
+  // Fallback with counter
+  return `Recipe ${usedNames.size + 1}`;
+}
+
 async function main() {
   const outDir = join(import.meta.dir);
   const zip = new JSZip();
-  const selectedThemes = bookThemes.slice(0, NUM_BOOKS);
   let totalRecipes = 0;
 
   console.log(`Generating ${NUM_BOOKS} books with ${RECIPES_PER_BOOK} recipes each...`);
 
-  for (const theme of selectedThemes) {
-    const folder = zip.folder(theme.name)!;
+  for (let b = 0; b < NUM_BOOKS; b++) {
+    const theme = bookThemes[b % bookThemes.length];
+    const bookName = generateBookName(b);
+    const folder = zip.folder(bookName)!;
     const dishes = dishTypes[theme.cuisine] ?? dishTypes.italian;
-
-    // Generate RECIPES_PER_BOOK recipes, cycling through dish names if needed
-    const recipes: string[] = [];
     const usedNames = new Set<string>();
+
     for (let i = 0; i < RECIPES_PER_BOOK; i++) {
-      let name = dishes[i % dishes.length];
-      // Add variation suffix if cycling
-      if (i >= dishes.length) {
-        const suffix = pick(["with Herbs", "Deluxe", "Family Style", "Quick", "Classic", "Spicy", "Creamy", "Grilled", "Baked", "Smoked"]);
-        name = `${name} ${suffix}`;
+      // Use real dish names first, then generate random ones
+      let name: string;
+      if (i < dishes.length) {
+        name = dishes[i];
+      } else {
+        name = generateRecipeName(usedNames);
       }
-      if (usedNames.has(name)) name = `${name} II`;
       usedNames.add(name);
 
       const recipe = generateRecipe(name, theme.cuisine);
@@ -274,13 +336,13 @@ async function main() {
     }
 
     folder.file("_book.yaml", [
-      `name: "${theme.name}"`,
+      `name: "${bookName.replace(/"/g, '\\"')}"`,
       `exportedAt: "${new Date().toISOString()}"`,
       `format: "recipepwa-v1"`,
       `recipeCount: ${RECIPES_PER_BOOK}`,
     ].join("\n"));
 
-    console.log(`  ${theme.name}: ${RECIPES_PER_BOOK} recipes`);
+    console.log(`  ${bookName}: ${RECIPES_PER_BOOK} recipes`);
   }
 
   const buf = await zip.generateAsync({ type: "nodebuffer" });

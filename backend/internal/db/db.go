@@ -63,8 +63,10 @@ func New(pool *pgxpool.Pool) *Queries {
 	return &Queries{pool: pool}
 }
 
-// UpsertUser creates a user if not exists, or verifies auth_hash if exists.
-func (q *Queries) UpsertUser(ctx context.Context, userID, authHash string) (AuthResult, error) {
+// UpsertUser authenticates or creates a user.
+// If isSignup is true, the user must not already exist.
+// If isSignup is false, the user must exist and the auth hash must match.
+func (q *Queries) UpsertUser(ctx context.Context, userID, authHash string, isSignup bool) (AuthResult, error) {
 	var existingHash string
 	var wrappedKey []byte
 	var publicKey []byte
@@ -74,6 +76,9 @@ func (q *Queries) UpsertUser(ctx context.Context, userID, authHash string) (Auth
 	).Scan(&existingHash, &wrappedKey, &publicKey, &signingPublicKey)
 
 	if err == pgx.ErrNoRows {
+		if !isSignup {
+			return AuthResult{}, fmt.Errorf("user_not_found")
+		}
 		_, err = q.pool.Exec(ctx,
 			`INSERT INTO users (user_id, auth_hash) VALUES ($1, $2)`,
 			userID, authHash,
@@ -84,6 +89,10 @@ func (q *Queries) UpsertUser(ctx context.Context, userID, authHash string) (Auth
 		return AuthResult{}, err
 	}
 
+	if isSignup {
+		return AuthResult{}, fmt.Errorf("user_already_exists")
+	}
+
 	hashMatch := subtle.ConstantTimeCompare([]byte(existingHash), []byte(authHash)) == 1
 
 	return AuthResult{
@@ -92,7 +101,7 @@ func (q *Queries) UpsertUser(ctx context.Context, userID, authHash string) (Auth
 		WrappedMasterKey:         wrappedKey,
 		PublicKey:                publicKey,
 		SigningPublicKey:          signingPublicKey,
-		WrappedSigningPrivateKey: nil, // fetched separately when needed
+		WrappedSigningPrivateKey: nil,
 	}, nil
 }
 

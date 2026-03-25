@@ -111,48 +111,34 @@ function renderSearchDropdown() {
     return;
   }
 
-  // Group results by book
-  const grouped = new Map<string, SearchResult[]>();
-  for (const r of results) {
-    const key = r.entry.vaultId;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key)!.push(r);
-  }
-
   searchResults.innerHTML = "";
-  for (const [, bookResults] of grouped) {
-    const bookName = bookResults[0].entry.bookName;
+  for (const result of results) {
+    const { entry } = result;
+    const li = document.createElement("li");
+    li.dataset.recipeId = entry.recipeId;
+    li.dataset.vaultId = entry.vaultId;
+    li.className = "search-result-item";
 
-    // Book header
-    const header = document.createElement("li");
-    header.className = "search-book-header";
-    header.textContent = bookName;
-    searchResults.appendChild(header);
+    const titleRow = document.createElement("div");
+    titleRow.className = "search-result-title";
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = entry.title;
+    titleRow.appendChild(nameSpan);
+    const bookSpan = document.createElement("span");
+    bookSpan.className = "search-result-book";
+    bookSpan.textContent = entry.bookName;
+    titleRow.appendChild(bookSpan);
+    li.appendChild(titleRow);
 
-    // Recipe results
-    for (const result of bookResults) {
-      const { entry } = result;
-      const li = document.createElement("li");
-      li.dataset.recipeId = entry.recipeId;
-      li.dataset.vaultId = entry.vaultId;
-      li.className = "search-result-item";
-
-      const titleEl = document.createElement("div");
-      titleEl.className = "search-result-title";
-      titleEl.textContent = entry.title;
-      li.appendChild(titleEl);
-
-      // Show matching context based on which field matched
-      const matchText = getMatchSnippet(currentSearch.toLowerCase(), result);
-      if (matchText) {
-        const snippet = document.createElement("div");
-        snippet.className = "search-result-snippet";
-        snippet.textContent = matchText;
-        li.appendChild(snippet);
-      }
-
-      searchResults.appendChild(li);
+    const matchText = getMatchSnippet(currentSearch.toLowerCase(), result);
+    if (matchText) {
+      const snippet = document.createElement("div");
+      snippet.className = "search-result-snippet";
+      snippet.textContent = matchText;
+      li.appendChild(snippet);
     }
+
+    searchResults.appendChild(li);
   }
 
   searchResults.classList.add("open");

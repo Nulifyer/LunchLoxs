@@ -32,6 +32,7 @@ export interface SyncClientOptions {
   userId: string;
   deviceId: string;
   authHash: string;
+  isSignup?: boolean;
   encKey: CryptoKey;
   /** Resolve the encryption key for a given doc_id. Vault-scoped docs use the vault key. */
   getDocKey?: (docId: string) => CryptoKey | null;
@@ -49,6 +50,7 @@ export interface SyncClientOptions {
   onPurged?: () => void;
   onPresence?: (docId: string, deviceId: string, data: any) => void;
   onPasswordChanged?: () => void;
+  onAuthError?: (message: string) => void;
   onVaultList?: (vaults: VaultInfo[]) => void;
   onVaultCreated?: (vaultId: string) => void;
   onVaultInvited?: (vaultId: string, encryptedVaultKey: string, role: string) => void;
@@ -125,6 +127,7 @@ export class SyncClient {
         user_id: this.opts.userId,
         device_id: this.opts.deviceId,
         auth_hash: this.opts.authHash,
+        is_signup: this.opts.isSignup ?? false,
       };
       if (this.opts.wrappedKey) msg.wrapped_key = this.opts.wrappedKey;
       this.ws!.send(JSON.stringify(msg));
@@ -280,11 +283,12 @@ export class SyncClient {
         break;
 
       case "error":
-        if (msg.message === "auth_failed") {
-          console.error("sync: authentication failed");
+        if (msg.message === "auth_failed" || msg.message === "user_not_found" || msg.message === "user_already_exists") {
+          console.error("sync: auth error:", msg.message);
           this.intentionalClose = true;
           this.ws?.close();
           this.opts.onStatusChange("disconnected");
+          this.opts.onAuthError?.(msg.message);
         } else {
           console.error("sync: server error:", msg.message);
           // Reject any pending lookup that might have caused this

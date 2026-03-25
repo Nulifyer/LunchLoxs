@@ -36,6 +36,7 @@ type ClientMessage struct {
 	DeviceID    string          `json:"device_id,omitempty"`
 	AuthHash    string          `json:"auth_hash,omitempty"`
 	NewAuthHash string          `json:"new_auth_hash,omitempty"`
+	IsSignup    bool            `json:"is_signup,omitempty"`
 	WrappedKey  string          `json:"wrapped_key,omitempty"`
 	DocID       string          `json:"doc_id,omitempty"`
 	LastSeq     int64           `json:"last_seq,omitempty"`
@@ -210,8 +211,22 @@ func (c *Client) handleConnect(ctx context.Context, msg ClientMessage) {
 		return
 	}
 
-	authResult, err := c.Queries.UpsertUser(ctx, msg.UserID, msg.AuthHash)
+	// Auth check with minimum 2s duration to prevent timing-based enumeration
+	start := time.Now()
+	authResult, err := c.Queries.UpsertUser(ctx, msg.UserID, msg.AuthHash, msg.IsSignup)
+	if elapsed := time.Since(start); elapsed < 2*time.Second {
+		time.Sleep(2*time.Second - elapsed)
+	}
+
 	if err != nil {
+		if err.Error() == "user_not_found" {
+			c.sendError("user_not_found")
+			return
+		}
+		if err.Error() == "user_already_exists" {
+			c.sendError("user_already_exists")
+			return
+		}
 		c.sendError("auth error")
 		slog.Error("auth error", "user", msg.UserID, "error", err)
 		return
