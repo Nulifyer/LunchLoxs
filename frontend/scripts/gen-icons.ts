@@ -1,119 +1,71 @@
 /**
- * Generate minimal valid PNG icons for PWA manifest.
- * Uses raw PNG encoding — no external dependencies.
+ * Generate PNG icons and ICO favicon from SVG sources.
+ * Usage: npx --package=@resvg/resvg-js --package=tsx tsx scripts/gen-icons.ts
  */
-import { writeFileSync } from "fs";
+import { Resvg } from "@resvg/resvg-js";
+import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { deflateSync } from "zlib";
 
-function createPNG(size: number, bgColor: [number, number, number], fgColor: [number, number, number]): Buffer {
-  // Create raw RGBA pixel data
-  const pixels = Buffer.alloc(size * size * 4);
-  const radius = Math.round(size * 0.15);
-
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      // Rounded rectangle check
-      const inRect = isInRoundedRect(x, y, size, size, radius);
-
-      // Simple "T" shape in center
-      const cx = size / 2, cy = size / 2;
-      const barH = size * 0.08;
-      const stemW = size * 0.12;
-      const letterTop = cy - size * 0.22;
-      const letterBottom = cy + size * 0.25;
-      const letterLeft = cx - size * 0.22;
-      const letterRight = cx + size * 0.22;
-      const isTopBar = y >= letterTop && y <= letterTop + barH && x >= letterLeft && x <= letterRight;
-      const isStem = x >= cx - stemW / 2 && x <= cx + stemW / 2 && y >= letterTop && y <= letterBottom;
-      const isLetter = isTopBar || isStem;
-
-      if (!inRect) {
-        pixels[i] = pixels[i + 1] = pixels[i + 2] = 0;
-        pixels[i + 3] = 0; // transparent
-      } else if (isLetter) {
-        pixels[i] = fgColor[0]; pixels[i + 1] = fgColor[1]; pixels[i + 2] = fgColor[2];
-        pixels[i + 3] = 255;
-      } else {
-        pixels[i] = bgColor[0]; pixels[i + 1] = bgColor[1]; pixels[i + 2] = bgColor[2];
-        pixels[i + 3] = 255;
-      }
-    }
-  }
-
-  return encodePNG(size, size, pixels);
-}
-
-function isInRoundedRect(x: number, y: number, w: number, h: number, r: number): boolean {
-  if (x >= r && x < w - r) return true;
-  if (y >= r && y < h - r) return true;
-  // Check corners
-  const corners = [[r, r], [w - r - 1, r], [r, h - r - 1], [w - r - 1, h - r - 1]];
-  for (const [cx, cy] of corners) {
-    if (Math.hypot(x - cx, y - cy) <= r) return true;
-  }
-  return false;
-}
-
-function encodePNG(width: number, height: number, rgba: Buffer): Buffer {
-  // Build filtered scanlines (filter type 0 = None)
-  const rawData = Buffer.alloc(height * (1 + width * 4));
-  for (let y = 0; y < height; y++) {
-    rawData[y * (1 + width * 4)] = 0; // filter byte
-    rgba.copy(rawData, y * (1 + width * 4) + 1, y * width * 4, (y + 1) * width * 4);
-  }
-
-  const compressed = deflateSync(rawData);
-
-  const chunks: Buffer[] = [];
-
-  // Signature
-  chunks.push(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-
-  // IHDR
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // RGBA
-  ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-  chunks.push(pngChunk("IHDR", ihdr));
-
-  // IDAT
-  chunks.push(pngChunk("IDAT", compressed));
-
-  // IEND
-  chunks.push(pngChunk("IEND", Buffer.alloc(0)));
-
-  return Buffer.concat(chunks);
-}
-
-function pngChunk(type: string, data: Buffer): Buffer {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length, 0);
-  const typeB = Buffer.from(type, "ascii");
-  const crcData = Buffer.concat([typeB, data]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(crcData), 0);
-  return Buffer.concat([len, typeB, data, crc]);
-}
-
-function crc32(buf: Buffer): number {
-  let crc = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) {
-    crc ^= buf[i];
-    for (let j = 0; j < 8; j++) {
-      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
 const publicDir = join(import.meta.dir, "..", "public");
-const bg: [number, number, number] = [0x1a, 0x1a, 0x2e];
-const fg: [number, number, number] = [0xe9, 0x45, 0x60];
 
-writeFileSync(join(publicDir, "icon-192.png"), createPNG(192, bg, fg));
-writeFileSync(join(publicDir, "icon-512.png"), createPNG(512, bg, fg));
-console.log("Generated icon-192.png and icon-512.png");
+// -- Generate PNGs --
+const icons = [
+  { svg: "icon-192.svg", out: "icon-192.png", size: 192 },
+  { svg: "icon-512.svg", out: "icon-512.png", size: 512 },
+];
+
+for (const { svg, out, size } of icons) {
+  const svgData = readFileSync(join(publicDir, svg), "utf-8");
+  const resvg = new Resvg(svgData, { fitTo: { mode: "width", value: size } });
+  writeFileSync(join(publicDir, out), resvg.render().asPng());
+  console.log(`Generated ${out} (${size}x${size})`);
+}
+
+// -- Generate ICO (multi-size: 16, 32, 48) --
+const icoSizes = [16, 32, 48];
+const faviconSvg = readFileSync(join(publicDir, "favicon.svg"), "utf-8");
+const pngBuffers: Buffer[] = [];
+
+for (const size of icoSizes) {
+  const resvg = new Resvg(faviconSvg, { fitTo: { mode: "width", value: size } });
+  pngBuffers.push(Buffer.from(resvg.render().asPng()));
+}
+
+// ICO format: header + directory entries + PNG data
+const headerSize = 6;
+const dirEntrySize = 16;
+const dirSize = dirEntrySize * icoSizes.length;
+let dataOffset = headerSize + dirSize;
+
+// Header: reserved(2) + type(2, 1=ICO) + count(2)
+const header = Buffer.alloc(headerSize);
+header.writeUInt16LE(0, 0);
+header.writeUInt16LE(1, 2);
+header.writeUInt16LE(icoSizes.length, 4);
+
+const dirEntries: Buffer[] = [];
+const dataChunks: Buffer[] = [];
+
+for (let i = 0; i < icoSizes.length; i++) {
+  const size = icoSizes[i];
+  const png = pngBuffers[i];
+  const entry = Buffer.alloc(dirEntrySize);
+  entry.writeUInt8(size < 256 ? size : 0, 0);  // width
+  entry.writeUInt8(size < 256 ? size : 0, 1);  // height
+  entry.writeUInt8(0, 2);   // color palette
+  entry.writeUInt8(0, 3);   // reserved
+  entry.writeUInt16LE(1, 4);  // color planes
+  entry.writeUInt16LE(32, 6); // bits per pixel
+  entry.writeUInt32LE(png.length, 8);  // data size
+  entry.writeUInt32LE(dataOffset, 12); // data offset
+  dirEntries.push(entry);
+  dataChunks.push(png);
+  dataOffset += png.length;
+}
+
+writeFileSync(
+  join(publicDir, "favicon.ico"),
+  Buffer.concat([header, ...dirEntries, ...dataChunks])
+);
+console.log(`Generated favicon.ico (${icoSizes.join("+")}px)`);

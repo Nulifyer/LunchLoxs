@@ -1,10 +1,10 @@
 {
-  "name": "Recipes",
-  "short_name": "Recipes",
+  "name": "LunchLocks",
+  "short_name": "LunchLocks",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#1a1a2e",
-  "theme_color": "#1a1a2e",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
   "icons": [
     {
       "src": "/icon-192.png",

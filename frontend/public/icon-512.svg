@@ -1,4 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="77" fill="#1a1a2e"/>
-  <text x="50%" y="54%" font-family="system-ui, sans-serif" font-size="282" font-weight="bold" fill="#e94560" text-anchor="middle" dominant-baseline="middle">T</text>
+  <defs>
+    <filter id="lockShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="10" flood-color="#000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="76" fill="#C44A3A"/>
+  <!-- Utensils crossed (Lucide, ISC license) -->
+  <g transform="translate(96, 76) scale(13.3)" fill="none" stroke="#F2D479" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.7">
+    <path d="m16 2-2.3 2.3a3 3 0 0 0 0 4.2l1.8 1.8a3 3 0 0 0 4.2 0L22 8"/>
+    <path d="M15 15 3.3 3.3a4.2 4.2 0 0 0 0 6l7.3 7.3c.7.7 2 .7 2.8 0L15 15Zm0 0 7 7"/>
+    <path d="m2.1 21.8 6.4-6.3"/>
+    <path d="m19 5-7 7"/>
+  </g>
+  <!-- Lock with drop shadow -->
+  <g filter="url(#lockShadow)">
+    <!-- Lock shackle -->
+    <path d="M208 248 v-52 a48 48 0 0 1 96 0 v52" fill="none" stroke="#6FAF4F" stroke-width="24" stroke-linecap="round"/>
+    <!-- Lock body -->
+    <rect x="176" y="248" width="160" height="130" rx="18" fill="#6FAF4F"/>
+    <!-- Keyhole -->
+    <circle cx="256" cy="304" r="16" fill="#0d1117"/>
+    <rect x="250" y="310" width="12" height="24" rx="4" fill="#0d1117"/>
+  </g>
 </svg>
