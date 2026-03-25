@@ -143,8 +143,6 @@ export interface SearchEntry {
   bookName: string;
   title: string;
   tags: string[];
-  ingredients?: string;
-  instructions?: string;
 }
 
 const index = new Map<string, SearchEntry>();
@@ -167,27 +165,18 @@ export function getIndexSize(): number {
   return index.size;
 }
 
-export function indexRecipeContent(vaultId: string, recipeId: string, ingredients: string, instructions: string): void {
-  const key = `${vaultId}/${recipeId}`;
-  const entry = index.get(key);
-  if (entry) {
-    entry.ingredients = ingredients;
-    entry.instructions = instructions;
-  }
-}
-
 export interface SearchResult {
   entry: SearchEntry;
   score: number;
   /** Which field produced the best match */
-  matchField: "title" | "tag" | "book" | "ingredients" | "instructions";
+  matchField: "title" | "tag" | "book";
   /** The matching tag text if matchField is "tag" */
   matchTag?: string;
 }
 
 /**
  * Search across all indexed recipes using fzf-style fuzzy matching.
- * Searches: title, tags, book name, ingredients, instructions (not notes).
+ * Searches: title, tags, book name.
  */
 export function search(query: string, limit = 15): SearchResult[] {
   if (!query) return [];
@@ -221,24 +210,6 @@ export function search(query: string, limit = 15): SearchResult[] {
     if (bookScore > 0 && bookScore > bestScore) {
       bestScore = bookScore;
       matchField = "book";
-    }
-
-    // Ingredients
-    if (entry.ingredients) {
-      const ingScore = fzfScore(q, entry.ingredients);
-      if (ingScore > 0 && ingScore * 2 > bestScore) {
-        bestScore = ingScore * 2;
-        matchField = "ingredients";
-      }
-    }
-
-    // Instructions
-    if (entry.instructions) {
-      const instrScore = fzfScore(q, entry.instructions);
-      if (instrScore > 0 && instrScore > bestScore) {
-        bestScore = instrScore;
-        matchField = "instructions";
-      }
     }
 
     if (bestScore > 0) results.push({ entry, score: bestScore, matchField, matchTag });

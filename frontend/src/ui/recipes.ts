@@ -5,7 +5,6 @@
 import { log, warn, error } from "../lib/logger";
 import { initRecipeList } from "../views/recipe-list";
 import { initRecipeDetail, openRecipe, closeRecipe } from "../views/recipe-detail";
-import { indexRecipeContent } from "../lib/search";
 import { recipeToMarkdown } from "../lib/export";
 import { showConfirm, showPrompt } from "../lib/dialogs";
 import { openModal, closeModal } from "../lib/modal";
@@ -46,10 +45,6 @@ export async function selectRecipe(id: string) {
     ...(meta?.tags ?? []),
   ].filter(Boolean).join(" · ");
   openRecipe(contentStore, title, metaText, canEditActiveBook(), meta?.updatedAt);
-  // Index content for search
-  const content = contentStore.getDoc();
-  const ingText = (content.ingredients ?? []).map((i: any) => `${i.quantity} ${i.unit} ${i.item}`).join(" ");
-  indexRecipeContent(activeBook.vaultId, id, ingText, content.instructions ?? "");
 }
 
 export function deselectRecipe() {

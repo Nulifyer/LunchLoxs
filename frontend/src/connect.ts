@@ -35,7 +35,6 @@ import { pushSnapshot, renderCatalog, updateSyncBadge } from "./sync/push";
 import { renderBookSelect } from "./ui/books";
 import { writeSelfToCatalog, refreshBookNameFromCatalog, rebuildBookIndex } from "./sync/vault-helpers";
 import { renderMemberList } from "./ui/share";
-import { backgroundIndexAllContent } from "./sync/background-index";
 import { switchBook } from "./ui/books";
 import { resetLoginForm, logout, purgeLocalData } from "./ui/auth";
 
@@ -177,8 +176,6 @@ export function createSyncConnection(
       if (sc) {
         for (const book of books) sc.listVaultMembers(book.vaultId);
       }
-      // Kick off background content indexing after a short delay
-      setTimeout(() => backgroundIndexAllContent(), 2000);
     },
     onVaultCreated: (vid) => { log("[ws] vault_created:", vid); },
     onVaultInvited: async (vid) => { log("[ws] vault_invited:", vid); getSyncClient()?.listVaults(); },

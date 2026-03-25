@@ -147,65 +147,19 @@ function renderSearchDropdown() {
 }
 
 /** Build a snippet showing why this result matched */
-function getMatchSnippet(query: string, result: SearchResult): string {
+function getMatchSnippet(_query: string, result: SearchResult): string {
   const { entry, matchField, matchTag } = result;
 
   switch (matchField) {
     case "tag":
       return matchTag ? `Tag: ${matchTag}` : entry.tags.join(", ");
-
-    case "ingredients":
-      if (entry.ingredients) return extractSnippet(query, entry.ingredients);
-      break;
-
-    case "instructions":
-      if (entry.instructions) return extractSnippet(query, entry.instructions);
-      break;
-
     case "book":
       return `Book: ${entry.bookName}`;
-
     case "title":
       if (entry.tags.length > 0) return entry.tags.join(", ");
       break;
   }
   return "";
-}
-
-function extractSnippet(query: string, text: string): string {
-  const lower = text.toLowerCase();
-  const q = query.toLowerCase();
-
-  // Try exact substring first
-  const exactIdx = lower.indexOf(q);
-  if (exactIdx >= 0) {
-    return snippetAround(text, exactIdx, q.length);
-  }
-
-  // Find the fuzzy match region: first and last matched character positions
-  let firstMatch = -1;
-  let lastMatch = -1;
-  let qi = 0;
-  for (let ti = 0; ti < lower.length && qi < q.length; ti++) {
-    if (lower[ti] === q[qi]) {
-      if (firstMatch < 0) firstMatch = ti;
-      lastMatch = ti;
-      qi++;
-    }
-  }
-
-  if (qi === q.length && firstMatch >= 0) {
-    return snippetAround(text, firstMatch, lastMatch - firstMatch + 1);
-  }
-
-  // Fallback
-  return text.slice(0, 50).trim() + (text.length > 50 ? "..." : "");
-}
-
-function snippetAround(text: string, matchStart: number, matchLen: number): string {
-  const start = Math.max(0, matchStart - 15);
-  const end = Math.min(text.length, matchStart + matchLen + 35);
-  return (start > 0 ? "..." : "") + text.slice(start, end).trim() + (end < text.length ? "..." : "");
 }
 
 export function renderRecipeList(recipes: RecipeMeta[], selectedId: string | null) {

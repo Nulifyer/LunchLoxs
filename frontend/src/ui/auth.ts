@@ -20,7 +20,6 @@ import {
   getSigningKeyCache, getIsSignup, setIsSignup,
 } from "../state";
 import { createSyncConnection } from "../connect";
-import { setIndexAbort, getIndexAbort } from "../sync/background-index";
 import { deselectRecipe } from "../ui/recipes";
 
 // DOM refs (grabbed at init time)
@@ -107,8 +106,6 @@ export async function login(username: string, passphrase: string) {
 
 export function logout() {
   log("[logout]");
-  const ia = getIndexAbort();
-  if (ia) { ia.abort(); setIndexAbort(null); }
   if (isDetailOpen()) deselectRecipe();
   getSyncClient()?.disconnect(); setSyncClient(null);
   getDocMgr()?.closeAll(); setDocMgr(null);
