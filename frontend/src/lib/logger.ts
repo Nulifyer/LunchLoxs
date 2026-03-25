@@ -22,8 +22,10 @@ const origLog = console.log.bind(console);
 const origWarn = console.warn.bind(console);
 const origError = console.error.bind(console);
 
-export const log = (...args: any[]) => { push("log", args); origLog(...args); };
-export const warn = (...args: any[]) => { push("warn", args); origWarn(...args); };
+const isDev = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+
+export const log = (...args: any[]) => { push("log", args); if (isDev) origLog(...args); };
+export const warn = (...args: any[]) => { push("warn", args); if (isDev) origWarn(...args); };
 export const error = (...args: any[]) => { push("error", args); origError(...args); };
 
 /**
