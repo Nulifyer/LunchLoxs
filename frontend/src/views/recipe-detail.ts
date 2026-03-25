@@ -9,10 +9,11 @@ import { remoteCursorsExtension, updateRemoteCursors, shortDeviceName, type Remo
 import { escapeHtml, escapeAttr } from "../lib/html";
 import { EditorView, keymap, drawSelection, highlightActiveLine } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
-import { oneDark } from "@codemirror/theme-one-dark";
+import { appTheme, appSyntaxHighlighting } from "../lib/cm-theme";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import { createDropdown } from "../lib/dropdown";
 
 // -- DOM refs --
 const detailView = document.getElementById("recipe-detail") as HTMLElement;
@@ -21,8 +22,7 @@ const backBtn = document.getElementById("back-btn") as HTMLButtonElement;
 const titleEl = document.getElementById("recipe-title") as HTMLHeadingElement;
 const metaEl = document.getElementById("recipe-meta") as HTMLElement;
 const pageEditBtn = document.getElementById("page-edit-btn") as HTMLButtonElement;
-const deleteRecipeBtn = document.getElementById("delete-recipe-btn") as HTMLButtonElement;
-const editRecipeBtn = document.getElementById("edit-recipe-btn") as HTMLButtonElement;
+const actionsSlot = document.getElementById("recipe-actions-slot") as HTMLElement;
 
 const ingredientsList = document.getElementById("ingredients-list") as HTMLElement;
 const addIngredientBtn = document.getElementById("add-ingredient-btn") as HTMLButtonElement;
@@ -46,6 +46,7 @@ let pageEditing = false;
 let remoteCursors = new Map<string, RemoteCursor>();
 let onPushSnapshot: (() => void) | null = null;
 let onSendPresence: ((data: any) => void) | null = null;
+let canEdit = true;
 
 export interface DetailCallbacks {
   onBack: () => void;
@@ -53,12 +54,15 @@ export interface DetailCallbacks {
   onSendPresence: (data: any) => void;
   onEditRecipe: () => void;
   onDeleteRecipe: () => void;
+  onExportRecipe?: () => void;
+  onCopyToBook?: () => void;
 }
 
+let callbacks: DetailCallbacks;
+
 export function initRecipeDetail(cb: DetailCallbacks) {
+  callbacks = cb;
   backBtn.addEventListener("click", cb.onBack);
-  editRecipeBtn.addEventListener("click", cb.onEditRecipe);
-  deleteRecipeBtn.addEventListener("click", cb.onDeleteRecipe);
   onPushSnapshot = cb.onPushSnapshot;
   onSendPresence = cb.onSendPresence;
 
@@ -120,15 +124,38 @@ export function initRecipeDetail(cb: DetailCallbacks) {
   });
 }
 
-export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: string, meta: string) {
+export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: string, meta: string, editable = true) {
   closeRecipe();
   store = recipeStore;
   titleEl.textContent = title;
   metaEl.textContent = meta;
+  canEdit = editable;
   emptyState.hidden = true;
   detailView.hidden = false;
   ingredientForm.classList.remove("open");
   ingredientForm.reset();
+
+  // Edit button for viewers is hidden
+  pageEditBtn.hidden = !canEdit;
+
+  // Build actions dropdown
+  actionsSlot.innerHTML = "";
+  const menuItems = [];
+  if (canEdit) {
+    menuItems.push({ label: "Settings", action: () => callbacks.onEditRecipe() });
+  }
+  if (callbacks.onExportRecipe) {
+    menuItems.push({ label: "Export as .md", action: () => callbacks.onExportRecipe!() });
+  }
+  if (callbacks.onCopyToBook && canEdit) {
+    menuItems.push({ label: "Copy to Book...", action: () => callbacks.onCopyToBook!() });
+  }
+  if (canEdit) {
+    menuItems.push({ label: "Delete", action: () => callbacks.onDeleteRecipe(), danger: true, separator: true });
+  }
+  if (menuItems.length > 0) {
+    actionsSlot.appendChild(createDropdown(menuItems));
+  }
 
   const doc = store.getDoc();
 
@@ -148,7 +175,7 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
     doc: doc.instructions ?? "",
     extensions: [
       keymap.of([...defaultKeymap, ...historyKeymap]), history(),
-      markdown(), oneDark, drawSelection(), highlightActiveLine(),
+      markdown(), appTheme, appSyntaxHighlighting, drawSelection(), highlightActiveLine(),
       EditorView.lineWrapping, iBridge.extension, remoteCursorsExtension,
       EditorView.updateListener.of((update) => {
         if (update.selectionSet || update.docChanged) {
@@ -176,7 +203,7 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
     doc: doc.notes ?? "",
     extensions: [
       keymap.of([...defaultKeymap, ...historyKeymap]), history(),
-      markdown(), oneDark, drawSelection(), highlightActiveLine(),
+      markdown(), appTheme, appSyntaxHighlighting, drawSelection(), highlightActiveLine(),
       EditorView.lineWrapping, nBridge.extension,
     ],
     parent: notesEditorContainer,
@@ -240,13 +267,12 @@ export function isOpen(): boolean {
 // -- Page-level edit/preview toggle --
 
 function setPageEditing(editing: boolean) {
+  if (!canEdit && editing) return;
   pageEditing = editing;
   detailView.classList.toggle("editing", editing);
   pageEditBtn.textContent = editing ? "Done" : "Edit";
 
   addIngredientBtn.hidden = !editing;
-  deleteRecipeBtn.hidden = !editing;
-  editRecipeBtn.hidden = !editing;
   if (!editing) {
     ingredientForm.classList.remove("open");
   }

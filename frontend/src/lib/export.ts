@@ -1,8 +1,11 @@
 /**
  * Export a recipe book as a ZIP of markdown files.
+ * Import from a ZIP back into a book.
  *
- * Each recipe becomes a single .md file with YAML frontmatter
- * containing metadata for round-trip import.
+ * Ingredients use a pipe-delimited markdown table for lossless round-trip:
+ *   | Qty   | Unit  | Ingredient       |
+ *   |-------|-------|------------------|
+ *   | 2 1/4 | cups  | all-purpose flour|
  */
 
 import JSZip from "jszip";
@@ -18,15 +21,53 @@ function slugify(text: string): string {
     || "untitled";
 }
 
-function formatIngredient(ing: { quantity: string; unit: string; item: string }): string {
-  const parts = [ing.quantity, ing.unit, ing.item].filter(Boolean);
-  return `- ${parts.join(" ")}`;
+type Ingredient = { quantity: string; unit: string; item: string };
+
+function buildIngredientTable(ingredients: Ingredient[]): string {
+  if (ingredients.length === 0) return "";
+
+  // Calculate column widths for alignment
+  const qw = Math.max(3, ...ingredients.map((i) => i.quantity.length));
+  const uw = Math.max(4, ...ingredients.map((i) => i.unit.length));
+  const iw = Math.max(10, ...ingredients.map((i) => i.item.length));
+
+  const pad = (s: string, w: number) => s + " ".repeat(Math.max(0, w - s.length));
+
+  const header = `| ${pad("Qty", qw)} | ${pad("Unit", uw)} | ${pad("Ingredient", iw)} |`;
+  const sep = `| ${"-".repeat(qw)} | ${"-".repeat(uw)} | ${"-".repeat(iw)} |`;
+  const rows = ingredients.map((i) =>
+    `| ${pad(i.quantity, qw)} | ${pad(i.unit, uw)} | ${pad(i.item, iw)} |`
+  );
+
+  return [header, sep, ...rows].join("\n");
 }
 
-function recipeToMarkdown(meta: RecipeMeta, content: RecipeContent): string {
+function parseIngredientTable(text: string): Ingredient[] {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const ingredients: Ingredient[] = [];
+
+  for (const line of lines) {
+    // Skip header and separator rows
+    if (!line.startsWith("|")) continue;
+    if (/^\|[\s-|]+\|$/.test(line)) continue;
+    if (/\|\s*Qty\s*\|/i.test(line)) continue;
+
+    const cells = line.split("|").map((c) => c.trim()).filter(Boolean);
+    if (cells.length >= 3) {
+      ingredients.push({ quantity: cells[0], unit: cells[1], item: cells[2] });
+    } else if (cells.length === 2) {
+      ingredients.push({ quantity: cells[0], unit: "", item: cells[1] });
+    } else if (cells.length === 1) {
+      ingredients.push({ quantity: "", unit: "", item: cells[0] });
+    }
+  }
+
+  return ingredients;
+}
+
+export function recipeToMarkdown(meta: RecipeMeta, content: RecipeContent): string {
   const frontmatter = [
     "---",
-    `id: "${meta.id}"`,
     `title: "${meta.title.replace(/"/g, '\\"')}"`,
     `tags: [${meta.tags.map((t) => `"${t.replace(/"/g, '\\"')}"`).join(", ")}]`,
     `servings: ${meta.servings}`,
@@ -46,7 +87,7 @@ function recipeToMarkdown(meta: RecipeMeta, content: RecipeContent): string {
   const ingredients = content.ingredients ?? [];
   if (ingredients.length > 0) {
     sections.push("## Ingredients", "");
-    sections.push(...ingredients.map(formatIngredient), "");
+    sections.push(buildIngredientTable(ingredients), "");
   }
 
   const instructions = (content.instructions ?? "").trim();
@@ -71,7 +112,6 @@ export async function exportBook(
   const zip = new JSZip();
   const folder = zip.folder(bookName)!;
 
-  // Book metadata
   const bookMeta = [
     `name: "${bookName.replace(/"/g, '\\"')}"`,
     `exportedAt: "${new Date().toISOString()}"`,
@@ -80,7 +120,6 @@ export async function exportBook(
   ].join("\n");
   folder.file("_book.yaml", bookMeta);
 
-  // Track filenames to avoid collisions
   const usedNames = new Set<string>();
 
   for (const meta of recipes) {
@@ -92,7 +131,6 @@ export async function exportBook(
     }
     usedNames.add(fileName);
 
-    // Try to get recipe content from open doc, or use empty defaults
     const contentDocId = `${vaultId}/${meta.id}`;
     let contentStore = docMgr.get<RecipeContent>(contentDocId);
     let needsClose = false;
@@ -133,13 +171,14 @@ export async function exportBook(
  * Parse a recipe markdown file back into metadata + content.
  */
 export function parseRecipeMarkdown(md: string): { meta: Partial<RecipeMeta>; content: Partial<RecipeContent> } | null {
-  const fmMatch = md.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  // Normalize line endings
+  const normalized = md.replace(/\r\n/g, "\n");
+  const fmMatch = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!fmMatch) return null;
 
   const frontmatter = fmMatch[1];
   const body = fmMatch[2];
 
-  // Parse YAML frontmatter (simple key: value parsing)
   const meta: Partial<RecipeMeta> = {};
   for (const line of frontmatter.split("\n")) {
     const m = line.match(/^(\w+):\s*(.+)$/);
@@ -147,7 +186,6 @@ export function parseRecipeMarkdown(md: string): { meta: Partial<RecipeMeta>; co
     const [, key, rawVal] = m;
     const val = rawVal.replace(/^"(.*)"$/, "$1");
     switch (key) {
-      case "id": meta.id = val; break;
       case "title": meta.title = val; break;
       case "servings": meta.servings = parseInt(val) || 4; break;
       case "prepMinutes": meta.prepMinutes = parseInt(val) || 0; break;
@@ -164,11 +202,16 @@ export function parseRecipeMarkdown(md: string): { meta: Partial<RecipeMeta>; co
     }
   }
 
-  // Parse body sections
   const content: Partial<RecipeContent> = {};
-  const sections = body.split(/^## /m).filter(Boolean);
 
-  for (const section of sections) {
+  // Split body into sections by ## headings
+  const rawSections = body.split(/^## /m);
+  // First element is text before any heading (description)
+  const preHeading = rawSections[0]?.trim();
+  if (preHeading) content.description = preHeading;
+
+  for (let i = 1; i < rawSections.length; i++) {
+    const section = rawSections[i];
     const newlineIdx = section.indexOf("\n");
     if (newlineIdx === -1) continue;
     const heading = section.slice(0, newlineIdx).trim().toLowerCase();
@@ -176,18 +219,18 @@ export function parseRecipeMarkdown(md: string): { meta: Partial<RecipeMeta>; co
 
     switch (heading) {
       case "ingredients":
-        content.ingredients = sectionBody.split("\n")
-          .filter((l) => l.startsWith("- "))
-          .map((l) => {
-            const text = l.slice(2).trim();
-            const parts = text.split(/\s+/);
-            if (parts.length >= 3) {
-              return { quantity: parts[0], unit: parts[1], item: parts.slice(2).join(" ") };
-            } else if (parts.length === 2) {
-              return { quantity: parts[0], unit: "", item: parts[1] };
-            }
-            return { quantity: "", unit: "", item: text };
-          });
+        // Try table format first (pipe-delimited)
+        if (sectionBody.includes("|")) {
+          content.ingredients = parseIngredientTable(sectionBody);
+        } else {
+          // Fallback: list format (- qty unit item)
+          content.ingredients = sectionBody.split("\n")
+            .filter((l) => l.startsWith("- "))
+            .map((l) => {
+              const text = l.slice(2).trim();
+              return { quantity: "", unit: "", item: text };
+            });
+        }
         break;
       case "instructions":
         content.instructions = sectionBody;
@@ -198,29 +241,52 @@ export function parseRecipeMarkdown(md: string): { meta: Partial<RecipeMeta>; co
     }
   }
 
-  // Text before first ## heading is the description
-  const preHeading = body.split(/^## /m)[0]?.trim();
-  if (preHeading) {
-    content.description = preHeading;
-  }
-
   return { meta, content };
+}
+
+export interface ImportedBook {
+  name: string;
+  recipes: Array<{ meta: Partial<RecipeMeta>; content: Partial<RecipeContent> }>;
 }
 
 /**
  * Import recipes from a ZIP file.
- * Returns an array of parsed recipes ready to be inserted into a book.
+ * If the zip has subfolders, each folder becomes a separate book.
+ * If no subfolders, all recipes go into a single unnamed book.
  */
-export async function importFromZip(file: File): Promise<Array<{ meta: Partial<RecipeMeta>; content: Partial<RecipeContent> }>> {
+export async function importFromZip(file: File): Promise<ImportedBook[]> {
   const zip = await JSZip.loadAsync(file);
-  const recipes: Array<{ meta: Partial<RecipeMeta>; content: Partial<RecipeContent> }> = [];
+  const bookMap = new Map<string, ImportedBook>();
 
+  // First pass: read _book.yaml files for book names
+  const folderNames = new Map<string, string>();
+  for (const [path, entry] of Object.entries(zip.files)) {
+    if (entry.dir) continue;
+    const parts = path.split("/");
+    if (parts[parts.length - 1] === "_book.yaml" && parts.length >= 2) {
+      const folder = parts.slice(0, -1).join("/");
+      const yaml = await entry.async("string");
+      const nameMatch = yaml.match(/name:\s*"([^"]*)"/);
+      if (nameMatch) folderNames.set(folder, nameMatch[1]);
+    }
+  }
+
+  // Second pass: read recipes
   for (const [path, entry] of Object.entries(zip.files)) {
     if (entry.dir || !path.endsWith(".md")) continue;
     const text = await entry.async("string");
     const parsed = parseRecipeMarkdown(text);
-    if (parsed) recipes.push(parsed);
+    if (!parsed) continue;
+
+    const parts = path.split("/");
+    const folder = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
+    const bookName = folderNames.get(folder) || (parts.length > 1 ? parts[0] : "");
+
+    if (!bookMap.has(folder)) {
+      bookMap.set(folder, { name: bookName, recipes: [] });
+    }
+    bookMap.get(folder)!.recipes.push(parsed);
   }
 
-  return recipes;
+  return [...bookMap.values()];
 }

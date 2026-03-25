@@ -1,14 +1,14 @@
 /**
- * Recipe list sidebar view + floating search results.
+ * Recipe list sidebar view + floating cross-book search.
  */
 
 import type { RecipeMeta } from "../types";
 import { escapeHtml } from "../lib/html";
+import { search, getIndexSize, type SearchResult } from "../lib/search";
 
 export interface RecipeListCallbacks {
-  onSelect: (id: string) => void;
+  onSelect: (id: string, vaultId?: string) => void;
   onAdd: () => void;
-  onSearch: (query: string) => void;
 }
 
 const container = document.getElementById("recipe-list") as HTMLUListElement;
@@ -18,15 +18,15 @@ const addBtn = document.getElementById("add-recipe-btn") as HTMLButtonElement;
 
 let callbacks: RecipeListCallbacks;
 let currentSearch = "";
-let allRecipes: RecipeMeta[] = [];
+let activeIdx = -1;
 
 export function initRecipeList(cb: RecipeListCallbacks) {
   callbacks = cb;
   addBtn.addEventListener("click", () => callbacks.onAdd());
 
   searchInput.addEventListener("input", () => {
-    currentSearch = searchInput.value.trim().toLowerCase();
-    callbacks.onSearch(currentSearch);
+    currentSearch = searchInput.value.trim();
+    activeIdx = -1;
     renderSearchDropdown();
   });
 
@@ -34,14 +34,41 @@ export function initRecipeList(cb: RecipeListCallbacks) {
     if (currentSearch) renderSearchDropdown();
   });
 
-  // Close search on outside click
-  document.addEventListener("click", (e) => {
-    if (!(e.target as HTMLElement).closest(".topbar-search")) {
+  // Arrow key navigation + enter to select
+  searchInput.addEventListener("keydown", (e) => {
+    if (!searchResults.classList.contains("open")) return;
+    const items = searchResults.querySelectorAll("[data-recipe-id]");
+    if (items.length === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      activeIdx = Math.min(activeIdx + 1, items.length - 1);
+      updateActiveItem(items);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      activeIdx = Math.max(activeIdx - 1, 0);
+      updateActiveItem(items);
+    } else if (e.key === "Enter" && activeIdx >= 0) {
+      e.preventDefault();
+      const el = items[activeIdx] as HTMLElement;
+      callbacks.onSelect(el.dataset.recipeId!, el.dataset.vaultId);
       searchResults.classList.remove("open");
+      searchInput.value = "";
+      currentSearch = "";
+      activeIdx = -1;
+    } else if (e.key === "Escape") {
+      searchResults.classList.remove("open");
+      activeIdx = -1;
     }
   });
 
-  // Handle clicks in both sidebar list and search dropdown
+  document.addEventListener("click", (e) => {
+    if (!(e.target as HTMLElement).closest(".topbar-search")) {
+      searchResults.classList.remove("open");
+      activeIdx = -1;
+    }
+  });
+
   container.addEventListener("click", (e) => {
     const el = (e.target as HTMLElement).closest("[data-recipe-id]") as HTMLElement;
     if (el) callbacks.onSelect(el.dataset.recipeId!);
@@ -50,55 +77,150 @@ export function initRecipeList(cb: RecipeListCallbacks) {
   searchResults.addEventListener("click", (e) => {
     const el = (e.target as HTMLElement).closest("[data-recipe-id]") as HTMLElement;
     if (el) {
-      callbacks.onSelect(el.dataset.recipeId!);
+      callbacks.onSelect(el.dataset.recipeId!, el.dataset.vaultId);
       searchResults.classList.remove("open");
       searchInput.value = "";
       currentSearch = "";
+      activeIdx = -1;
     }
   });
 }
 
+function updateActiveItem(items: NodeListOf<Element>) {
+  items.forEach((el, i) => {
+    (el as HTMLElement).classList.toggle("search-active", i === activeIdx);
+  });
+  if (activeIdx >= 0) (items[activeIdx] as HTMLElement).scrollIntoView({ block: "nearest" });
+}
+
 function renderSearchDropdown() {
+  const indexSize = getIndexSize();
+  console.log("[search] query:", JSON.stringify(currentSearch), "index size:", indexSize);
+
   if (!currentSearch) {
     searchResults.classList.remove("open");
     return;
   }
 
-  const filtered = allRecipes.filter((r) =>
-    r.title.toLowerCase().includes(currentSearch) ||
-    r.tags.some((t) => t.toLowerCase().includes(currentSearch))
-  );
+  const results = search(currentSearch);
+  console.log("[search] results:", results.length);
 
-  if (filtered.length === 0) {
-    searchResults.innerHTML = "<li><small>No results</small></li>";
+  if (results.length === 0) {
+    searchResults.innerHTML = `<li class="search-empty">No results</li>`;
     searchResults.classList.add("open");
     return;
   }
 
-  searchResults.innerHTML = "";
-  for (const recipe of filtered.slice(0, 10)) {
-    const li = document.createElement("li");
-    li.dataset.recipeId = recipe.id;
-
-    const strong = document.createElement("strong");
-    strong.textContent = recipe.title;
-    li.appendChild(strong);
-
-    if (recipe.tags.length > 0) {
-      const small = document.createElement("small");
-      small.textContent = recipe.tags.join(", ");
-      li.appendChild(small);
-    }
-
-    searchResults.appendChild(li);
+  // Group results by book
+  const grouped = new Map<string, SearchResult[]>();
+  for (const r of results) {
+    const key = r.entry.vaultId;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(r);
   }
+
+  searchResults.innerHTML = "";
+  for (const [, bookResults] of grouped) {
+    const bookName = bookResults[0].entry.bookName;
+
+    // Book header
+    const header = document.createElement("li");
+    header.className = "search-book-header";
+    header.textContent = bookName;
+    searchResults.appendChild(header);
+
+    // Recipe results
+    for (const result of bookResults) {
+      const { entry } = result;
+      const li = document.createElement("li");
+      li.dataset.recipeId = entry.recipeId;
+      li.dataset.vaultId = entry.vaultId;
+      li.className = "search-result-item";
+
+      const titleEl = document.createElement("div");
+      titleEl.className = "search-result-title";
+      titleEl.textContent = entry.title;
+      li.appendChild(titleEl);
+
+      // Show matching context based on which field matched
+      const matchText = getMatchSnippet(currentSearch.toLowerCase(), result);
+      if (matchText) {
+        const snippet = document.createElement("div");
+        snippet.className = "search-result-snippet";
+        snippet.textContent = matchText;
+        li.appendChild(snippet);
+      }
+
+      searchResults.appendChild(li);
+    }
+  }
+
   searchResults.classList.add("open");
 }
 
-export function renderRecipeList(recipes: RecipeMeta[], selectedId: string | null) {
-  allRecipes = recipes;
+/** Build a snippet showing why this result matched */
+function getMatchSnippet(query: string, result: SearchResult): string {
+  const { entry, matchField, matchTag } = result;
 
-  // Sidebar always shows all recipes (search is in the topbar dropdown)
+  switch (matchField) {
+    case "tag":
+      return matchTag ? `Tag: ${matchTag}` : entry.tags.join(", ");
+
+    case "ingredients":
+      if (entry.ingredients) return extractSnippet(query, entry.ingredients);
+      break;
+
+    case "instructions":
+      if (entry.instructions) return extractSnippet(query, entry.instructions);
+      break;
+
+    case "book":
+      return `Book: ${entry.bookName}`;
+
+    case "title":
+      if (entry.tags.length > 0) return entry.tags.join(", ");
+      break;
+  }
+  return "";
+}
+
+function extractSnippet(query: string, text: string): string {
+  const lower = text.toLowerCase();
+  const q = query.toLowerCase();
+
+  // Try exact substring first
+  const exactIdx = lower.indexOf(q);
+  if (exactIdx >= 0) {
+    return snippetAround(text, exactIdx, q.length);
+  }
+
+  // Find the fuzzy match region: first and last matched character positions
+  let firstMatch = -1;
+  let lastMatch = -1;
+  let qi = 0;
+  for (let ti = 0; ti < lower.length && qi < q.length; ti++) {
+    if (lower[ti] === q[qi]) {
+      if (firstMatch < 0) firstMatch = ti;
+      lastMatch = ti;
+      qi++;
+    }
+  }
+
+  if (qi === q.length && firstMatch >= 0) {
+    return snippetAround(text, firstMatch, lastMatch - firstMatch + 1);
+  }
+
+  // Fallback
+  return text.slice(0, 50).trim() + (text.length > 50 ? "..." : "");
+}
+
+function snippetAround(text: string, matchStart: number, matchLen: number): string {
+  const start = Math.max(0, matchStart - 15);
+  const end = Math.min(text.length, matchStart + matchLen + 35);
+  return (start > 0 ? "..." : "") + text.slice(start, end).trim() + (end < text.length ? "..." : "");
+}
+
+export function renderRecipeList(recipes: RecipeMeta[], selectedId: string | null) {
   container.innerHTML = "";
   for (const recipe of recipes) {
     const li = document.createElement("li");
@@ -119,7 +241,4 @@ export function renderRecipeList(recipes: RecipeMeta[], selectedId: string | nul
 
     container.appendChild(li);
   }
-
-  // Also update search dropdown if open
-  if (currentSearch) renderSearchDropdown();
 }

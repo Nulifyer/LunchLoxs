@@ -23,10 +23,12 @@ type SyncMessage struct {
 
 // AuthResult contains the result of user authentication.
 type AuthResult struct {
-	OK               bool
-	IsNew            bool
-	WrappedMasterKey []byte
-	PublicKey        []byte
+	OK                       bool
+	IsNew                    bool
+	WrappedMasterKey         []byte
+	PublicKey                []byte
+	SigningPublicKey          []byte
+	WrappedSigningPrivateKey []byte
 }
 
 // VaultInfo represents a vault and the user's access to it.
@@ -40,9 +42,17 @@ type VaultInfo struct {
 
 // VaultMember represents a member of a vault.
 type VaultMember struct {
-	UserID    string
-	Role      string
-	PublicKey []byte
+	UserID           string
+	Role             string
+	PublicKey        []byte
+	SigningPublicKey []byte
+}
+
+// VaultKeyUpdate holds the re-encrypted vault key for a single member during key rotation.
+type VaultKeyUpdate struct {
+	UserID            string
+	EncryptedVaultKey []byte
+	SenderPublicKey   []byte
 }
 
 type Queries struct {
@@ -58,9 +68,10 @@ func (q *Queries) UpsertUser(ctx context.Context, userID, authHash string) (Auth
 	var existingHash string
 	var wrappedKey []byte
 	var publicKey []byte
+	var signingPublicKey []byte
 	err := q.pool.QueryRow(ctx,
-		`SELECT auth_hash, wrapped_master_key, public_key FROM users WHERE user_id = $1`, userID,
-	).Scan(&existingHash, &wrappedKey, &publicKey)
+		`SELECT auth_hash, wrapped_master_key, public_key, signing_public_key FROM users WHERE user_id = $1`, userID,
+	).Scan(&existingHash, &wrappedKey, &publicKey, &signingPublicKey)
 
 	if err == pgx.ErrNoRows {
 		_, err = q.pool.Exec(ctx,
@@ -76,10 +87,12 @@ func (q *Queries) UpsertUser(ctx context.Context, userID, authHash string) (Auth
 	hashMatch := subtle.ConstantTimeCompare([]byte(existingHash), []byte(authHash)) == 1
 
 	return AuthResult{
-		OK:               hashMatch,
-		IsNew:            false,
-		WrappedMasterKey: wrappedKey,
-		PublicKey:        publicKey,
+		OK:                       hashMatch,
+		IsNew:                    false,
+		WrappedMasterKey:         wrappedKey,
+		PublicKey:                publicKey,
+		SigningPublicKey:          signingPublicKey,
+		WrappedSigningPrivateKey: nil, // fetched separately when needed
 	}, nil
 }
 
@@ -103,7 +116,7 @@ func (q *Queries) SetWrappedMasterKey(ctx context.Context, userID string, wrappe
 	return err
 }
 
-// StoreMessage stores an encrypted sync message scoped to a document.
+// StoreMessage stores an encrypted sync message scoped to a user+document (personal docs).
 // Returns the assigned sequence number.
 func (q *Queries) StoreMessage(ctx context.Context, userID, docID, deviceID string, payload []byte) (int64, error) {
 	var seq int64
@@ -116,14 +129,37 @@ func (q *Queries) StoreMessage(ctx context.Context, userID, docID, deviceID stri
 	return seq, err
 }
 
+// StoreVaultMessage stores a sync message scoped to a vault+document (shared docs).
+// Sequencing is by vault_id + doc_id so all members share the same sequence space.
+func (q *Queries) StoreVaultMessage(ctx context.Context, vaultID, docID, userID, deviceID string, payload []byte) (int64, error) {
+	var seq int64
+	err := q.pool.QueryRow(ctx,
+		`INSERT INTO sync_messages (user_id, doc_id, seq, device_id, payload, vault_id)
+		 VALUES ($1, $2, COALESCE((SELECT MAX(seq) FROM sync_messages WHERE vault_id = $4 AND doc_id = $2), 0) + 1, $3, $5, $4)
+		 RETURNING seq`,
+		userID, docID, deviceID, vaultID, payload,
+	).Scan(&seq)
+	return seq, err
+}
+
 // CompactDocument removes all but the latest snapshot for a user+document.
-// Safe because each push is a full Automerge snapshot.
 func (q *Queries) CompactDocument(ctx context.Context, userID, docID string) error {
 	_, err := q.pool.Exec(ctx,
 		`DELETE FROM sync_messages
 		 WHERE user_id = $1 AND doc_id = $2
 		 AND seq < (SELECT MAX(seq) FROM sync_messages WHERE user_id = $1 AND doc_id = $2)`,
 		userID, docID,
+	)
+	return err
+}
+
+// CompactVaultDocument removes all but the latest snapshot for a vault+document.
+func (q *Queries) CompactVaultDocument(ctx context.Context, vaultID, docID string) error {
+	_, err := q.pool.Exec(ctx,
+		`DELETE FROM sync_messages
+		 WHERE vault_id = $1 AND doc_id = $2
+		 AND seq < (SELECT MAX(seq) FROM sync_messages WHERE vault_id = $1 AND doc_id = $2)`,
+		vaultID, docID,
 	)
 	return err
 }
@@ -148,6 +184,42 @@ func (q *Queries) GetMessagesSince(ctx context.Context, userID, docID string, af
 	})
 }
 
+// GetVaultMessagesSince returns all messages for a vault+document with seq > afterSeq.
+func (q *Queries) GetVaultMessagesSince(ctx context.Context, vaultID, docID string, afterSeq int64) ([]SyncMessage, error) {
+	rows, err := q.pool.Query(ctx,
+		`SELECT id, user_id, doc_id, seq, device_id, payload, created_at
+		 FROM sync_messages
+		 WHERE vault_id = $1 AND doc_id = $2 AND seq > $3
+		 ORDER BY seq ASC`,
+		vaultID, docID, afterSeq,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (SyncMessage, error) {
+		var m SyncMessage
+		err := row.Scan(&m.ID, &m.UserID, &m.DocID, &m.Seq, &m.DeviceID, &m.Payload, &m.CreatedAt)
+		return m, err
+	})
+}
+
+// GetVaultMemberIDs returns just the user IDs for a vault.
+func (q *Queries) GetVaultMemberIDs(ctx context.Context, vaultID string) ([]string, error) {
+	rows, err := q.pool.Query(ctx,
+		`SELECT user_id FROM vault_members WHERE vault_id = $1`, vaultID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
+		var uid string
+		err := row.Scan(&uid)
+		return uid, err
+	})
+}
+
 // UpdateAuthHash updates a user's auth hash (for password change).
 func (q *Queries) UpdateAuthHash(ctx context.Context, userID, newAuthHash string) error {
 	_, err := q.pool.Exec(ctx,
@@ -166,6 +238,15 @@ func (q *Queries) SetIdentityKeys(ctx context.Context, userID string, publicKey,
 	return err
 }
 
+// SetSigningKeys stores the user's signing public key and encrypted signing private key.
+func (q *Queries) SetSigningKeys(ctx context.Context, userID string, signingPublicKey, wrappedSigningPrivateKey []byte) error {
+	_, err := q.pool.Exec(ctx,
+		`UPDATE users SET signing_public_key = $2, wrapped_signing_private_key = $3 WHERE user_id = $1`,
+		userID, signingPublicKey, wrappedSigningPrivateKey,
+	)
+	return err
+}
+
 // GetPublicKey returns a user's public key by user_id.
 func (q *Queries) GetPublicKey(ctx context.Context, userID string) ([]byte, error) {
 	var pk []byte
@@ -178,6 +259,13 @@ func (q *Queries) GetWrappedPrivateKey(ctx context.Context, userID string) ([]by
 	var wpk []byte
 	err := q.pool.QueryRow(ctx, `SELECT wrapped_private_key FROM users WHERE user_id = $1`, userID).Scan(&wpk)
 	return wpk, err
+}
+
+// GetWrappedSigningPrivateKey returns the user's encrypted signing private key.
+func (q *Queries) GetWrappedSigningPrivateKey(ctx context.Context, userID string) ([]byte, error) {
+	var wsk []byte
+	err := q.pool.QueryRow(ctx, `SELECT wrapped_signing_private_key FROM users WHERE user_id = $1`, userID).Scan(&wsk)
+	return wsk, err
 }
 
 // CreateVault creates a new vault and adds the creator as owner.
@@ -252,7 +340,7 @@ func (q *Queries) RemoveVaultMember(ctx context.Context, vaultID, userID string)
 // ListVaultMembers returns all members of a vault.
 func (q *Queries) ListVaultMembers(ctx context.Context, vaultID string) ([]VaultMember, error) {
 	rows, err := q.pool.Query(ctx,
-		`SELECT vm.user_id, vm.role, u.public_key
+		`SELECT vm.user_id, vm.role, u.public_key, u.signing_public_key
 		 FROM vault_members vm
 		 JOIN users u ON u.user_id = vm.user_id
 		 WHERE vm.vault_id = $1`,
@@ -264,7 +352,7 @@ func (q *Queries) ListVaultMembers(ctx context.Context, vaultID string) ([]Vault
 	defer rows.Close()
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (VaultMember, error) {
 		var m VaultMember
-		err := row.Scan(&m.UserID, &m.Role, &m.PublicKey)
+		err := row.Scan(&m.UserID, &m.Role, &m.PublicKey, &m.SigningPublicKey)
 		return m, err
 	})
 }
@@ -303,11 +391,10 @@ func (q *Queries) DeleteVault(ctx context.Context, vaultID string) error {
 	return tx.Commit(ctx)
 }
 
-// LookupUserByID checks if a user_id exists and returns their public key.
-func (q *Queries) LookupUserByID(ctx context.Context, userID string) ([]byte, error) {
-	var pk []byte
-	err := q.pool.QueryRow(ctx, `SELECT public_key FROM users WHERE user_id = $1`, userID).Scan(&pk)
-	return pk, err
+// LookupUserByID checks if a user_id exists and returns their public key and signing public key.
+func (q *Queries) LookupUserByID(ctx context.Context, userID string) (pubKey []byte, signingPubKey []byte, err error) {
+	err = q.pool.QueryRow(ctx, `SELECT public_key, signing_public_key FROM users WHERE user_id = $1`, userID).Scan(&pubKey, &signingPubKey)
+	return pubKey, signingPubKey, err
 }
 
 // PurgeUser deletes all vault memberships, owned empty vaults, sync messages, devices, and the user record.
@@ -318,39 +405,76 @@ func (q *Queries) PurgeUser(ctx context.Context, userID string) error {
 	}
 	defer tx.Rollback(ctx)
 
-	// Remove user from all vault memberships
+	// 1. Remove user from all vault memberships
 	_, err = tx.Exec(ctx, `DELETE FROM vault_members WHERE user_id = $1`, userID)
 	if err != nil {
-		return err
+		return fmt.Errorf("delete vault_members: %w", err)
 	}
 
-	// Delete owned vaults that have no remaining members
-	_, err = tx.Exec(ctx,
-		`DELETE FROM vaults
-		 WHERE vault_id IN (
-		   SELECT vault_id FROM vaults
-		   WHERE created_by = $1
-		   AND vault_id NOT IN (SELECT DISTINCT vault_id FROM vault_members WHERE user_id != $1)
-		 )`,
+	// 2. Find owned vaults that now have no remaining members
+	// (we already removed this user's memberships, so empty = truly empty)
+	rows, err := tx.Query(ctx,
+		`SELECT v.vault_id FROM vaults v
+		 WHERE v.created_by = $1
+		 AND NOT EXISTS (SELECT 1 FROM vault_members vm WHERE vm.vault_id = v.vault_id)`,
 		userID,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("find empty vaults: %w", err)
+	}
+	var emptyVaultIDs []string
+	for rows.Next() {
+		var vid string
+		if err := rows.Scan(&vid); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan vault_id: %w", err)
+		}
+		emptyVaultIDs = append(emptyVaultIDs, vid)
+	}
+	rows.Close()
+
+	// 3. Delete sync_messages for empty vaults, then delete the vaults
+	// (sync_messages.vault_id FK cascades, but explicit delete avoids FK issues with ordering)
+	for _, vid := range emptyVaultIDs {
+		_, err = tx.Exec(ctx, `DELETE FROM sync_messages WHERE vault_id = $1`, vid)
+		if err != nil {
+			return fmt.Errorf("delete sync_messages for vault %s: %w", vid, err)
+		}
+	}
+	for _, vid := range emptyVaultIDs {
+		_, err = tx.Exec(ctx, `DELETE FROM vaults WHERE vault_id = $1`, vid)
+		if err != nil {
+			return fmt.Errorf("delete vault %s: %w", vid, err)
+		}
 	}
 
-	_, err = tx.Exec(ctx, `DELETE FROM sync_messages WHERE user_id = $1`, userID)
+	// 4. For owned vaults with remaining members, transfer created_by to another member
+	_, err = tx.Exec(ctx,
+		`UPDATE vaults SET created_by = (
+			SELECT vm.user_id FROM vault_members vm WHERE vm.vault_id = vaults.vault_id LIMIT 1
+		) WHERE created_by = $1`,
+		userID,
+	)
 	if err != nil {
-		return err
+		return fmt.Errorf("transfer vault ownership: %w", err)
 	}
 
+	// 5. Delete user's personal sync_messages (non-vault-scoped)
+	_, err = tx.Exec(ctx, `DELETE FROM sync_messages WHERE user_id = $1 AND vault_id IS NULL`, userID)
+	if err != nil {
+		return fmt.Errorf("delete personal sync_messages: %w", err)
+	}
+
+	// 6. Delete devices
 	_, err = tx.Exec(ctx, `DELETE FROM devices WHERE user_id = $1`, userID)
 	if err != nil {
-		return err
+		return fmt.Errorf("delete devices: %w", err)
 	}
 
+	// 7. Delete user (no more FK references should point to this user)
 	_, err = tx.Exec(ctx, `DELETE FROM users WHERE user_id = $1`, userID)
 	if err != nil {
-		return err
+		return fmt.Errorf("delete user: %w", err)
 	}
 
 	return tx.Commit(ctx)
@@ -444,6 +568,26 @@ func (q *Queries) GetVaultOwner(ctx context.Context, vaultID string) (string, er
 		vaultID,
 	).Scan(&ownerID)
 	return ownerID, err
+}
+
+// RotateVaultKeys atomically updates the encrypted vault key for every member of a vault.
+func (q *Queries) RotateVaultKeys(ctx context.Context, vaultID string, updates []VaultKeyUpdate) error {
+	tx, err := q.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	for _, u := range updates {
+		_, err = tx.Exec(ctx,
+			`UPDATE vault_members SET encrypted_vault_key = $3, sender_public_key = $4 WHERE vault_id = $1 AND user_id = $2`,
+			vaultID, u.UserID, u.EncryptedVaultKey, u.SenderPublicKey)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 // Ensure slog is used (compile-time check).

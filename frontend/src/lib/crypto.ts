@@ -158,6 +158,92 @@ export async function unwrapPrivateKey(wrapped: Uint8Array, masterKey: CryptoKey
   return decrypt(wrapped, masterKey);
 }
 
+// ── Signing keypair (ECDSA P-256) ──
+
+/**
+ * Generate an ECDSA P-256 signing keypair for payload authentication.
+ * Separate from the ECDH identity keys (Web Crypto enforces distinct usages).
+ */
+export async function generateSigningKeypair(): Promise<{
+  publicKey: Uint8Array;
+  privateKey: Uint8Array;
+}> {
+  const keyPair = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign", "verify"],
+  );
+  const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
+  const privPkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
+  return { publicKey: pubRaw, privateKey: privPkcs8 };
+}
+
+/** Wrap a signing private key with the master key. */
+export async function wrapSigningKey(privateKey: Uint8Array, masterKey: CryptoKey): Promise<Uint8Array> {
+  return encrypt(privateKey, masterKey);
+}
+
+/** Unwrap a signing private key with the master key. */
+export async function unwrapSigningKey(wrapped: Uint8Array, masterKey: CryptoKey): Promise<Uint8Array> {
+  return decrypt(wrapped, masterKey);
+}
+
+const SIGNED_VERSION = 0x01;
+
+/**
+ * Sign a plaintext payload with ECDSA and prepend the signature.
+ * Format: [0x01 version][64 bytes signature][plaintext]
+ */
+export async function signPayload(plaintext: Uint8Array, signingPrivateKeyPkcs8: Uint8Array): Promise<Uint8Array> {
+  const privKey = await crypto.subtle.importKey(
+    "pkcs8", signingPrivateKeyPkcs8 as unknown as ArrayBuffer,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false, ["sign"],
+  );
+  const signature = new Uint8Array(await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" }, privKey, plaintext as unknown as ArrayBuffer,
+  ));
+  // ECDSA P-256 signature is 64 bytes (r||s, each 32 bytes)
+  const result = new Uint8Array(1 + signature.length + plaintext.length);
+  result[0] = SIGNED_VERSION;
+  result.set(signature, 1);
+  result.set(plaintext, 1 + signature.length);
+  return result;
+}
+
+/**
+ * Verify and unwrap a signed payload.
+ * Returns { plaintext, verified }. If the payload is unsigned (legacy), verified is false.
+ */
+export async function verifyPayload(
+  data: Uint8Array,
+  signingPublicKeyRaw: Uint8Array | null,
+): Promise<{ plaintext: Uint8Array; verified: boolean }> {
+  if (data[0] !== SIGNED_VERSION || data.length < 65) {
+    // Legacy unsigned payload
+    return { plaintext: data, verified: false };
+  }
+  const signature = data.slice(1, 65);
+  const plaintext = data.slice(65);
+  if (!signingPublicKeyRaw) {
+    // No signing key available -- accept but mark unverified
+    return { plaintext, verified: false };
+  }
+  try {
+    const pubKey = await crypto.subtle.importKey(
+      "raw", signingPublicKeyRaw as unknown as ArrayBuffer,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false, ["verify"],
+    );
+    const valid = await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" }, pubKey, signature as unknown as ArrayBuffer, plaintext as unknown as ArrayBuffer,
+    );
+    return { plaintext, verified: valid };
+  } catch {
+    return { plaintext, verified: false };
+  }
+}
+
 // ── Book (vault) key management ──
 
 /**

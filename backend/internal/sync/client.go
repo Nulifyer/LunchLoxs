@@ -44,6 +44,9 @@ type ClientMessage struct {
 	// Identity keys
 	PublicKey         string `json:"public_key,omitempty"`
 	WrappedPrivateKey string `json:"wrapped_private_key,omitempty"`
+	// Signing identity keys
+	SigningPublicKey          string `json:"signing_public_key,omitempty"`
+	WrappedSigningPrivateKey  string `json:"wrapped_signing_private_key,omitempty"`
 	// Vault fields
 	VaultID           string `json:"vault_id,omitempty"`
 	TargetUserID      string `json:"target_user_id,omitempty"`
@@ -51,6 +54,15 @@ type ClientMessage struct {
 	SenderPublicKey   string `json:"sender_public_key,omitempty"`
 	Role              string `json:"role,omitempty"`
 	NewRole           string `json:"new_role,omitempty"`
+	// Vault key rotation
+	VaultKeyUpdates []VaultKeyUpdateMsg `json:"vault_key_updates,omitempty"`
+}
+
+// VaultKeyUpdateMsg is the wire format for a single member's re-encrypted vault key.
+type VaultKeyUpdateMsg struct {
+	UserID            string `json:"user_id"`
+	EncryptedVaultKey string `json:"encrypted_vault_key"`
+	SenderPublicKey   string `json:"sender_public_key"`
 }
 
 type ServerMessage struct {
@@ -63,8 +75,11 @@ type ServerMessage struct {
 	Message    string          `json:"message,omitempty"`
 	Presence   json.RawMessage `json:"presence,omitempty"`
 	// Identity
-	PublicKey         string `json:"public_key,omitempty"`
-	WrappedPrivateKey string `json:"wrapped_private_key,omitempty"`
+	PublicKey                string `json:"public_key,omitempty"`
+	WrappedPrivateKey        string `json:"wrapped_private_key,omitempty"`
+	SigningPublicKey          string `json:"signing_public_key,omitempty"`
+	WrappedSigningPrivateKey string `json:"wrapped_signing_private_key,omitempty"`
+	SenderUserID             string `json:"sender_user_id,omitempty"`
 	// Vault fields
 	VaultID           string           `json:"vault_id,omitempty"`
 	Vaults            []VaultInfoMsg   `json:"vaults,omitempty"`
@@ -84,9 +99,10 @@ type VaultInfoMsg struct {
 }
 
 type VaultMemberMsg struct {
-	UserID    string `json:"user_id"`
-	Role      string `json:"role"`
-	PublicKey string `json:"public_key,omitempty"`
+	UserID           string `json:"user_id"`
+	Role             string `json:"role"`
+	PublicKey        string `json:"public_key,omitempty"`
+	SigningPublicKey string `json:"signing_public_key,omitempty"`
 }
 
 // ReadPump reads messages from the WebSocket and processes them.
@@ -128,6 +144,8 @@ func (c *Client) ReadPump(ctx context.Context) {
 			c.handlePurge(ctx)
 		case "set_identity":
 			c.handleSetIdentity(ctx, msg)
+		case "set_signing_identity":
+			c.handleSetSigningIdentity(ctx, msg)
 		case "create_vault":
 			c.handleCreateVault(ctx, msg)
 		case "list_vaults":
@@ -148,6 +166,8 @@ func (c *Client) ReadPump(ctx context.Context) {
 			c.handleTransferOwnership(ctx, msg)
 		case "change_role":
 			c.handleChangeRole(ctx, msg)
+		case "rotate_vault_key":
+			c.handleRotateVaultKey(ctx, msg)
 		default:
 			c.sendError("unknown message type: " + msg.Type)
 		}
@@ -226,29 +246,58 @@ func (c *Client) handleConnect(ctx context.Context, msg ClientMessage) {
 	if authResult.PublicKey != nil {
 		connMsg.PublicKey = string(authResult.PublicKey)
 	}
+	if authResult.SigningPublicKey != nil {
+		connMsg.SigningPublicKey = string(authResult.SigningPublicKey)
+	}
 	// Include wrapped private key so other devices can get it
 	wpk, _ := c.Queries.GetWrappedPrivateKey(ctx, msg.UserID)
 	if wpk != nil {
 		connMsg.WrappedPrivateKey = string(wpk)
 	}
+	// Include wrapped signing private key
+	wsk, _ := c.Queries.GetWrappedSigningPrivateKey(ctx, msg.UserID)
+	if wsk != nil {
+		connMsg.WrappedSigningPrivateKey = string(wsk)
+	}
 	c.sendJSON(connMsg)
+}
+
+// extractVaultID returns the vault ID prefix from a doc ID like "vaultId/subDoc",
+// or empty string if the doc is not vault-scoped.
+func extractVaultID(docID string) string {
+	if idx := strings.Index(docID, "/"); idx > 0 {
+		return docID[:idx]
+	}
+	return ""
 }
 
 // checkVaultAccess extracts the vault ID from a docID (format "vaultId/subDoc")
 // and verifies the client is a member of that vault. Returns true if access is allowed.
 func (c *Client) checkVaultAccess(ctx context.Context, docID string) bool {
-	idx := strings.Index(docID, "/")
-	if idx < 0 {
-		// No vault prefix -- personal doc, always allowed
+	vaultID := extractVaultID(docID)
+	if vaultID == "" {
 		return true
 	}
-	vaultID := docID[:idx]
 	isMember, _, err := c.Queries.IsVaultMember(ctx, vaultID, c.UserID)
 	if err != nil {
 		slog.Error("vault access check failed", "vault", vaultID, "user", c.UserID, "error", err)
 		return false
 	}
 	return isMember
+}
+
+// checkVaultWriteAccess verifies the client is an owner or editor of the vault.
+// Viewers can read but not write.
+func (c *Client) checkVaultWriteAccess(ctx context.Context, docID string) bool {
+	vaultID := extractVaultID(docID)
+	if vaultID == "" {
+		return true
+	}
+	isMember, role, err := c.Queries.IsVaultMember(ctx, vaultID, c.UserID)
+	if err != nil || !isMember {
+		return false
+	}
+	return role == "owner" || role == "editor"
 }
 
 func (c *Client) handleSubscribe(ctx context.Context, msg ClientMessage) {
@@ -269,8 +318,14 @@ func (c *Client) handleSubscribe(ctx context.Context, msg ClientMessage) {
 
 	c.Hub.Subscribe(c, msg.DocID)
 
-	// Replay missed messages for this document
-	messages, err := c.Queries.GetMessagesSince(ctx, c.UserID, msg.DocID, msg.LastSeq)
+	// Replay missed messages: use vault-scoped query if doc is vault-scoped
+	var messages []db.SyncMessage
+	var err error
+	if vaultID := extractVaultID(msg.DocID); vaultID != "" {
+		messages, err = c.Queries.GetVaultMessagesSince(ctx, vaultID, msg.DocID, msg.LastSeq)
+	} else {
+		messages, err = c.Queries.GetMessagesSince(ctx, c.UserID, msg.DocID, msg.LastSeq)
+	}
 	if err != nil {
 		c.sendError("failed to fetch history")
 		slog.Error("subscribe history error", "device", c.DeviceID, "doc", msg.DocID, "error", err)
@@ -279,11 +334,12 @@ func (c *Client) handleSubscribe(ctx context.Context, msg ClientMessage) {
 
 	for _, m := range messages {
 		c.sendJSON(ServerMessage{
-			Type:       "sync",
-			DocID:      m.DocID,
-			Seq:        m.Seq,
-			Payload:    string(m.Payload),
-			FromDevice: m.DeviceID,
+			Type:         "sync",
+			DocID:        m.DocID,
+			Seq:          m.Seq,
+			Payload:      string(m.Payload),
+			FromDevice:   m.DeviceID,
+			SenderUserID: m.UserID,
 		})
 	}
 
@@ -313,36 +369,57 @@ func (c *Client) handlePush(ctx context.Context, msg ClientMessage) {
 		docID = "catalog" // backward compat
 	}
 
-	// Vault-scoped authorization
-	if !c.checkVaultAccess(ctx, docID) {
-		c.sendError("not a member of this vault")
+	// Vault-scoped authorization: need write access (owner or editor) to push
+	if !c.checkVaultWriteAccess(ctx, docID) {
+		c.sendError("insufficient permissions to write")
 		return
 	}
 
-	seq, err := c.Queries.StoreMessage(ctx, c.UserID, docID, c.DeviceID, []byte(msg.Payload))
+	vaultID := extractVaultID(docID)
+
+	var seq int64
+	var err error
+	if vaultID != "" {
+		seq, err = c.Queries.StoreVaultMessage(ctx, vaultID, docID, c.UserID, c.DeviceID, []byte(msg.Payload))
+	} else {
+		seq, err = c.Queries.StoreMessage(ctx, c.UserID, docID, c.DeviceID, []byte(msg.Payload))
+	}
 	if err != nil {
 		c.sendError("failed to store message")
 		slog.Error("store error", "device", c.DeviceID, "doc", docID, "error", err)
 		return
 	}
 
-	// Compact: keep only the latest snapshot for this document
-	if err := c.Queries.CompactDocument(ctx, c.UserID, docID); err != nil {
-		slog.Error("compact error", "device", c.DeviceID, "doc", docID, "error", err)
+	// Compact: keep only the latest snapshot
+	if vaultID != "" {
+		if err := c.Queries.CompactVaultDocument(ctx, vaultID, docID); err != nil {
+			slog.Error("compact error", "device", c.DeviceID, "doc", docID, "error", err)
+		}
+	} else {
+		if err := c.Queries.CompactDocument(ctx, c.UserID, docID); err != nil {
+			slog.Error("compact error", "device", c.DeviceID, "doc", docID, "error", err)
+		}
 	}
 
 	// Acknowledge to sender
 	c.sendJSON(ServerMessage{Type: "ack", DocID: docID, Seq: seq})
 
-	// Relay to other devices subscribed to this document
+	// Relay to subscribers
 	relay, _ := json.Marshal(ServerMessage{
-		Type:       "sync",
-		DocID:      docID,
-		Seq:        seq,
-		Payload:    msg.Payload,
-		FromDevice: c.DeviceID,
+		Type:         "sync",
+		DocID:        docID,
+		Seq:          seq,
+		Payload:      msg.Payload,
+		FromDevice:   c.DeviceID,
+		SenderUserID: c.UserID,
 	})
-	c.Hub.BroadcastDoc(c.UserID, docID, c.DeviceID, relay)
+	if vaultID != "" {
+		// Broadcast to all vault members subscribed to this doc
+		memberIDs, _ := c.Queries.GetVaultMemberIDs(ctx, vaultID)
+		c.Hub.BroadcastVaultDoc(memberIDs, docID, c.DeviceID, relay)
+	} else {
+		c.Hub.BroadcastDoc(c.UserID, docID, c.DeviceID, relay)
+	}
 }
 
 func (c *Client) handleSetKey(ctx context.Context, msg ClientMessage) {
@@ -453,6 +530,23 @@ func (c *Client) handleSetIdentity(ctx context.Context, msg ClientMessage) {
 	c.sendJSON(ServerMessage{Type: "identity_stored"})
 }
 
+func (c *Client) handleSetSigningIdentity(ctx context.Context, msg ClientMessage) {
+	if c.UserID == "" {
+		c.sendError("must connect first")
+		return
+	}
+	if msg.SigningPublicKey == "" || msg.WrappedSigningPrivateKey == "" {
+		c.sendError("signing_public_key and wrapped_signing_private_key required")
+		return
+	}
+	if err := c.Queries.SetSigningKeys(ctx, c.UserID, []byte(msg.SigningPublicKey), []byte(msg.WrappedSigningPrivateKey)); err != nil {
+		c.sendError("failed to store signing identity keys")
+		slog.Error("set signing identity error", "device", c.DeviceID, "error", err)
+		return
+	}
+	c.sendJSON(ServerMessage{Type: "signing_identity_stored"})
+}
+
 // -- Vault handlers --
 
 func (c *Client) handleCreateVault(ctx context.Context, msg ClientMessage) {
@@ -517,16 +611,20 @@ func (c *Client) handleInviteToVault(ctx context.Context, msg ClientMessage) {
 		return
 	}
 
-	// Check target user exists
-	_, err = c.Queries.LookupUserByID(ctx, msg.TargetUserID)
-	if err != nil {
+	// Check target user exists (only need the first return value for existence check)
+	pk, _, err := c.Queries.LookupUserByID(ctx, msg.TargetUserID)
+	if err != nil || pk == nil {
 		c.sendError("target user not found")
 		return
 	}
 
 	inviteRole := msg.Role
 	if inviteRole == "" {
-		inviteRole = "editor"
+		inviteRole = "viewer"
+	}
+	if inviteRole != "owner" && inviteRole != "editor" && inviteRole != "viewer" {
+		c.sendError("invalid role: must be owner, editor, or viewer")
+		return
 	}
 
 	if err := c.Queries.AddVaultMember(ctx, msg.VaultID, msg.TargetUserID, []byte(msg.EncryptedVaultKey), []byte(msg.SenderPublicKey), inviteRole, c.UserID); err != nil {
@@ -628,9 +726,10 @@ func (c *Client) handleListVaultMembers(ctx context.Context, msg ClientMessage) 
 	var memberMsgs []VaultMemberMsg
 	for _, m := range members {
 		memberMsgs = append(memberMsgs, VaultMemberMsg{
-			UserID:    m.UserID,
-			Role:      m.Role,
-			PublicKey: string(m.PublicKey),
+			UserID:           m.UserID,
+			Role:             m.Role,
+			PublicKey:        string(m.PublicKey),
+			SigningPublicKey: string(m.SigningPublicKey),
 		})
 	}
 	c.sendJSON(ServerMessage{Type: "vault_members", VaultID: msg.VaultID, Members: memberMsgs})
@@ -680,12 +779,16 @@ func (c *Client) handleLookupUser(ctx context.Context, msg ClientMessage) {
 		c.sendError("target_user_id required")
 		return
 	}
-	pk, err := c.Queries.LookupUserByID(ctx, msg.TargetUserID)
+	pk, signingPk, err := c.Queries.LookupUserByID(ctx, msg.TargetUserID)
 	if err != nil || pk == nil {
 		c.sendError("user not found or no public key")
 		return
 	}
-	c.sendJSON(ServerMessage{Type: "user_lookup", TargetUserID: msg.TargetUserID, TargetPublicKey: string(pk)})
+	resp := ServerMessage{Type: "user_lookup", TargetUserID: msg.TargetUserID, TargetPublicKey: string(pk)}
+	if signingPk != nil {
+		resp.SigningPublicKey = string(signingPk)
+	}
+	c.sendJSON(resp)
 }
 
 func (c *Client) handleTransferOwnership(ctx context.Context, msg ClientMessage) {
@@ -730,6 +833,12 @@ func (c *Client) handleChangeRole(ctx context.Context, msg ClientMessage) {
 	}
 	if msg.VaultID == "" || msg.TargetUserID == "" || msg.NewRole == "" {
 		c.sendError("vault_id, target_user_id, and new_role required")
+		return
+	}
+
+	// Validate role is one of the allowed values
+	if msg.NewRole != "owner" && msg.NewRole != "editor" && msg.NewRole != "viewer" {
+		c.sendError("invalid role: must be owner, editor, or viewer")
 		return
 	}
 
@@ -780,6 +889,49 @@ func (c *Client) handleChangeRole(ctx context.Context, msg ClientMessage) {
 		NewRole: msg.NewRole,
 	})
 	c.Hub.Broadcast(msg.TargetUserID, "", relay)
+}
+
+func (c *Client) handleRotateVaultKey(ctx context.Context, msg ClientMessage) {
+	if c.UserID == "" {
+		c.sendError("must connect first")
+		return
+	}
+	if msg.VaultID == "" || len(msg.VaultKeyUpdates) == 0 {
+		c.sendError("vault_id and vault_key_updates required")
+		return
+	}
+
+	// Verify sender is owner
+	isMember, role, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	if err != nil || !isMember || role != "owner" {
+		c.sendError("only the owner can rotate vault keys")
+		return
+	}
+
+	// Convert wire format to DB format
+	updates := make([]db.VaultKeyUpdate, len(msg.VaultKeyUpdates))
+	for i, u := range msg.VaultKeyUpdates {
+		updates[i] = db.VaultKeyUpdate{
+			UserID:            u.UserID,
+			EncryptedVaultKey: []byte(u.EncryptedVaultKey),
+			SenderPublicKey:   []byte(u.SenderPublicKey),
+		}
+	}
+
+	if err := c.Queries.RotateVaultKeys(ctx, msg.VaultID, updates); err != nil {
+		c.sendError("failed to rotate vault keys")
+		slog.Error("rotate vault key error", "device", c.DeviceID, "vault", msg.VaultID, "error", err)
+		return
+	}
+
+	slog.Info("vault key rotated", "vault", msg.VaultID, "user", c.UserID)
+
+	// Broadcast vault_key_rotated to all members
+	memberIDs, _ := c.Queries.GetVaultMemberIDs(ctx, msg.VaultID)
+	relay, _ := json.Marshal(ServerMessage{Type: "vault_key_rotated", VaultID: msg.VaultID})
+	for _, uid := range memberIDs {
+		c.Hub.Broadcast(uid, "", relay)
+	}
 }
 
 func (c *Client) sendJSON(msg ServerMessage) {

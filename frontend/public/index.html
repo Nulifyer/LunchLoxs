@@ -104,8 +104,18 @@
 
           <article>
             <header>Local Data</header>
-            <p style="font-size:0.8rem">Clear cached data on this device only. Your account and data on other devices are not affected. You will need to log in again.</p>
+            <p style="font-size:0.8rem">Clear cached data on this device only. Your account and server data are not affected.</p>
             <button id="purge-local-btn" class="danger">Clear Local Data</button>
+          </article>
+
+          <article>
+            <header>Debug</header>
+            <p style="font-size:0.8rem">Export application logs for troubleshooting.</p>
+            <div style="display:flex;gap:0.4rem;flex-wrap:wrap">
+              <button id="export-logs-btn" class="sm">Download Logs</button>
+              <button id="copy-logs-btn" class="sm">Copy to Clipboard</button>
+              <button id="generate-data-btn" class="sm" hidden>Generate Test Data</button>
+            </div>
           </article>
 
           <article>
@@ -127,8 +137,7 @@
               <button id="back-btn" class="ghost mobile-only sm" aria-label="Back">&larr;</button>
               <h2 id="recipe-title"></h2>
               <button id="page-edit-btn" class="sm">Edit</button>
-              <button id="edit-recipe-btn" class="sm" hidden>Settings</button>
-              <button id="delete-recipe-btn" class="sm danger" hidden>Delete</button>
+              <div id="recipe-actions-slot" style="display:flex"></div>
             </div>
             <div id="recipe-meta" class="meta"></div>
           </header>
@@ -208,7 +217,21 @@
         <strong>Manage Books</strong>
         <button type="button" class="dialog-close-x dialog-close-btn" aria-label="Close">&times;</button>
       </header>
+
+      <!-- Drag-drop import zone -->
+      <div id="book-drop-zone" class="drop-zone">
+        <span>Drop .zip or .md files here to import</span>
+      </div>
+
+      <!-- Bulk actions toolbar (hidden when nothing selected) -->
+      <div id="book-bulk-toolbar" class="bulk-toolbar" hidden>
+        <span id="book-bulk-count">0 selected</span>
+        <button id="book-bulk-export" class="sm">Export</button>
+        <button id="book-bulk-delete" class="sm danger">Delete</button>
+      </div>
+
       <ul id="book-list-manage"></ul>
+
       <form id="create-book-form" style="margin-top:0.75rem">
         <label for="new-book-name" class="sr-only">New book name</label>
         <input type="text" id="new-book-name" placeholder="New book name" required />
@@ -240,7 +263,6 @@
   <script type="module" src="/index.js"></script>
   <script>
     document.addEventListener("click", function(e) {
-      if (e.target.classList.contains("dialog-close-btn")) e.target.closest("dialog")?.close();
       // Close profile menu on outside click
       var pm = document.getElementById("profile-menu");
       if (pm && !e.target.closest(".topbar-profile")) pm.classList.remove("open");

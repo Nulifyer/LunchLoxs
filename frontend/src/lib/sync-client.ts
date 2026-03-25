@@ -24,6 +24,7 @@ export interface VaultMemberInfo {
   userId: string;
   role: string;
   publicKey?: string;
+  signingPublicKey?: string;
 }
 
 export interface SyncClientOptions {
@@ -32,13 +33,17 @@ export interface SyncClientOptions {
   deviceId: string;
   authHash: string;
   encKey: CryptoKey;
+  /** Resolve the encryption key for a given doc_id. Vault-scoped docs use the vault key. */
+  getDocKey?: (docId: string) => CryptoKey | null;
   wrappedKey?: string;
   onConnected?: (data: {
     wrappedKey?: string;
     publicKey?: string;
     wrappedPrivateKey?: string;
+    signingPublicKey?: string;
+    wrappedSigningPrivateKey?: string;
   }) => Promise<void> | void;
-  onRemoteChange: (docId: string, snapshot: Uint8Array, seq: number) => Promise<void>;
+  onRemoteChange: (docId: string, snapshot: Uint8Array, seq: number, senderUserId?: string) => Promise<void>;
   onCaughtUp: (docId: string, latestSeq: number) => void;
   onStatusChange: (status: SyncStatus) => void;
   onPurged?: () => void;
@@ -52,6 +57,7 @@ export interface SyncClientOptions {
   onVaultMembers?: (vaultId: string, members: VaultMemberInfo[]) => void;
   onOwnershipTransferred?: (vaultId: string, newOwnerUserId: string) => void;
   onRoleChanged?: (vaultId: string, targetUserId: string, newRole: string) => void;
+  onVaultKeyRotated?: (vaultId: string) => void;
 }
 
 interface ServerMessage {
@@ -65,9 +71,12 @@ interface ServerMessage {
   presence?: any;
   public_key?: string;
   wrapped_private_key?: string;
+  signing_public_key?: string;
+  wrapped_signing_private_key?: string;
+  sender_user_id?: string;
   vault_id?: string;
   vaults?: Array<{ vault_id: string; encrypted_vault_key: string; sender_public_key: string; role: string }>;
-  members?: Array<{ user_id: string; role: string; public_key?: string }>;
+  members?: Array<{ user_id: string; role: string; public_key?: string; signing_public_key?: string }>;
   encrypted_vault_key?: string;
   role?: string;
   new_role?: string;
@@ -145,17 +154,21 @@ export class SyncClient {
           wrappedKey: msg.payload || undefined,
           publicKey: msg.public_key || undefined,
           wrappedPrivateKey: msg.wrapped_private_key || undefined,
+          signingPublicKey: msg.signing_public_key || undefined,
+          wrappedSigningPrivateKey: msg.wrapped_signing_private_key || undefined,
         });
         await this.resubscribeAll();
         await this.flushPending();
         break;
 
       case "sync":
-        if (msg.payload && msg.seq !== undefined && msg.doc_id && this.opts.encKey) {
+        if (msg.payload && msg.seq !== undefined && msg.doc_id) {
+          const key = this.resolveKey(msg.doc_id);
+          if (!key) { console.error(`sync: no key for doc ${msg.doc_id}`); break; }
           try {
             const encrypted = fromBase64(msg.payload);
-            const plaintext = await decrypt(encrypted, this.opts.encKey);
-            await this.opts.onRemoteChange(msg.doc_id, plaintext, msg.seq);
+            const plaintext = await decrypt(encrypted, key);
+            await this.opts.onRemoteChange(msg.doc_id, plaintext, msg.seq, msg.sender_user_id);
           } catch (e) {
             console.error(`sync: decryption failed for doc ${msg.doc_id}:`, e);
           }
@@ -225,6 +238,7 @@ export class SyncClient {
             userId: m.user_id,
             role: m.role,
             publicKey: m.public_key,
+            signingPublicKey: m.signing_public_key,
           }))
         );
         break;
@@ -248,10 +262,21 @@ export class SyncClient {
         this.opts.onRoleChanged?.(msg.vault_id ?? "", msg.target_user_id ?? "", msg.new_role ?? "");
         break;
 
-      case "vault_invite_ok":
+      case "vault_key_rotated":
+        this.opts.onVaultKeyRotated?.(msg.vault_id ?? "");
+        break;
+
       case "vault_member_removed":
       case "transfer_ok":
       case "role_change_ok":
+      case "vault_key_rotation_ok": {
+        const resolver = this.confirmResolvers.get(msg.type);
+        if (resolver) resolver();
+        break;
+      }
+
+      case "vault_invite_ok":
+      case "signing_identity_stored":
         break;
 
       case "error":
@@ -295,8 +320,13 @@ export class SyncClient {
   }
 
   async push(docId: string, snapshot: Uint8Array): Promise<void> {
-    if (this.ws?.readyState === WebSocket.OPEN && this.opts.encKey) {
-      const encrypted = await encrypt(snapshot, this.opts.encKey);
+    const key = this.resolveKey(docId);
+    if (!key) {
+      console.warn(`sync: no encryption key for ${docId}, skipping push`);
+      return;
+    }
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      const encrypted = await encrypt(snapshot, key);
       this.ws.send(JSON.stringify({
         type: "push",
         doc_id: docId,
@@ -333,8 +363,10 @@ export class SyncClient {
     this.sendMsg({ type: "invite_to_vault", vault_id: vaultId, target_user_id: targetUserId, encrypted_vault_key: encryptedVaultKey, sender_public_key: senderPublicKey, role });
   }
 
-  removeFromVault(vaultId: string, targetUserId: string): void {
-    this.sendMsg({ type: "remove_from_vault", vault_id: vaultId, target_user_id: targetUserId });
+  removeFromVault(vaultId: string, targetUserId: string): Promise<void> {
+    return this.awaitConfirmation("vault_member_removed", () => {
+      this.sendMsg({ type: "remove_from_vault", vault_id: vaultId, target_user_id: targetUserId });
+    });
   }
 
   listVaultMembers(vaultId: string): void {
@@ -345,12 +377,42 @@ export class SyncClient {
     this.sendMsg({ type: "delete_vault", vault_id: vaultId });
   }
 
-  transferOwnership(vaultId: string, newOwnerUserId: string): void {
-    this.sendMsg({ type: "transfer_ownership", vault_id: vaultId, target_user_id: newOwnerUserId });
+  transferOwnership(vaultId: string, newOwnerUserId: string): Promise<void> {
+    return this.awaitConfirmation("transfer_ok", () => {
+      this.sendMsg({ type: "transfer_ownership", vault_id: vaultId, target_user_id: newOwnerUserId });
+    });
   }
 
-  changeRole(vaultId: string, targetUserId: string, newRole: string): void {
-    this.sendMsg({ type: "change_role", vault_id: vaultId, target_user_id: targetUserId, new_role: newRole });
+  changeRole(vaultId: string, targetUserId: string, newRole: string): Promise<void> {
+    return this.awaitConfirmation("role_change_ok", () => {
+      this.sendMsg({ type: "change_role", vault_id: vaultId, target_user_id: targetUserId, new_role: newRole });
+    });
+  }
+
+  /** Generic helper: send a message, resolve when a specific confirmation type arrives. */
+  private awaitConfirmation(confirmType: string, send: () => void, timeoutMs = 10000): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.confirmResolvers.delete(confirmType); reject(new Error(`${confirmType} timed out`)); }, timeoutMs);
+      this.confirmResolvers.set(confirmType, () => { clearTimeout(timer); this.confirmResolvers.delete(confirmType); resolve(); });
+      send();
+    });
+  }
+  private confirmResolvers = new Map<string, () => void>();
+
+  setSigningIdentity(signingPublicKey: string, wrappedSigningPrivateKey: string): void {
+    this.sendMsg({ type: "set_signing_identity", signing_public_key: signingPublicKey, wrapped_signing_private_key: wrappedSigningPrivateKey });
+  }
+
+  rotateVaultKey(vaultId: string, members: Array<{ userId: string; encryptedVaultKey: string; senderPublicKey: string }>): void {
+    this.sendMsg({
+      type: "rotate_vault_key",
+      vault_id: vaultId,
+      vault_key_updates: members.map((m) => ({
+        user_id: m.userId,
+        encrypted_vault_key: m.encryptedVaultKey,
+        sender_public_key: m.senderPublicKey,
+      })),
+    });
   }
 
   /**
@@ -392,6 +454,21 @@ export class SyncClient {
     }
     this.lookupResolvers.clear();
     this.ws?.close();
+  }
+
+  /** Resolve the encryption key for a doc. Vault-scoped docs use getDocKey. */
+  private resolveKey(docId: string): CryptoKey | null {
+    if (this.opts.getDocKey) {
+      const key = this.opts.getDocKey(docId);
+      if (key) return key;
+    }
+    // Only fall back to master key for non-vault docs
+    const isVaultDoc = docId.indexOf("/") > 0;
+    if (isVaultDoc) {
+      // Never encrypt vault docs with the master key -- that would be unreadable by other members
+      return null;
+    }
+    return this.opts.encKey ?? null;
   }
 
   private sendMsg(obj: Record<string, any>): void {

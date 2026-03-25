@@ -104,6 +104,29 @@ func (h *Hub) BroadcastDoc(userID, docID, senderDeviceID string, msg []byte) {
 	}
 }
 
+// BroadcastVaultDoc sends a message to all clients of any vault member subscribed to a doc,
+// except the sender. Used for vault-scoped sync messages.
+func (h *Hub) BroadcastVaultDoc(memberUserIDs []string, docID, senderDeviceID string, msg []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, uid := range memberUserIDs {
+		clients, ok := h.docs[uid][docID]
+		if !ok {
+			continue
+		}
+		for c := range clients {
+			if c.DeviceID == senderDeviceID {
+				continue
+			}
+			select {
+			case c.Send <- msg:
+			default:
+				slog.Warn("hub: dropping message for slow client", "device", c.DeviceID)
+			}
+		}
+	}
+}
+
 // Broadcast sends a message to all clients of a user except the sender.
 // Used for user-level events (purge, password change).
 func (h *Hub) Broadcast(userID string, senderDeviceID string, msg []byte) {

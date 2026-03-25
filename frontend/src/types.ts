@@ -1,4 +1,4 @@
-/** Book (vault) — a collection of recipes with its own encryption key */
+/** Book (vault) -- a collection of recipes with its own encryption key */
 export interface Book {
   vaultId: string;
   name: string;
@@ -6,7 +6,7 @@ export interface Book {
   encKey?: CryptoKey;
 }
 
-/** Recipe catalog entry — stored in the shared catalog Automerge doc */
+/** Recipe catalog entry -- stored in the shared catalog Automerge doc */
 export interface RecipeMeta {
   id: string;
   title: string;
@@ -22,9 +22,11 @@ export interface RecipeMeta {
 export interface RecipeCatalog {
   name: string;
   recipes: RecipeMeta[];
+  /** userId -> display name (username), shared among vault members */
+  members?: Record<string, string>;
 }
 
-/** Recipe content — stored in its own Automerge doc (doc_id = recipe.id) */
+/** Recipe content -- stored in its own Automerge doc (doc_id = recipe.id) */
 export interface RecipeContent {
   description: string;
   ingredients: Array<{
