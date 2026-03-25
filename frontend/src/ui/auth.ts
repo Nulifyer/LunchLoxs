@@ -84,7 +84,9 @@ export async function login(username: string, passphrase: string) {
     }
     log("[login] creating SyncClient...");
     const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProtocol}//${location.hostname}:8000/ws`;
+    const isDev = location.hostname === "localhost" && location.port === "5000";
+    const wsHost = isDev ? `${location.hostname}:8000` : location.host;
+    const wsUrl = `${wsProtocol}//${wsHost}/ws`;
     const syncClient = createSyncConnection(wsUrl, userId, derived, masterKey, wrappedMasterKey, username);
     setSyncClient(syncClient);
     syncClient.setLastSeqGetter(async (docId) => { const s = getDocMgr()?.get(docId); return s ? s.getLastSeq() : 0; });
