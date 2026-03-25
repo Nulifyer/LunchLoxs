@@ -210,7 +210,8 @@ function snippetAround(text: string, matchStart: number, matchLen: number): stri
 
 export function renderRecipeList(recipes: RecipeMeta[], selectedId: string | null) {
   container.innerHTML = "";
-  for (const recipe of recipes) {
+  const sorted = [...recipes].sort((a, b) => a.title.localeCompare(b.title));
+  for (const recipe of sorted) {
     const li = document.createElement("li");
     li.dataset.recipeId = recipe.id;
     li.className = recipe.id === selectedId ? "selected" : "";
