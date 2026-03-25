@@ -17,6 +17,26 @@ import (
 )
 
 func main() {
+	// Configure structured logging
+	logLevel := new(slog.LevelVar)
+	switch getEnv("LOG_LEVEL", "info") {
+	case "debug":
+		logLevel.Set(slog.LevelDebug)
+	case "warn":
+		logLevel.Set(slog.LevelWarn)
+	case "error":
+		logLevel.Set(slog.LevelError)
+	default:
+		logLevel.Set(slog.LevelInfo)
+	}
+	var handler slog.Handler
+	if getEnv("LOG_FORMAT", "text") == "json" {
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
+	}
+	slog.SetDefault(slog.New(handler))
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 

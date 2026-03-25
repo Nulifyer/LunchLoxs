@@ -24,10 +24,12 @@ export function initRecipeList(cb: RecipeListCallbacks) {
   callbacks = cb;
   addBtn.addEventListener("click", () => callbacks.onAdd());
 
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
   searchInput.addEventListener("input", () => {
     currentSearch = searchInput.value.trim();
     activeIdx = -1;
-    renderSearchDropdown();
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(renderSearchDropdown, 80);
   });
 
   searchInput.addEventListener("focus", () => {

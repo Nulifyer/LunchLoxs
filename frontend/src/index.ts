@@ -186,7 +186,10 @@ async function backgroundIndexAllContent() {
 
     // Wait for sync to deliver content (one tick)
     await new Promise((r) => setTimeout(r, 100));
-    if (signal.aborted) { if (needsClose) docMgr.close(contentDocId); searchIndexingEl.hidden = true; return; }
+    if (signal.aborted) {
+      if (needsClose) { if (syncClient) syncClient.unsubscribe(contentDocId); docMgr.close(contentDocId); }
+      searchIndexingEl.hidden = true; return;
+    }
 
     const doc = store.getDoc();
     const ingText = (doc.ingredients ?? []).map((i: any) => `${i.quantity} ${i.unit} ${i.item}`).join(" ");
@@ -439,7 +442,7 @@ async function selectRecipe(id: string) {
     meta?.cookMinutes ? `${meta.cookMinutes}m cook` : "",
     ...(meta?.tags ?? []),
   ].filter(Boolean).join(" · ");
-  openRecipe(contentStore, title, metaText, canEditActiveBook());
+  openRecipe(contentStore, title, metaText, canEditActiveBook(), meta?.updatedAt);
   // Index content for search
   const content = contentStore.getDoc();
   const ingText = (content.ingredients ?? []).map((i: any) => `${i.quantity} ${i.unit} ${i.item}`).join(" ");
@@ -612,6 +615,10 @@ async function login(username: string, passphrase: string) {
           activeBook = books.find((b) => b.vaultId === target) ?? books[0];
           renderBookSelect();
           renderCatalog();
+        }
+        // Request vault members for each vault to populate signing key cache
+        if (syncClient) {
+          for (const book of books) syncClient.listVaultMembers(book.vaultId);
         }
         // Kick off background content indexing after a short delay
         setTimeout(() => backgroundIndexAllContent(), 2000);

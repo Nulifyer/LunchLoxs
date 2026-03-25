@@ -124,11 +124,37 @@ export function initRecipeDetail(cb: DetailCallbacks) {
   });
 }
 
-export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: string, meta: string, editable = true) {
+function timeAgo(ts: number): string {
+  const seconds = Math.floor((Date.now() - ts) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  const years = Math.floor(months / 12);
+  return `${years}y ago`;
+}
+
+export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: string, meta: string, editable = true, updatedAt?: number) {
   closeRecipe();
   store = recipeStore;
   titleEl.textContent = title;
-  metaEl.textContent = meta;
+  metaEl.innerHTML = "";
+  const metaText = document.createElement("span");
+  metaText.textContent = meta;
+  metaEl.appendChild(metaText);
+  if (updatedAt && updatedAt > 0) {
+    if (meta) metaEl.appendChild(document.createTextNode(" · "));
+    const ago = document.createElement("span");
+    ago.textContent = "updated " + timeAgo(updatedAt);
+    ago.title = new Date(updatedAt).toLocaleString();
+    ago.style.cursor = "default";
+    metaEl.appendChild(ago);
+  }
   canEdit = editable;
   emptyState.hidden = true;
   detailView.hidden = false;

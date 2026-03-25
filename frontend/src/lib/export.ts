@@ -13,6 +13,21 @@ import type { RecipeMeta, RecipeContent } from "../types";
 import type { AutomergeStore } from "./automerge-store";
 import type { DocumentManager } from "./document-manager";
 
+/** Parse a simple YAML key: "value" or key: value from a string. Handles escaped quotes. */
+function parseYamlString(yaml: string, key: string): string | null {
+  for (const line of yaml.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith(key + ":")) continue;
+    let val = trimmed.slice(key.length + 1).trim();
+    // Remove surrounding quotes and unescape
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1).replace(/\\"/g, '"').replace(/\\'/g, "'");
+    }
+    return val;
+  }
+  return null;
+}
+
 function slugify(text: string): string {
   return text
     .toLowerCase()
@@ -266,8 +281,8 @@ export async function importFromZip(file: File): Promise<ImportedBook[]> {
     if (parts[parts.length - 1] === "_book.yaml" && parts.length >= 2) {
       const folder = parts.slice(0, -1).join("/");
       const yaml = await entry.async("string");
-      const nameMatch = yaml.match(/name:\s*"([^"]*)"/);
-      if (nameMatch) folderNames.set(folder, nameMatch[1]);
+      const name = parseYamlString(yaml, "name");
+      if (name) folderNames.set(folder, name);
     }
   }
 

@@ -13,9 +13,11 @@ import (
 )
 
 const (
-	sendBufSize = 256
-	writeWait   = 10 * time.Second
-	pingPeriod  = 30 * time.Second
+	sendBufSize     = 256
+	writeWait       = 10 * time.Second
+	pingPeriod      = 30 * time.Second
+	rateLimitPerSec = 30  // max messages per second per client
+	rateBurst       = 50  // burst allowance
 )
 
 // Client represents a single WebSocket connection.
@@ -26,6 +28,25 @@ type Client struct {
 	Send     chan []byte
 	Hub      *Hub
 	Queries  *db.Queries
+	tokens   int
+	lastTick time.Time
+}
+
+// rateAllow checks if the client is within rate limits. Simple token bucket.
+func (c *Client) rateAllow() bool {
+	now := time.Now()
+	elapsed := now.Sub(c.lastTick)
+	c.lastTick = now
+	// Refill tokens based on elapsed time
+	c.tokens += int(elapsed.Seconds() * float64(rateLimitPerSec))
+	if c.tokens > rateBurst {
+		c.tokens = rateBurst
+	}
+	if c.tokens <= 0 {
+		return false
+	}
+	c.tokens--
+	return true
 }
 
 // --- Wire protocol (JSON) ---
@@ -108,6 +129,9 @@ type VaultMemberMsg struct {
 
 // ReadPump reads messages from the WebSocket and processes them.
 func (c *Client) ReadPump(ctx context.Context) {
+	c.tokens = rateBurst
+	c.lastTick = time.Now()
+
 	defer func() {
 		c.Hub.Unregister(c)
 		c.Conn.Close(websocket.StatusNormalClosure, "")
@@ -120,6 +144,11 @@ func (c *Client) ReadPump(ctx context.Context) {
 				slog.Info("client websocket closed", "device", c.DeviceID, "error", err)
 			}
 			return
+		}
+
+		if !c.rateAllow() {
+			c.sendError("rate_limited")
+			continue
 		}
 
 		var msg ClientMessage
