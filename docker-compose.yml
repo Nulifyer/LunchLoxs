@@ -1,16 +1,24 @@
 services:
   traefik:
-    image: traefik:v3.3
+    image: traefik:3
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.frontend.address=:5000"
+      - "--entrypoints.frontend.http.tls=true"
       - "--entrypoints.backend.address=:8000"
+      - "--entrypoints.backend.http.tls=true"
+      - "--api.insecure=true"
+      - "--log.level=DEBUG"
+      - "--accesslog=true"
     ports:
       - "127.0.0.1:5000:5000"
       - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8080:8080"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /run/podman/podman.sock:/var/run/docker.sock:ro
+    networks:
+      - app
 
   postgres:
     image: postgres:18-alpine
@@ -25,6 +33,8 @@ services:
       interval: 2s
       timeout: 5s
       retries: 10
+    networks:
+      - app
 
   migrate:
     image: migrate/migrate
@@ -39,6 +49,8 @@ services:
         "-database=postgres://postgres:postgres@postgres:5432/todos?sslmode=disable",
         "up",
       ]
+    networks:
+      - app
 
   backend:
     build:
@@ -50,13 +62,16 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/todos?sslmode=disable
       PORT: "8000"
-      FRONTEND_URL: http://localhost:5000
+      FRONTEND_URL: https://localhost:5000
       BIND_HOST: "0.0.0.0"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.backend.rule=Host(`localhost`)"
       - "traefik.http.routers.backend.entrypoints=backend"
+      - "traefik.http.routers.backend.tls=true"
       - "traefik.http.services.backend.loadbalancer.server.port=8000"
+    networks:
+      - app
 
   frontend:
     build:
@@ -68,7 +83,10 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=Host(`localhost`)"
       - "traefik.http.routers.frontend.entrypoints=frontend"
+      - "traefik.http.routers.frontend.tls=true"
       - "traefik.http.services.frontend.loadbalancer.server.port=5000"
+    networks:
+      - app
 
   pgadmin:
     image: dpage/pgadmin4
@@ -84,3 +102,8 @@ services:
         condition: service_healthy
     volumes:
       - ./pgadmin-servers.json:/pgadmin4/servers.json:ro
+    networks:
+      - app
+
+networks:
+  app:
