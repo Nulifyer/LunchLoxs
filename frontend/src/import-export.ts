@@ -2,15 +2,13 @@
  * Import/export UI handlers.
  */
 
-import { log, error } from "./lib/logger";
-import { exportBook, importFromZip, recipeToMarkdown, parseRecipeMarkdown } from "./lib/export";
+import { exportBook, importFromZip, parseRecipeMarkdown } from "./lib/export";
 import { showConfirm } from "./lib/dialogs";
 import { showLoading } from "./lib/spinner";
 import { toastSuccess, toastWarning, toastError } from "./lib/toast";
-import { getDocMgr, getSyncClient } from "./state";
-import { pushSnapshot, renderCatalog } from "./sync/push";
+import { getDocMgr, getSyncClient, getBooks } from "./state";
+import { flushPush, renderCatalog } from "./sync/push";
 import { createBook, renderBookManageList } from "./ui/books";
-import { getBooks } from "./state";
 import type { Book, RecipeCatalog, RecipeContent, RecipeMeta } from "./types";
 
 export async function handleExportBook(book: Book) {
@@ -32,18 +30,24 @@ export async function handleExportBook(book: Book) {
 /** Import parsed recipes into a specific book. Returns count imported. */
 export async function importRecipesIntoBook(book: Book, recipes: Array<{ meta: Partial<RecipeMeta>; content: Partial<RecipeContent> }>): Promise<number> {
   const docMgr = getDocMgr();
-  if (!docMgr) return 0;
+  const syncClient = getSyncClient();
+  if (!docMgr || !syncClient) return 0;
   const catalog = docMgr.get<RecipeCatalog>(`${book.vaultId}/catalog`);
   if (!catalog) return 0;
   let count = 0;
   for (const { meta, content } of recipes) {
     const id = crypto.randomUUID(); const now = Date.now();
     catalog.change((doc) => { if (!doc.recipes) doc.recipes = []; doc.recipes.push({ id, title: meta.title ?? "Imported", tags: meta.tags ?? [], servings: meta.servings ?? 4, prepMinutes: meta.prepMinutes ?? 0, cookMinutes: meta.cookMinutes ?? 0, createdAt: meta.createdAt ?? now, updatedAt: meta.updatedAt ?? now }); });
-    const cs = await docMgr.open<RecipeContent>(`${book.vaultId}/${id}`, (d) => { d.description = content.description ?? ""; d.ingredients = (content.ingredients ?? []) as any; d.instructions = content.instructions ?? ""; d.imageUrls = []; d.notes = content.notes ?? ""; });
-    cs.ensureInitialized(); pushSnapshot(`${book.vaultId}/${id}`); docMgr.close(`${book.vaultId}/${id}`);
+    const contentDocId = `${book.vaultId}/${id}`;
+    const cs = await docMgr.open<RecipeContent>(contentDocId, (d) => { d.description = content.description ?? ""; d.ingredients = (content.ingredients ?? []) as any; d.instructions = content.instructions ?? ""; d.imageUrls = []; d.notes = content.notes ?? ""; });
+    cs.ensureInitialized();
+    await syncClient.subscribe(contentDocId);
+    await flushPush(contentDocId);
+    syncClient.unsubscribe(contentDocId);
+    docMgr.close(contentDocId);
     count++;
   }
-  pushSnapshot(`${book.vaultId}/catalog`);
+  await flushPush(`${book.vaultId}/catalog`);
   return count;
 }
 
@@ -60,7 +64,6 @@ export async function handleZipImport(file: File, targetBook?: Book): Promise<vo
     if (importedBooks.length === 0) { toastWarning("No recipes found in file."); return; }
 
     let totalImported = 0;
-    const books = getBooks();
 
     const allRootLevel = importedBooks.length === 1 && importedBooks[0].name === "";
     if (allRootLevel && targetBook) {
