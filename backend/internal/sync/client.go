@@ -609,6 +609,9 @@ func (c *Client) handleCreateVault(ctx context.Context, msg ClientMessage) {
 	}
 	slog.Info("vault created", "vault", msg.VaultID, "user", c.UserID)
 	c.sendJSON(ServerMessage{Type: "vault_created", VaultID: msg.VaultID})
+	// Notify other devices of the same user
+	broadcastMsg, _ := json.Marshal(ServerMessage{Type: "vault_created", VaultID: msg.VaultID})
+	c.Hub.Broadcast(c.UserID, c.DeviceID, broadcastMsg)
 }
 
 func (c *Client) handleListVaults(ctx context.Context) {
@@ -812,6 +815,9 @@ func (c *Client) handleDeleteVault(ctx context.Context, msg ClientMessage) {
 
 	slog.Info("vault deleted", "vault", msg.VaultID, "user", c.UserID)
 	c.sendJSON(ServerMessage{Type: "vault_deleted", VaultID: msg.VaultID})
+	// Notify other devices of the same user
+	relay, _ := json.Marshal(ServerMessage{Type: "vault_deleted", VaultID: msg.VaultID})
+	c.Hub.Broadcast(c.UserID, c.DeviceID, relay)
 }
 
 func (c *Client) handleLookupUser(ctx context.Context, msg ClientMessage) {

@@ -177,7 +177,7 @@ export function createSyncConnection(
         for (const book of books) sc.listVaultMembers(book.vaultId);
       }
     },
-    onVaultCreated: (vid) => { log("[ws] vault_created:", vid); },
+    onVaultCreated: (vid) => { log("[ws] vault_created:", vid); getSyncClient()?.listVaults(); },
     onVaultInvited: async (vid) => { log("[ws] vault_invited:", vid); getSyncClient()?.listVaults(); },
     onVaultRemoved: (vid) => { log("[ws] vault_removed:", vid); removeBookFromIndex(vid); setBooks(getBooks().filter((b) => b.vaultId !== vid)); if (getActiveBook()?.vaultId === vid) { setActiveBook(null); if (getBooks().length > 0) switchBook(getBooks()[0].vaultId); } renderBookSelect(); },
     onVaultMembers: (_v, members) => {
