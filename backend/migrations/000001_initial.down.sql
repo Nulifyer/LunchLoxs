@@ -1,3 +1,5 @@
 DROP TABLE IF EXISTS sync_messages;
+DROP TABLE IF EXISTS vault_members;
+DROP TABLE IF EXISTS vaults;
 DROP TABLE IF EXISTS devices;
 DROP TABLE IF EXISTS users;

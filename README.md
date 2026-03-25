@@ -68,6 +68,42 @@ podman compose up --build
 
 Traefik handles TLS termination with a self-signed certificate on localhost.
 
+### Production deployment
+
+Pull pre-built images from GHCR and run with your own domain and TLS certificate.
+
+```sh
+# 1. Download the prod compose files
+curl -LO https://raw.githubusercontent.com/Nulifyer/LunchLoxs/main/docker-compose.prod.yml
+curl -LO https://raw.githubusercontent.com/Nulifyer/LunchLoxs/main/.env.example
+
+# 2. Configure environment
+cp .env.example .env
+# Edit .env: set DOMAIN and POSTGRES_PASSWORD
+
+# 3. Add TLS certificate and Traefik config
+mkdir -p certs traefik
+cp /path/to/fullchain.pem certs/cert.pem
+cp /path/to/privkey.pem certs/key.pem
+curl -o traefik/dynamic.yml https://raw.githubusercontent.com/Nulifyer/LunchLoxs/main/traefik-dynamic.yml
+
+# 4. Launch
+docker compose -f docker-compose.prod.yml up -d
+```
+
+All three images (frontend, backend, migrate) are pulled from GHCR -- no need to clone the repo. This gives you:
+- Traefik reverse proxy with HTTPS (port 443) and HTTP->HTTPS redirect (port 80)
+- Frontend and backend on a single domain (backend at `/api` and `/ws`)
+- PostgreSQL with persistent volume
+- Migrations bundled in the migrate image, auto-run on startup
+
+To pin a specific version instead of `latest`:
+```sh
+# In docker-compose.prod.yml, replace :latest with a tag
+image: ghcr.io/nulifyer/lunchloxs-backend:v0.1.0
+image: ghcr.io/nulifyer/lunchloxs-frontend:v0.1.0
+```
+
 ### Generate test data
 
 ```sh

@@ -1,0 +1,105 @@
+# Production docker-compose for LunchLoxs
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in your values
+#   2. Place TLS cert at ./certs/cert.pem and key at ./certs/key.pem
+#   3. Place traefik-dynamic.yml at ./traefik/dynamic.yml
+#   4. Run: docker compose -f docker-compose.prod.yml up -d
+#
+# Images are pulled from GHCR. To pin a version, replace :latest with a tag (e.g. :v0.1.0)
+
+services:
+  traefik:
+    image: traefik:3
+    restart: unless-stopped
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:443"
+      - "--entrypoints.web.http.tls=true"
+      - "--entrypoints.web-insecure.address=:80"
+      - "--entrypoints.web-insecure.http.redirections.entrypoint.to=web"
+      - "--entrypoints.web-insecure.http.redirections.entrypoint.scheme=https"
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - certs:/certs:ro
+      - traefik-config:/etc/traefik:ro
+    networks:
+      - app
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lunchloxs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-lunchloxs}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lunchloxs}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app
+
+  migrate:
+    image: ghcr.io/nulifyer/lunchloxs-migrate:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      [
+        "-database=postgres://${POSTGRES_USER:-lunchloxs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lunchloxs}?sslmode=disable",
+        "up",
+      ]
+    networks:
+      - app
+
+  backend:
+    image: ghcr.io/nulifyer/lunchloxs-backend:latest
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-lunchloxs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lunchloxs}?sslmode=disable
+      PORT: "8000"
+      FRONTEND_URL: https://${DOMAIN:?Set DOMAIN in .env}
+      BIND_HOST: "0.0.0.0"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`${DOMAIN}`) && PathPrefix(`/api`, `/ws`)"
+      - "traefik.http.routers.backend.entrypoints=web"
+      - "traefik.http.routers.backend.tls=true"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+    networks:
+      - app
+
+  frontend:
+    image: ghcr.io/nulifyer/lunchloxs-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.frontend.entrypoints=web"
+      - "traefik.http.routers.frontend.tls=true"
+      - "traefik.http.routers.frontend.priority=1"
+      - "traefik.http.services.frontend.loadbalancer.server.port=5000"
+    networks:
+      - app
+
+volumes:
+  pgdata:
+  certs:
+  traefik-config:
+
+networks:
+  app:

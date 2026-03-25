@@ -1,2 +1,0 @@
-ALTER TABLE users ADD COLUMN IF NOT EXISTS public_key BYTEA;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS wrapped_private_key BYTEA;

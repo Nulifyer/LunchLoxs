@@ -64,6 +64,17 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build & push migrate
+        uses: docker/build-push-action@v6
+        with:
+          context: backend/migrations
+          file: backend/migrations/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/nulifyer/lunchloxs-migrate:${{ steps.version.outputs.tag }}
+            ${{ env.REGISTRY }}/nulifyer/lunchloxs-migrate:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/nulifyer/lunchloxs-migrate:latest
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

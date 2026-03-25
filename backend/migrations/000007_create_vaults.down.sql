@@ -1,3 +1,0 @@
-ALTER TABLE sync_messages DROP COLUMN IF EXISTS vault_id;
-DROP TABLE IF EXISTS vault_members;
-DROP TABLE IF EXISTS vaults;

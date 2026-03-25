@@ -80,6 +80,7 @@ if ($LATEST_TAG) {
 Write-Host "${D}This will trigger container image builds for:${R}"
 Write-Host "  ${D}ghcr.io/nulifyer/lunchloxs-frontend:${NEW_TAG}${R}"
 Write-Host "  ${D}ghcr.io/nulifyer/lunchloxs-backend:${NEW_TAG}${R}"
+Write-Host "  ${D}ghcr.io/nulifyer/lunchloxs-migrate:${NEW_TAG}${R}"
 $confirm = Read-Host "Proceed? [Y/n]"
 if ($confirm -match '^[nN]$') {
     Write-Host "Aborted."

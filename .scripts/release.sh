@@ -81,6 +81,7 @@ fi
 echo -e "${D}This will trigger container image builds for:${R}"
 echo -e "  ${D}ghcr.io/nulifyer/lunchloxs-frontend:${NEW_TAG}${R}"
 echo -e "  ${D}ghcr.io/nulifyer/lunchloxs-backend:${NEW_TAG}${R}"
+echo -e "  ${D}ghcr.io/nulifyer/lunchloxs-migrate:${NEW_TAG}${R}"
 read -rp "Proceed? [Y/n]: " confirm
 if [[ "$confirm" =~ ^[nN]$ ]]; then
     echo "Aborted."
