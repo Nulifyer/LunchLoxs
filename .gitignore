@@ -37,3 +37,6 @@ bun.lockb
 pgdata/
 
 .claude/
+
+# Dev Data
+dev-data/*.zip
