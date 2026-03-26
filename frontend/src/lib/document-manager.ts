@@ -11,6 +11,8 @@ export class DocumentManager {
   private db: IDBDatabase;
   private encKey: CryptoKey;
   private stores = new Map<string, AutomergeStore<any>>();
+  /** Prevents concurrent opens for the same docId from creating duplicate stores. */
+  private opening = new Map<string, Promise<AutomergeStore<any>>>();
 
   private constructor(db: IDBDatabase, encKey: CryptoKey) {
     this.db = db;
@@ -27,9 +29,16 @@ export class DocumentManager {
     const existing = this.stores.get(docId);
     if (existing) return existing as AutomergeStore<T>;
 
-    const store = await AutomergeStore.open<T>(this.db, docId, this.encKey, initFn);
-    this.stores.set(docId, store);
-    return store;
+    const pending = this.opening.get(docId);
+    if (pending) return pending as Promise<AutomergeStore<T>>;
+
+    const promise = AutomergeStore.open<T>(this.db, docId, this.encKey, initFn).then((store) => {
+      this.opening.delete(docId);
+      this.stores.set(docId, store);
+      return store;
+    });
+    this.opening.set(docId, promise);
+    return promise;
   }
 
   /** Open a document with a specific encryption key (for vault-scoped docs). */
@@ -37,9 +46,16 @@ export class DocumentManager {
     const existing = this.stores.get(docId);
     if (existing) return existing as AutomergeStore<T>;
 
-    const store = await AutomergeStore.open<T>(this.db, docId, encKey, initFn);
-    this.stores.set(docId, store);
-    return store;
+    const pending = this.opening.get(docId);
+    if (pending) return pending as Promise<AutomergeStore<T>>;
+
+    const promise = AutomergeStore.open<T>(this.db, docId, encKey, initFn).then((store) => {
+      this.opening.delete(docId);
+      this.stores.set(docId, store);
+      return store;
+    });
+    this.opening.set(docId, promise);
+    return promise;
   }
 
   /** Get an already-open store (null if not open). */

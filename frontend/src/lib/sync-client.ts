@@ -55,7 +55,7 @@ export interface SyncClientOptions {
   onAck?: (docId: string, seq: number) => void;
   onPushError?: (docId: string, message: string) => void;
   onRateLimited?: (retryAfterMs?: number) => void;
-  onVaultList?: (vaults: VaultInfo[]) => void;
+  onVaultList?: (vaults: VaultInfo[]) => Promise<void> | void;
   onVaultCreated?: (vaultId: string) => void;
   onVaultInvited?: (vaultId: string, encryptedVaultKey: string, role: string) => void;
   onVaultRemoved?: (vaultId: string) => void;
@@ -224,7 +224,7 @@ export class SyncClient {
         break;
 
       case "vault_list":
-        this.opts.onVaultList?.(
+        await this.opts.onVaultList?.(
           (msg.vaults ?? []).map((v) => ({
             vaultId: v.vault_id,
             encryptedVaultKey: v.encrypted_vault_key,
