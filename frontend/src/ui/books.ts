@@ -78,7 +78,22 @@ export async function createBook(name: string) {
   log("[createBook]", name, vaultId);
   const { bookKey, bookKeyRaw } = await generateBookKey();
   const encryptedVaultKey = await encryptBookKeyForUser(privKey, pubKey, bookKeyRaw);
-  syncClient.createVault(vaultId, toBase64(encryptedVaultKey), toBase64(pubKey));
+  const evk = toBase64(encryptedVaultKey);
+  const spk = toBase64(pubKey);
+  // Persist pending vault to IDB so it survives offline/refresh
+  const { setPendingVault, clearPendingVault } = await import("../lib/automerge-store");
+  await setPendingVault(docMgr.getDb(), { vaultId, encryptedVaultKey: evk, senderPublicKey: spk });
+  // Try to create on server now; if offline, reconnect will pick it up
+  if (syncClient.isOpen()) {
+    try {
+      await syncClient.createVault(vaultId, evk, spk);
+      await clearPendingVault(docMgr.getDb(), vaultId);
+    } catch (e) {
+      warn("[createBook] vault creation deferred (will retry on reconnect):", e);
+    }
+  } else {
+    log("[createBook] offline, vault creation deferred for", vaultId.slice(0, 8));
+  }
   const currentUserId = getCurrentUserId();
   const currentUsername = getCurrentUsername();
   const book: Book = { vaultId, name, role: "owner", encKey: bookKey };

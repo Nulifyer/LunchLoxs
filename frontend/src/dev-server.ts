@@ -2,9 +2,10 @@
  * Minimal Bun dev server.
  * Serves static files. WebSocket connects directly to backend on :8000.
  */
-const coopCoep = {
+const headers: Record<string, string> = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "credentialless",
+  "Cache-Control": "no-cache",
 };
 const server = Bun.serve({
   port: 5000,
@@ -21,7 +22,7 @@ const server = Bun.serve({
       file = Bun.file("public/index.html");
     }
 
-    return new Response(file, { headers: coopCoep });
+    return new Response(file, { headers });
   },
 });
 

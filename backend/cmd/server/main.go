@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/kyle/recipepwa/backend/internal/db"
 	"github.com/kyle/recipepwa/backend/internal/server"
+	syncpkg "github.com/kyle/recipepwa/backend/internal/sync"
 )
 
 func main() {
@@ -58,8 +60,21 @@ func main() {
 	}
 	slog.Info("connected to database")
 
+	rateConfig := syncpkg.DefaultRateConfig()
+	if v := os.Getenv("RATE_LIMIT_PER_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			rateConfig.PerSec = n
+		}
+	}
+	if v := os.Getenv("RATE_LIMIT_BURST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			rateConfig.Burst = n
+		}
+	}
+	slog.Info("rate limiting", "per_sec", rateConfig.PerSec, "burst", rateConfig.Burst)
+
 	queries := db.New(pool)
-	mux := server.NewMux(queries, frontendURL)
+	mux := server.NewMux(queries, frontendURL, rateConfig)
 
 	addr := fmt.Sprintf("%s:%s", bindHost, port)
 	srv := &http.Server{

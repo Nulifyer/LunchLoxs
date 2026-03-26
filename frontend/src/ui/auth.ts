@@ -18,6 +18,7 @@ import {
   getDocMgr, setDocMgr, getSyncClient, setSyncClient,
   setBooks, setActiveBook, setCurrentUsername, setCurrentUserId,
   getSigningKeyCache, getIsSignup, setIsSignup,
+  getPushQueue, setPushQueue,
 } from "../state";
 import { createSyncConnection } from "../connect";
 import { deselectRecipe } from "../ui/recipes";
@@ -109,13 +110,28 @@ export async function login(username: string, passphrase: string) {
 export function logout() {
   log("[logout]");
   if (isDetailOpen()) deselectRecipe();
+  getPushQueue()?.stop(); setPushQueue(null);
   getSyncClient()?.disconnect(); setSyncClient(null);
   getDocMgr()?.closeAll(); setDocMgr(null);
   clearSession(); clearIdentityKeys(); clearIndex();
   setBooks([]); setActiveBook(null);
   setCurrentUsername(""); setCurrentUserId("");
   getSigningKeyCache().clear();
+  // Clear stale UI so it doesn't flash for the next user
+  clearAppUI();
   loginSection.hidden = false; appSection.hidden = true;
+}
+
+/** Remove all user-specific content from the app section DOM. */
+function clearAppUI() {
+  const recipeList = document.getElementById("recipe-list");
+  if (recipeList) recipeList.innerHTML = "";
+  const recipeCount = document.getElementById("recipe-count");
+  if (recipeCount) recipeCount.textContent = "";
+  const detailView = document.getElementById("detail-view") as HTMLElement;
+  if (detailView) detailView.hidden = true;
+  const emptyState = document.getElementById("empty-state") as HTMLElement;
+  if (emptyState) emptyState.hidden = false;
 }
 
 export async function purgeLocalData() {

@@ -12,7 +12,7 @@ import (
 	syncpkg "github.com/kyle/recipepwa/backend/internal/sync"
 )
 
-func NewMux(queries *db.Queries, frontendURL string) *http.ServeMux {
+func NewMux(queries *db.Queries, frontendURL string, rateConfig syncpkg.RateConfig) *http.ServeMux {
 	hub := syncpkg.NewHub()
 	mux := http.NewServeMux()
 
@@ -32,6 +32,7 @@ func NewMux(queries *db.Queries, frontendURL string) *http.ServeMux {
 			Send:    make(chan []byte, 256),
 			Hub:     hub,
 			Queries: queries,
+			Rate:    rateConfig,
 		}
 
 		ctx := r.Context()

@@ -138,5 +138,9 @@ export function refreshBookNameFromCatalog(docId: string) {
     log("[catalog] updated book name:", catDoc.name);
     book.name = catDoc.name;
     _renderBookSelect();
+  } else if (!catDoc.name && book.name !== vaultId.slice(0, 8)) {
+    // Name missing from doc but we have a real name in memory -- write it back
+    log("[catalog] writing missing name:", book.name);
+    catalog.change((doc) => { doc.name = book.name; });
   }
 }

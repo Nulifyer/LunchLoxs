@@ -212,6 +212,7 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
     ],
     parent: instrEditorContainer,
   });
+  iBridge.setView(instrEditorView);
 
   const nBridge = createAutomergeMirror<RecipeContent>({
     getDoc: () => store!.getDoc(),
@@ -234,6 +235,7 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
     ],
     parent: notesEditorContainer,
   });
+  nBridge.setView(notesEditorView);
 
   setPageEditing(false);
 
@@ -288,6 +290,16 @@ export function handlePresence(deviceId: string, data: any) {
 
 export function isOpen(): boolean {
   return store !== null;
+}
+
+/** Update edit permissions without re-opening the recipe (e.g. role changed). */
+export function updateEditPermission(editable: boolean) {
+  if (!store) return;
+  canEdit = editable;
+  pageEditBtn.hidden = !canEdit;
+  if (!canEdit && pageEditing) {
+    setPageEditing(false);
+  }
 }
 
 // -- Page-level edit/preview toggle --

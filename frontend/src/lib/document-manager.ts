@@ -22,12 +22,22 @@ export class DocumentManager {
     return new DocumentManager(db, encKey);
   }
 
-  /** Open or get a document by ID. */
+  /** Open or get a document by ID (uses default master key for encryption). */
   async open<T>(docId: string, initFn: (doc: T) => void): Promise<AutomergeStore<T>> {
     const existing = this.stores.get(docId);
     if (existing) return existing as AutomergeStore<T>;
 
     const store = await AutomergeStore.open<T>(this.db, docId, this.encKey, initFn);
+    this.stores.set(docId, store);
+    return store;
+  }
+
+  /** Open a document with a specific encryption key (for vault-scoped docs). */
+  async openWithKey<T>(docId: string, encKey: CryptoKey, initFn: (doc: T) => void): Promise<AutomergeStore<T>> {
+    const existing = this.stores.get(docId);
+    if (existing) return existing as AutomergeStore<T>;
+
+    const store = await AutomergeStore.open<T>(this.db, docId, encKey, initFn);
     this.stores.set(docId, store);
     return store;
   }
@@ -51,5 +61,10 @@ export class DocumentManager {
   closeAll(): void {
     this.stores.clear();
     this.db.close();
+  }
+
+  /** Get the underlying IndexedDB connection. */
+  getDb(): IDBDatabase {
+    return this.db;
   }
 }

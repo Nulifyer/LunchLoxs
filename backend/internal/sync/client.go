@@ -13,12 +13,23 @@ import (
 )
 
 const (
-	sendBufSize     = 256
-	writeWait       = 10 * time.Second
-	pingPeriod      = 30 * time.Second
-	rateLimitPerSec = 30  // max messages per second per client
-	rateBurst       = 50  // burst allowance
+	sendBufSize  = 256
+	writeWait    = 10 * time.Second
+	pingPeriod   = 30 * time.Second
+	maxReadBytes = 10 * 1024 * 1024 // 10 MB max WebSocket message size
 )
+
+// RateConfig holds configurable rate limiting parameters.
+type RateConfig struct {
+	PerSec int // max messages per second per client
+	Burst  int // burst allowance
+}
+
+// DefaultRateConfig returns the default rate limit configuration.
+// Burst=200 accommodates bulk import flows where many docs are pushed in quick succession.
+func DefaultRateConfig() RateConfig {
+	return RateConfig{PerSec: 30, Burst: 200}
+}
 
 // Client represents a single WebSocket connection.
 type Client struct {
@@ -28,6 +39,7 @@ type Client struct {
 	Send     chan []byte
 	Hub      *Hub
 	Queries  *db.Queries
+	Rate     RateConfig
 	tokens   int
 	lastTick time.Time
 }
@@ -38,9 +50,9 @@ func (c *Client) rateAllow() bool {
 	elapsed := now.Sub(c.lastTick)
 	c.lastTick = now
 	// Refill tokens based on elapsed time
-	c.tokens += int(elapsed.Seconds() * float64(rateLimitPerSec))
-	if c.tokens > rateBurst {
-		c.tokens = rateBurst
+	c.tokens += int(elapsed.Seconds() * float64(c.Rate.PerSec))
+	if c.tokens > c.Rate.Burst {
+		c.tokens = c.Rate.Burst
 	}
 	if c.tokens <= 0 {
 		return false
@@ -111,6 +123,7 @@ type ServerMessage struct {
 	TargetUserID      string           `json:"target_user_id,omitempty"`
 	TargetPublicKey   string           `json:"target_public_key,omitempty"`
 	NewRole           string           `json:"new_role,omitempty"`
+	RetryAfterMs      int              `json:"retry_after_ms,omitempty"`
 }
 
 type VaultInfoMsg struct {
@@ -129,7 +142,8 @@ type VaultMemberMsg struct {
 
 // ReadPump reads messages from the WebSocket and processes them.
 func (c *Client) ReadPump(ctx context.Context) {
-	c.tokens = rateBurst
+	c.Conn.SetReadLimit(maxReadBytes)
+	c.tokens = c.Rate.Burst
 	c.lastTick = time.Now()
 
 	defer func() {
@@ -146,14 +160,21 @@ func (c *Client) ReadPump(ctx context.Context) {
 			return
 		}
 
-		if !c.rateAllow() {
-			c.sendError("rate_limited")
-			continue
-		}
-
+		// Parse first so we can log message type even when rate-limited
 		var msg ClientMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			c.sendError("invalid message format")
+			continue
+		}
+
+		if !c.rateAllow() {
+			// Tell client how long to wait for 1 token to refill
+			retryMs := 1000 / c.Rate.PerSec
+			if retryMs < 100 {
+				retryMs = 100
+			}
+			slog.Debug("rate limited", "device", c.DeviceID, "type", msg.Type, "doc", msg.DocID)
+			c.sendJSON(ServerMessage{Type: "error", Message: "rate_limited", RetryAfterMs: retryMs})
 			continue
 		}
 
@@ -338,10 +359,19 @@ func (c *Client) checkVaultWriteAccess(ctx context.Context, docID string) bool {
 		return true
 	}
 	isMember, role, err := c.Queries.IsVaultMember(ctx, vaultID, c.UserID)
-	if err != nil || !isMember {
+	if err != nil {
+		slog.Warn("vault write check db error", "vault", vaultID, "user", c.UserID, "doc", docID, "error", err)
 		return false
 	}
-	return role == "owner" || role == "editor"
+	if !isMember {
+		slog.Warn("vault write denied: not a member", "vault", vaultID, "user", c.UserID, "doc", docID)
+		return false
+	}
+	if role != "owner" && role != "editor" {
+		slog.Warn("vault write denied: insufficient role", "vault", vaultID, "user", c.UserID, "role", role, "doc", docID)
+		return false
+	}
+	return true
 }
 
 func (c *Client) handleSubscribe(ctx context.Context, msg ClientMessage) {
@@ -415,7 +445,7 @@ func (c *Client) handlePush(ctx context.Context, msg ClientMessage) {
 
 	// Vault-scoped authorization: need write access (owner or editor) to push
 	if !c.checkVaultWriteAccess(ctx, docID) {
-		c.sendError("insufficient permissions to write")
+		c.sendJSON(ServerMessage{Type: "push_error", DocID: docID, Message: "insufficient permissions to write"})
 		return
 	}
 
@@ -429,7 +459,7 @@ func (c *Client) handlePush(ctx context.Context, msg ClientMessage) {
 		seq, err = c.Queries.StoreMessage(ctx, c.UserID, docID, c.DeviceID, []byte(msg.Payload))
 	}
 	if err != nil {
-		c.sendError("failed to store message")
+		c.sendJSON(ServerMessage{Type: "push_error", DocID: docID, Message: "failed to store message"})
 		slog.Error("store error", "device", c.DeviceID, "doc", docID, "error", err)
 		return
 	}
@@ -934,9 +964,10 @@ func (c *Client) handleChangeRole(ctx context.Context, msg ClientMessage) {
 
 	// Notify the target user
 	relay, _ := json.Marshal(ServerMessage{
-		Type:    "role_changed",
-		VaultID: msg.VaultID,
-		NewRole: msg.NewRole,
+		Type:         "role_changed",
+		VaultID:      msg.VaultID,
+		TargetUserID: msg.TargetUserID,
+		NewRole:      msg.NewRole,
 	})
 	c.Hub.Broadcast(msg.TargetUserID, "", relay)
 }

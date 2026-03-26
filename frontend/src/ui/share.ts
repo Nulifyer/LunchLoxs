@@ -34,12 +34,23 @@ export function openShareDialog(book: Book) {
   openModal(shareBookDialog); syncClient?.listVaultMembers(book.vaultId);
 }
 
+/** Returns the vault ID of the currently open share dialog, or null. */
+export function getSharingVaultId(): string | null {
+  return sharingBook?.vaultId ?? null;
+}
+
 export function renderMemberList(members: Array<{ userId: string; role: string; publicKey?: string }>) {
   const syncClient = getSyncClient();
   shareMemberList.innerHTML = "";
   if (members.length === 0) { shareMemberList.innerHTML = "<li style='font-size:0.8rem;color:var(--subtle)'>No members</li>"; return; }
   const myUserId = getSessionKeys()?.userId;
-  const isOwner = sharingBook?.role === "owner";
+  // Derive role from the authoritative member list, not stale local book state
+  const myMember = members.find((m) => m.userId === myUserId);
+  const isOwner = myMember?.role === "owner";
+  // Update local book role to match server state
+  if (sharingBook && myMember && sharingBook.role !== myMember.role) {
+    sharingBook.role = myMember.role as any;
+  }
   for (const m of members) {
     const li = document.createElement("li");
     const displayName = memberName(m.userId, sharingBook?.vaultId);

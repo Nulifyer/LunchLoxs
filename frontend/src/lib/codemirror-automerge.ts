@@ -23,7 +23,7 @@ export function createAutomergeMirror<T>(opts: AutomergeMirrorOptions<T>) {
 
   const extension = EditorView.updateListener.of((update) => {
     view = update.view;
-    if (!update.docChanged || suppressNext) return;
+    if (suppressNext || !update.docChanged) return;
 
     update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
       const deleteCount = toA - fromA;
@@ -70,7 +70,10 @@ export function createAutomergeMirror<T>(opts: AutomergeMirrorOptions<T>) {
     return lastRemoteChangeSet.mapPos(pos, 1); // bias forward
   }
 
-  return { extension, applyRemoteText, mapPosition };
+  /** Set the EditorView reference (call after creating the EditorView). */
+  function setView(v: EditorView) { view = v; }
+
+  return { extension, applyRemoteText, mapPosition, setView };
 }
 
 function diffToChanges(

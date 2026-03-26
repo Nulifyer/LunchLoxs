@@ -1,5 +1,6 @@
 import type { DocumentManager } from "./lib/document-manager";
 import type { SyncClient, SyncStatus } from "./lib/sync-client";
+import type { PushQueue } from "./sync/push-queue";
 import type { Book } from "./types";
 
 // -- Mutable state --
@@ -14,6 +15,7 @@ let currentUserId: string = "";
 /** Cache of userId -> signing public key (raw bytes) for signature verification */
 const signingKeyCache = new Map<string, Uint8Array>();
 let isSignup = false;
+let pushQueue: PushQueue | null = null;
 
 // -- Getters / Setters --
 
@@ -45,3 +47,6 @@ export function getSigningKeyCache(): Map<string, Uint8Array> { return signingKe
 
 export function getIsSignup(): boolean { return isSignup; }
 export function setIsSignup(v: boolean) { isSignup = v; }
+
+export function getPushQueue(): PushQueue | null { return pushQueue; }
+export function setPushQueue(q: PushQueue | null) { pushQueue = q; }

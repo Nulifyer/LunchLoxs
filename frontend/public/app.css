@@ -614,6 +614,9 @@ dialog label + select {
 
 .sync-badge.connected { color: var(--green); }
 .sync-badge.connected::before { background: var(--green); }
+.sync-badge.syncing { color: var(--green); animation: sync-pulse 1.2s ease-in-out infinite; }
+.sync-badge.syncing::before { background: var(--green); animation: sync-pulse 1.2s ease-in-out infinite; }
+@keyframes sync-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .sync-badge.connecting { color: var(--yellow); }
 .sync-badge.connecting::before { background: var(--yellow); }
 .sync-badge.disconnected { color: var(--muted); }
@@ -1076,6 +1079,12 @@ input.ing-edit.ing-text { flex: 1; }
 .loading-text {
   font-size: 0.85rem;
   color: var(--text);
+}
+.loading-detail,
+.loading-detail2 {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 0.25rem;
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }

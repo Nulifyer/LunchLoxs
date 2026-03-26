@@ -12,6 +12,7 @@ import { encrypt, decrypt } from "./crypto";
 import { toBase64, fromBase64 } from "./encoding";
 
 export type SyncStatus = "connecting" | "connected" | "disconnected";
+export type PushResult = "sent" | "no_key" | "not_connected";
 
 export interface VaultInfo {
   vaultId: string;
@@ -51,6 +52,9 @@ export interface SyncClientOptions {
   onPresence?: (docId: string, deviceId: string, data: any) => void;
   onPasswordChanged?: () => void;
   onAuthError?: (message: string) => void;
+  onAck?: (docId: string, seq: number) => void;
+  onPushError?: (docId: string, message: string) => void;
+  onRateLimited?: (retryAfterMs?: number) => void;
   onVaultList?: (vaults: VaultInfo[]) => void;
   onVaultCreated?: (vaultId: string) => void;
   onVaultInvited?: (vaultId: string, encryptedVaultKey: string, role: string) => void;
@@ -58,6 +62,7 @@ export interface SyncClientOptions {
   onVaultDeleted?: (vaultId: string) => void;
   onVaultMembers?: (vaultId: string, members: VaultMemberInfo[]) => void;
   onOwnershipTransferred?: (vaultId: string, newOwnerUserId: string) => void;
+  onOwnershipReceived?: (vaultId: string, fromUserId: string) => void;
   onRoleChanged?: (vaultId: string, targetUserId: string, newRole: string) => void;
   onVaultKeyRotated?: (vaultId: string) => void;
 }
@@ -70,6 +75,7 @@ interface ServerMessage {
   from_device?: string;
   latest_seq?: number;
   message?: string;
+  retry_after_ms?: number;
   presence?: any;
   public_key?: string;
   wrapped_private_key?: string;
@@ -92,7 +98,6 @@ export class SyncClient {
   private reconnectDelay = 1000;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
-  private pendingPushes: Array<{ docId: string; data: Uint8Array }> = [];
   private messageQueue: Promise<void> = Promise.resolve();
   private subscriptions = new Set<string>();
   private lastSeqs = new Map<string, number>();
@@ -137,14 +142,17 @@ export class SyncClient {
       this.messageQueue = this.messageQueue.then(() => this.handleMessage(event.data));
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (ev) => {
+      console.warn("sync: ws closed, code:", ev.code, "reason:", ev.reason || "(none)", "intentional:", this.intentionalClose);
       this.opts.onStatusChange("disconnected");
       if (!this.intentionalClose) {
         this.scheduleReconnect();
       }
     };
 
-    this.ws.onerror = () => {};
+    this.ws.onerror = (ev) => {
+      console.error("sync: ws error", ev);
+    };
   }
 
   private async handleMessage(data: string): Promise<void> {
@@ -161,7 +169,6 @@ export class SyncClient {
           wrappedSigningPrivateKey: msg.wrapped_signing_private_key || undefined,
         });
         await this.resubscribeAll();
-        await this.flushPending();
         break;
 
       case "sync":
@@ -186,6 +193,15 @@ export class SyncClient {
         break;
 
       case "ack":
+        if (msg.doc_id && msg.seq !== undefined) {
+          this.opts.onAck?.(msg.doc_id, msg.seq);
+        }
+        break;
+
+      case "push_error":
+        if (msg.doc_id) {
+          this.opts.onPushError?.(msg.doc_id, msg.message ?? "unknown");
+        }
         break;
 
       case "purged":
@@ -218,9 +234,14 @@ export class SyncClient {
         );
         break;
 
-      case "vault_created":
-        this.opts.onVaultCreated?.(msg.vault_id ?? "");
+      case "vault_created": {
+        const vid = msg.vault_id ?? "";
+        // Resolve the createVault() promise if this device initiated it
+        const resolver = this.confirmResolvers.get(`vault_created:${vid}`);
+        if (resolver) resolver();
+        this.opts.onVaultCreated?.(vid);
         break;
+      }
 
       case "vault_invited":
         this.opts.onVaultInvited?.(msg.vault_id ?? "", msg.encrypted_vault_key ?? "", msg.role ?? "editor");
@@ -261,6 +282,10 @@ export class SyncClient {
         this.opts.onOwnershipTransferred?.(msg.vault_id ?? "", msg.target_user_id ?? "");
         break;
 
+      case "ownership_received":
+        this.opts.onOwnershipReceived?.(msg.vault_id ?? "", msg.target_user_id ?? "");
+        break;
+
       case "role_changed":
         this.opts.onRoleChanged?.(msg.vault_id ?? "", msg.target_user_id ?? "", msg.new_role ?? "");
         break;
@@ -289,6 +314,9 @@ export class SyncClient {
           this.ws?.close();
           this.opts.onStatusChange("disconnected");
           this.opts.onAuthError?.(msg.message);
+        } else if (msg.message === "rate_limited") {
+          console.warn("sync: rate limited, retry after", msg.retry_after_ms ?? "unknown", "ms");
+          this.opts.onRateLimited?.(msg.retry_after_ms);
         } else {
           console.error("sync: server error:", msg.message);
           // Reject any pending lookup that might have caused this
@@ -323,22 +351,27 @@ export class SyncClient {
     }
   }
 
-  async push(docId: string, snapshot: Uint8Array): Promise<void> {
+  async push(docId: string, snapshot: Uint8Array): Promise<PushResult> {
     const key = this.resolveKey(docId);
     if (!key) {
-      console.warn(`sync: no encryption key for ${docId}, skipping push`);
-      return;
+      console.warn("sync: push skipped, no key for", docId.slice(0, 20));
+      return "no_key";
     }
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      const encrypted = await encrypt(snapshot, key);
-      this.ws.send(JSON.stringify({
-        type: "push",
-        doc_id: docId,
-        payload: toBase64(encrypted),
-      }));
-    } else {
-      this.pendingPushes.push({ docId, data: snapshot });
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      console.warn("sync: push skipped, ws not open for", docId.slice(0, 20), "state:", this.ws?.readyState);
+      return "not_connected";
     }
+    const encrypted = await encrypt(snapshot, key);
+    this.ws.send(JSON.stringify({
+      type: "push",
+      doc_id: docId,
+      payload: toBase64(encrypted),
+    }));
+    return "sent";
+  }
+
+  isOpen(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 
   changePassword(newAuthHash: string, wrappedKey: string): void {
@@ -359,8 +392,10 @@ export class SyncClient {
     this.sendMsg({ type: "list_vaults" });
   }
 
-  createVault(vaultId: string, encryptedVaultKey: string, senderPublicKey: string): void {
-    this.sendMsg({ type: "create_vault", vault_id: vaultId, encrypted_vault_key: encryptedVaultKey, sender_public_key: senderPublicKey });
+  createVault(vaultId: string, encryptedVaultKey: string, senderPublicKey: string): Promise<void> {
+    return this.awaitConfirmation(`vault_created:${vaultId}`, () => {
+      this.sendMsg({ type: "create_vault", vault_id: vaultId, encrypted_vault_key: encryptedVaultKey, sender_public_key: senderPublicKey });
+    });
   }
 
   inviteToVault(vaultId: string, targetUserId: string, encryptedVaultKey: string, senderPublicKey: string, role = "editor"): void {
@@ -395,6 +430,9 @@ export class SyncClient {
 
   /** Generic helper: send a message, resolve when a specific confirmation type arrives. */
   private awaitConfirmation(confirmType: string, send: () => void, timeoutMs = 10000): Promise<void> {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error(`${confirmType}: not connected`));
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.confirmResolvers.delete(confirmType); reject(new Error(`${confirmType} timed out`)); }, timeoutMs);
       this.confirmResolvers.set(confirmType, () => { clearTimeout(timer); this.confirmResolvers.delete(confirmType); resolve(); });
@@ -491,13 +529,6 @@ export class SyncClient {
           last_seq: seq,
         }));
       }
-    }
-  }
-
-  private async flushPending(): Promise<void> {
-    const pending = this.pendingPushes.splice(0);
-    for (const { docId, data } of pending) {
-      await this.push(docId, data);
     }
   }
 

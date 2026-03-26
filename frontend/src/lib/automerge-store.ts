@@ -22,6 +22,7 @@ export class AutomergeStore<T> {
   private encKey: CryptoKey;
   private listeners: Set<ChangeListener<T>> = new Set();
   private initFn: ((doc: T) => void) | null = null;
+  private pendingWrite: Promise<void> = Promise.resolve();
 
   private constructor(doc: Automerge.Doc<T>, db: IDBDatabase, docId: string, encKey: CryptoKey) {
     this.doc = doc;
@@ -73,7 +74,7 @@ export class AutomergeStore<T> {
     }
     this.doc = Automerge.change(this.doc, this.initFn);
     this.initFn = null;
-    this.persist();
+    this.enqueuePersistAndMarkDirty();
     this.notify();
     return true;
   }
@@ -84,8 +85,13 @@ export class AutomergeStore<T> {
 
   change(fn: (doc: T) => void, message?: string): void {
     this.doc = Automerge.change(this.doc, { message }, fn);
-    this.persist();
+    this.enqueuePersistAndMarkDirty();
     this.notify();
+  }
+
+  /** Wait for any pending writes to IndexedDB to complete. */
+  async waitForWrite(): Promise<void> {
+    await this.pendingWrite;
   }
 
   applyChange(change: Uint8Array): void {
@@ -125,8 +131,44 @@ export class AutomergeStore<T> {
   async clear(initFn: (doc: T) => void): Promise<void> {
     this.doc = Automerge.change(Automerge.init<T>(), initFn);
     await this.setLastSeq(0);
+    await this.clearDirty();
     await this.persist();
     this.notify();
+  }
+
+  async markDirty(): Promise<void> {
+    await putToDB(this.db, `dirty:${this.docId}`, true);
+  }
+
+  async clearDirty(): Promise<void> {
+    await deleteToDB(this.db, `dirty:${this.docId}`);
+    await deleteToDB(this.db, `pushHeads:${this.docId}`);
+  }
+
+  async isDirty(): Promise<boolean> {
+    const val = await getFromDB<boolean>(this.db, `dirty:${this.docId}`);
+    return val === true;
+  }
+
+  /** Get the current Automerge heads (change hashes) as hex strings. */
+  getHeads(): string[] {
+    return Automerge.getHeads(this.doc);
+  }
+
+  /** Store the heads at the time of a push for later comparison. */
+  async setPushHeads(heads: string[]): Promise<void> {
+    await putToDB(this.db, `pushHeads:${this.docId}`, heads);
+  }
+
+  /** Retrieve the heads stored at the last push. */
+  async getPushHeads(): Promise<string[] | null> {
+    const val = await getFromDB<string[]>(this.db, `pushHeads:${this.docId}`);
+    return val ?? null;
+  }
+
+  /** Clear stored push heads (e.g. when dirty is cleared). */
+  async clearPushHeads(): Promise<void> {
+    await deleteToDB(this.db, `pushHeads:${this.docId}`);
   }
 
   onChange(listener: ChangeListener<T>): () => void {
@@ -154,6 +196,104 @@ export class AutomergeStore<T> {
     const encrypted = await encrypt(binary, this.encKey);
     await putToDB(this.db, `doc:${this.docId}`, encrypted);
   }
+
+  /** Enqueue a write so change() stays synchronous but writes are serialized and tracked. */
+  private enqueuePersistAndMarkDirty(): void {
+    this.pendingWrite = this.pendingWrite
+      .then(() => this.persistAndMarkDirty())
+      .catch((e) => console.error("persistAndMarkDirty failed:", e));
+  }
+
+  private async persistAndMarkDirty(): Promise<void> {
+    const binary = Automerge.save(this.doc);
+    const encrypted = await encrypt(binary, this.encKey);
+    // Single transaction for both doc + dirty flag
+    await new Promise<void>((resolve, reject) => {
+      const tx = this.db.transaction(STORE_NAME, "readwrite");
+      const store = tx.objectStore(STORE_NAME);
+      store.put(encrypted, `doc:${this.docId}`);
+      store.put(true, `dirty:${this.docId}`);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+}
+
+/** Clear dirty flag and push heads for a doc directly in IndexedDB (works without an open store). */
+export function clearDirtyFlag(db: IDBDatabase, docId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    store.delete(`dirty:${docId}`);
+    store.delete(`pushHeads:${docId}`);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** Set lastSeq for a doc directly in IndexedDB (works without an open store). */
+export function setSeqFlag(db: IDBDatabase, docId: string, seq: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).put(seq, `seq:${docId}`);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** Scan IndexedDB for all doc IDs that have unsent local changes. */
+export function getAllDirtyDocIds(db: IDBDatabase): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const req = store.getAllKeys();
+    req.onsuccess = () => {
+      const keys = req.result as string[];
+      const dirtyIds = keys
+        .filter((k) => typeof k === "string" && k.startsWith("dirty:"))
+        .map((k) => (k as string).slice(6));
+      resolve(dirtyIds);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// ── Pending vault helpers ──
+
+export interface PendingVault {
+  vaultId: string;
+  encryptedVaultKey: string;
+  senderPublicKey: string;
+}
+
+export function setPendingVault(db: IDBDatabase, pv: PendingVault): Promise<void> {
+  return putToDB(db, `pendingVault:${pv.vaultId}`, pv);
+}
+
+export function clearPendingVault(db: IDBDatabase, vaultId: string): Promise<void> {
+  return deleteToDB(db, `pendingVault:${vaultId}`);
+}
+
+export function getAllPendingVaults(db: IDBDatabase): Promise<PendingVault[]> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const req = store.getAllKeys();
+    req.onsuccess = () => {
+      const keys = (req.result as string[]).filter((k) => typeof k === "string" && k.startsWith("pendingVault:"));
+      if (keys.length === 0) { resolve([]); return; }
+      const results: PendingVault[] = [];
+      const tx2 = db.transaction(STORE_NAME, "readonly");
+      const store2 = tx2.objectStore(STORE_NAME);
+      for (const key of keys) {
+        const r = store2.get(key);
+        r.onsuccess = () => { if (r.result) results.push(r.result); };
+      }
+      tx2.oncomplete = () => resolve(results);
+      tx2.onerror = () => reject(tx2.error);
+    };
+    req.onerror = () => reject(req.error);
+  });
 }
 
 // ── Shared IndexedDB opener ──
@@ -185,6 +325,15 @@ function putToDB(db: IDBDatabase, key: string, value: any): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
     tx.objectStore(STORE_NAME).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function deleteToDB(db: IDBDatabase, key: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).delete(key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
