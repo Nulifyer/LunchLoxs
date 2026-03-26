@@ -31,7 +31,7 @@ export type SignFn = (raw: Uint8Array) => Promise<Uint8Array> | Uint8Array;
 
 export class PushQueue {
   private docMgr: DocumentManager;
-  private syncClient: SyncClient;
+  private syncClient: SyncClient | null;
   private db: IDBDatabase;
   private signFn: SignFn | null;
 
@@ -51,13 +51,22 @@ export class PushQueue {
   // Per-doc consecutive push error counts
   private errorCounts = new Map<string, number>();
 
+  // Docs deferred due to missing vault key -- skip during flush, retry when vaults change
+  private deferredNoKey = new Set<string>();
+
+  // Vaults with permanent permission errors -- skip all their docs
+  private failedVaults = new Set<string>();
+
+  // Vault IDs still pending server confirmation -- skip their docs during flush
+  private pendingVaultIds = new Set<string>();
+
   // Background poll
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   // Listener for badge updates
   private onDirtyChange?: () => void;
 
-  constructor(docMgr: DocumentManager, syncClient: SyncClient, db: IDBDatabase, signFn?: SignFn) {
+  constructor(docMgr: DocumentManager, syncClient: SyncClient | null, db: IDBDatabase, signFn?: SignFn) {
     this.docMgr = docMgr;
     this.syncClient = syncClient;
     this.db = db;
@@ -125,17 +134,36 @@ export class PushQueue {
 
   /** Server rejected a push for a specific doc (e.g. permissions). Track errors and give up after MAX_PUSH_ERRORS. */
   async onPushError(docId: string, message: string): Promise<void> {
+    // Permission errors are permanent -- fail the entire vault immediately
+    if (message.includes("insufficient permissions")) {
+      const slashIdx = docId.indexOf("/");
+      if (slashIdx > 0) {
+        const vaultId = docId.slice(0, slashIdx);
+        if (!this.failedVaults.has(vaultId)) {
+          warn("[push-queue] vault", vaultId.slice(0, 8), "has insufficient permissions -- skipping all its docs");
+          this.failedVaults.add(vaultId);
+          // Clear dirty flags for all docs in this vault
+          for (const id of [...this.dirtySet]) {
+            if (id.startsWith(vaultId + "/")) {
+              this.dirtySet.delete(id);
+              await clearDirtyFlag(this.db, id);
+            }
+          }
+        }
+        this.onDirtyChange?.();
+        return;
+      }
+    }
+
     const count = (this.errorCounts.get(docId) ?? 0) + 1;
     this.errorCounts.set(docId, count);
     warn("[push-queue] push rejected for", docId.slice(0, 12), "-", message, `(${count}/${MAX_PUSH_ERRORS})`);
     this.dirtySet.delete(docId);
     if (count >= MAX_PUSH_ERRORS) {
-      // Permanent failure -- clear IDB dirty flag so we stop retrying
       warn("[push-queue] giving up on", docId.slice(0, 12), "after", MAX_PUSH_ERRORS, "consecutive errors");
       await clearDirtyFlag(this.db, docId);
       this.errorCounts.delete(docId);
     }
-    // Otherwise IDB dirty flag is NOT cleared -- poll will re-discover and retry later
     this.onDirtyChange?.();
   }
 
@@ -170,17 +198,34 @@ export class PushQueue {
         if (!this.isConnected() || this.ratePaused) break;
         // Skip docs that were acked/cleared by a concurrent onAck during this flush
         if (!this.dirtySet.has(docId)) { skipped++; continue; }
+        // Skip docs deferred due to missing key (will retry when vaults change)
+        if (this.deferredNoKey.has(docId)) { skipped++; continue; }
+        // Skip docs for vaults not yet confirmed by server
+        const slashIdx = docId.indexOf("/");
+        const vaultId = slashIdx > 0 ? docId.slice(0, slashIdx) : "";
+        if (vaultId && this.pendingVaultIds.has(vaultId)) { skipped++; continue; }
+        // Skip docs for vaults with permanent permission errors
+        if (vaultId && this.failedVaults.has(vaultId)) { skipped++; continue; }
         const result = await this.pushDoc(docId);
         if (result === "not_connected") break;
         if (result === "no_key") skipped++;
         else sent++;
       }
-      log("[push-queue] flushed", sent, "/", docIds.length, "docs" + (skipped > 0 ? " (" + skipped + " skipped, no key)" : ""));
+      if (sent > 0 || skipped < docIds.length) {
+        log("[push-queue] flushed", sent, "/", docIds.length, "docs" + (skipped > 0 ? " (" + skipped + " deferred)" : ""));
+      }
     } finally {
       this.flushing = false;
     }
-    // If rate limited or still dirty, backoff timer will retry
-    if (this.dirtySet.size > 0 && this.isConnected() && !this.backoffTimer) {
+    // If rate limited or still dirty (and some are pushable), backoff timer will retry
+    const hasPushable = [...this.dirtySet].some((id) => {
+      if (this.deferredNoKey.has(id)) return false;
+      const si = id.indexOf("/");
+      if (si > 0 && this.pendingVaultIds.has(id.slice(0, si))) return false;
+      if (si > 0 && this.failedVaults.has(id.slice(0, si))) return false;
+      return true;
+    });
+    if (hasPushable && this.isConnected() && !this.backoffTimer) {
       this.scheduleBackoffFlush();
     }
   }
@@ -252,8 +297,10 @@ export class PushQueue {
       }
       log("[push-queue] creating pending vault:", pv.vaultId.slice(0, 8));
       try {
+        if (!this.syncClient) { warn("[push-queue] no sync client"); continue; }
         await this.syncClient.createVault(pv.vaultId, pv.encryptedVaultKey, pv.senderPublicKey);
         await clearPendingVault(this.db, pv.vaultId);
+        this.pendingVaultIds.delete(pv.vaultId);
         log("[push-queue] pending vault created:", pv.vaultId.slice(0, 8));
       } catch (e) {
         warn("[push-queue] pending vault creation failed:", pv.vaultId.slice(0, 8), e);
@@ -263,6 +310,34 @@ export class PushQueue {
 
   hasDirty(): boolean { return this.dirtySet.size > 0; }
   dirtyCount(): number { return this.dirtySet.size; }
+  /** Count of dirty docs that can actually be pushed right now (excludes deferred/pending). */
+  pushableCount(): number {
+    let n = 0;
+    for (const id of this.dirtySet) {
+      if (this.deferredNoKey.has(id)) continue;
+      const si = id.indexOf("/");
+      if (si > 0 && this.pendingVaultIds.has(id.slice(0, si))) continue;
+      if (si > 0 && this.failedVaults.has(id.slice(0, si))) continue;
+      n++;
+    }
+    return n;
+  }
+  isDirty(docId: string): boolean { return this.dirtySet.has(docId); }
+
+  /** Set vault IDs that are still pending server confirmation. Docs for these vaults are skipped during flush. */
+  setPendingVaultIds(ids: Set<string>): void { this.pendingVaultIds = ids; }
+
+  /** Called when vault keys change (e.g. onVaultList). Clears deferred and failed state so docs are retried. */
+  onVaultsChanged(): void {
+    if (this.deferredNoKey.size > 0) {
+      log("[push-queue] vaults changed, clearing", this.deferredNoKey.size, "deferred docs");
+      this.deferredNoKey.clear();
+    }
+    if (this.failedVaults.size > 0) {
+      log("[push-queue] vaults changed, clearing", this.failedVaults.size, "failed vaults");
+      this.failedVaults.clear();
+    }
+  }
 
   setDirtyChangeListener(fn: () => void): void { this.onDirtyChange = fn; }
 
@@ -280,10 +355,12 @@ export class PushQueue {
     const ids = await getAllDirtyDocIds(this.db);
     let discovered = 0;
     for (const id of ids) {
-      if (!this.dirtySet.has(id)) {
-        this.dirtySet.add(id);
-        discovered++;
-      }
+      if (this.dirtySet.has(id)) continue;
+      // Skip docs for vaults with permanent permission errors
+      const si = id.indexOf("/");
+      if (si > 0 && this.failedVaults.has(id.slice(0, si))) continue;
+      this.dirtySet.add(id);
+      discovered++;
     }
     if (discovered > 0) {
       log("[push-queue] poll discovered", discovered, "dirty docs");
@@ -361,12 +438,12 @@ export class PushQueue {
     if (result === "sent") {
       store.setPushHeads(heads);
     } else if (result === "no_key") {
-      // No encryption key available (vault key not yet loaded) - remove from
-      // dirty set so the queue doesn't spin. The doc will be re-marked dirty
-      // when the vault key arrives and the store is re-opened.
-      warn("[push-queue] no key for", docId.slice(0, 12), "- deferring");
-      this.dirtySet.delete(docId);
-      this.onDirtyChange?.();
+      // No encryption key available (vault key not yet loaded).
+      // Keep in dirty set but defer so flush skips it until vaults change.
+      if (!this.deferredNoKey.has(docId)) {
+        warn("[push-queue] no key for", docId.slice(0, 12), "- deferring");
+      }
+      this.deferredNoKey.add(docId);
     }
 
     if (tempOpened) this.docMgr.close(docId);
@@ -374,7 +451,7 @@ export class PushQueue {
   }
 
   private isConnected(): boolean {
-    return this.syncClient.isOpen();
+    return this.syncClient?.isOpen() ?? false;
   }
 
   private scheduleBackoffFlush(): void {

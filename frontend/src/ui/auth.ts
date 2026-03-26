@@ -2,26 +2,37 @@
  * Login / signup / logout UI and logic.
  */
 
-import { log, error } from "../lib/logger";
+import { log, warn, error } from "../lib/logger";
 import {
   deriveKeys, deriveUserId, unwrapMasterKey,
+  unwrapPrivateKey, unwrapSigningKey, importBookKey, decrypt,
+  signPayload,
 } from "../lib/crypto";
 import {
   getStoredUsername, getStoredWrappedKey, getDeviceId, clearSession,
-  clearIdentityKeys,
+  clearIdentityKeys, setIdentityKeys, setSigningKeys, getSigningPrivateKey,
+  saveSession,
 } from "../lib/auth";
 import { DocumentManager } from "../lib/document-manager";
-import { toBase64 } from "../lib/encoding";
-import { clearIndex } from "../lib/search";
+import { clearLocalCache, loadLocalCache, type LocalCache } from "../lib/automerge-store";
+import { toBase64, fromBase64 } from "../lib/encoding";
+import { clearIndex, indexRecipe } from "../lib/search";
 import { isOpen as isDetailOpen } from "../views/recipe-detail";
 import {
   getDocMgr, setDocMgr, getSyncClient, setSyncClient,
   setBooks, setActiveBook, setCurrentUsername, setCurrentUserId,
   getSigningKeyCache, getIsSignup, setIsSignup,
-  getPushQueue, setPushQueue,
+  getPushQueue, setPushQueue, setSyncStatus,
 } from "../state";
 import { createSyncConnection } from "../connect";
 import { deselectRecipe } from "../ui/recipes";
+import { renderBookSelect, showBookList, switchBook } from "../ui/books";
+import { renderCatalog } from "../sync/push";
+import { on as onSyncEvent, emit as syncEmit } from "../sync/sync-events";
+import { updateSyncBadge } from "../ui/sync-status";
+import { refreshBookNameFromCatalog, rebuildBookIndex } from "../sync/vault-helpers";
+import { PushQueue, type SignFn } from "../sync/push-queue";
+import type { Book, RecipeCatalog } from "../types";
 
 // DOM refs (grabbed at init time)
 let loginSection: HTMLElement;
@@ -83,6 +94,27 @@ export async function login(username: string, passphrase: string) {
       try { masterKey = await unwrapMasterKey(localWrapped, derived.wrappingKey); wrappedMasterKey = localWrapped; log("[login] unwrapped local master key"); }
       catch (e) { error("[login] unwrap failed:", e); throw new Error("Wrong passphrase -- could not decrypt local data."); }
     }
+
+    // Try offline-first boot for returning users
+    if (masterKey) {
+      log("[login] initializing DocumentManager...");
+      const docMgr = await DocumentManager.init(userId, masterKey);
+      setDocMgr(docMgr);
+      log("[login] DocumentManager ready");
+
+      const cache = await loadLocalCache(docMgr.getDb(), masterKey);
+      if (cache) {
+        log("[login] local cache found, booting offline-first");
+        saveSession(username, { authHash: derived.authHash, masterKey, wrappedMasterKey: wrappedMasterKey!, userId });
+        await localBoot(cache, masterKey, docMgr, username, userId);
+        // Connect WebSocket in background for sync
+        connectInBackground(username, userId, derived, masterKey, wrappedMasterKey);
+        return;
+      }
+      log("[login] no local cache, falling through to server boot");
+    }
+
+    // No cache (first login or new device) -- must wait for server
     log("[login] creating SyncClient...");
     const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
     const isDev = location.hostname === "localhost" && location.port === "5000";
@@ -91,11 +123,6 @@ export async function login(username: string, passphrase: string) {
     const syncClient = createSyncConnection(wsUrl, userId, derived, masterKey, wrappedMasterKey, username);
     setSyncClient(syncClient);
     syncClient.setLastSeqGetter(async (docId) => { const s = getDocMgr()?.get(docId); return s ? s.getLastSeq() : 0; });
-    if (masterKey) {
-      log("[login] initializing DocumentManager...");
-      setDocMgr(await DocumentManager.init(userId, masterKey));
-      log("[login] DocumentManager ready");
-    }
     log("[login] connecting WebSocket to", wsUrl);
     loginBtn.textContent = "Connecting...";
     syncClient.connect();
@@ -107,12 +134,127 @@ export async function login(username: string, passphrase: string) {
   }
 }
 
+/** Boot the app from local cache without waiting for the server. */
+async function localBoot(
+  cache: LocalCache,
+  masterKey: CryptoKey,
+  docMgr: DocumentManager,
+  username: string,
+  userId: string,
+) {
+  // Restore identity keys
+  const identityPub = fromBase64(cache.identity.publicKey);
+  const identityPriv = await unwrapPrivateKey(fromBase64(cache.identity.wrappedPrivateKey), masterKey);
+  setIdentityKeys(identityPub, identityPriv);
+  log("[localBoot] identity keys restored");
+
+  // Restore signing keys
+  const signingPub = fromBase64(cache.signing.publicKey);
+  const signingPriv = await unwrapSigningKey(fromBase64(cache.signing.wrappedPrivateKey), masterKey);
+  setSigningKeys(signingPub, signingPriv);
+  getSigningKeyCache().set(userId, signingPub);
+  log("[localBoot] signing keys restored");
+
+  // Restore books from cached vault keys
+  const books: Book[] = [];
+  for (const entry of cache.vaults) {
+    try {
+      const rawKey = await decrypt(fromBase64(entry.wrappedVaultKey), masterKey);
+      const encKey = await importBookKey(rawKey);
+      books.push({ vaultId: entry.vaultId, name: entry.name, role: entry.role, encKey });
+    } catch (e) {
+      warn("[localBoot] failed to restore vault key for", entry.vaultId.slice(0, 8), e);
+    }
+  }
+  setBooks(books);
+  log("[localBoot] restored", books.length, "books");
+
+  // Switch to app UI
+  loginPasswordInput.value = "";
+  signupPasswordInput.value = "";
+  signupConfirmInput.value = "";
+  loginSection.hidden = true;
+  appSection.hidden = false;
+  resetLoginForm();
+  const profileBtn = document.getElementById("profile-btn") as HTMLButtonElement;
+  const profileUsername = document.getElementById("profile-username") as HTMLElement;
+  profileBtn.textContent = username.charAt(0).toUpperCase();
+  profileUsername.textContent = username;
+  setSyncStatus("disconnected");
+  renderBookSelect();
+  log("[localBoot] UI switched to app view");
+
+  // Open catalogs from local IDB and build search index
+  clearIndex();
+  for (const book of books) {
+    const catDocId = `${book.vaultId}/catalog`;
+    const catalog = await docMgr.open<RecipeCatalog>(catDocId, (doc) => { doc.name = book.name; doc.recipes = []; });
+    const catDoc = catalog.getDoc();
+    if (catDoc.name && catDoc.name !== book.name && catDoc.name !== book.vaultId.slice(0, 8)) {
+      book.name = catDoc.name;
+    }
+    for (const r of catDoc.recipes ?? []) {
+      indexRecipe({ recipeId: r.id, vaultId: book.vaultId, bookName: book.name, title: r.title, tags: r.tags });
+    }
+    catalog.onChange(() => {
+      refreshBookNameFromCatalog(catDocId);
+      rebuildBookIndex(book.vaultId);
+      if (getActiveBook()?.vaultId === book.vaultId) renderCatalog();
+    });
+  }
+
+  // Always start on the book list -- let the user pick
+  showBookList();
+
+  // Start PushQueue
+  const makeSignFn = (): SignFn => (raw: Uint8Array) => {
+    const sk = getSigningPrivateKey();
+    return sk ? signPayload(raw, sk) : raw;
+  };
+  const pq = new PushQueue(docMgr, null as any, docMgr.getDb(), makeSignFn());
+  await pq.start();
+  pq.setDirtyChangeListener(() => syncEmit("dirty-change", { dirtyCount: pq.dirtyCount(), pushableCount: pq.pushableCount() }));
+  setPushQueue(pq);
+  updateSyncBadge();
+  log("[localBoot] complete");
+}
+
+/** Connect WebSocket in background after local boot. */
+function connectInBackground(
+  username: string,
+  userId: string,
+  derived: { authHash: string; wrappingKey: CryptoKey },
+  masterKey: CryptoKey,
+  wrappedMasterKey: Uint8Array | null,
+) {
+  const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const isDev = location.hostname === "localhost" && location.port === "5000";
+  const wsHost = isDev ? `${location.hostname}:8000` : location.host;
+  const wsUrl = `${wsProtocol}//${wsHost}/ws`;
+  log("[login] connecting WebSocket in background to", wsUrl);
+  setIsSignup(false); // Background connect is always for existing users
+  const syncClient = createSyncConnection(wsUrl, userId, derived, masterKey, wrappedMasterKey, username);
+  setSyncClient(syncClient);
+  syncClient.setLastSeqGetter(async (docId) => { const s = getDocMgr()?.get(docId); return s ? s.getLastSeq() : 0; });
+  // Update PushQueue with the new SyncClient reference
+  const pq = getPushQueue();
+  if (pq) {
+    const sk = getSigningPrivateKey();
+    const signFn: SignFn = (raw: Uint8Array) => sk ? signPayload(raw, sk) : raw;
+    pq.updateRefs(getDocMgr()!, syncClient, signFn);
+  }
+  syncClient.connect();
+}
+
 export function logout() {
   log("[logout]");
   if (isDetailOpen()) deselectRecipe();
   getPushQueue()?.stop(); setPushQueue(null);
   getSyncClient()?.disconnect(); setSyncClient(null);
-  getDocMgr()?.closeAll(); setDocMgr(null);
+  // Clear offline cache before closing DocMgr (closeAll closes the IDB connection)
+  const dm = getDocMgr();
+  if (dm) clearLocalCache(dm.getDb()).catch(() => {});
+  dm?.closeAll(); setDocMgr(null);
   clearSession(); clearIdentityKeys(); clearIndex();
   setBooks([]); setActiveBook(null);
   setCurrentUsername(""); setCurrentUserId("");
@@ -198,6 +340,39 @@ export function initAuth() {
   });
 
   logoutBtn.addEventListener("click", logout);
+
+  // Sync event subscribers
+  onSyncEvent("auth-success", ({ username }) => {
+    if (appSection.hidden) {
+      log("[auth] switching to app view");
+      loginPasswordInput.value = "";
+      signupPasswordInput.value = "";
+      signupConfirmInput.value = "";
+      loginSection.hidden = true;
+      appSection.hidden = false;
+      resetLoginForm();
+      const profileBtn = document.getElementById("profile-btn") as HTMLButtonElement;
+      const profileUsername = document.getElementById("profile-username") as HTMLElement;
+      profileBtn.textContent = username.charAt(0).toUpperCase();
+      profileUsername.textContent = username;
+      renderBookSelect();
+    }
+  });
+
+  onSyncEvent("auth-error", ({ type }) => {
+    let text: string;
+    if (type === "user_already_exists") {
+      text = "Username already taken.";
+    } else if (type === "user_not_found") {
+      text = "User not found. Check your username or sign up.";
+    } else {
+      text = "Invalid username or password.";
+    }
+    const errEl = getIsSignup() ? signupError : loginError;
+    errEl.textContent = text;
+    errEl.hidden = false;
+    resetLoginForm();
+  });
 
   // Boot
   const savedUsername = getStoredUsername();

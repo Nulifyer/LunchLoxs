@@ -296,6 +296,50 @@ export function getAllPendingVaults(db: IDBDatabase): Promise<PendingVault[]> {
   });
 }
 
+// ── Local cache (offline boot) ──
+
+export interface VaultCacheEntry {
+  vaultId: string;
+  name: string;
+  role: string;
+  /** Vault key raw bytes, base64-encoded, encrypted with master key */
+  wrappedVaultKey: string;
+}
+
+export interface LocalCache {
+  vaults: VaultCacheEntry[];
+  identity: { publicKey: string; wrappedPrivateKey: string };
+  signing: { publicKey: string; wrappedPrivateKey: string };
+}
+
+const LOCAL_CACHE_KEY = "localCache";
+
+/** Persist vault keys + identity keys encrypted with master key for offline boot. */
+export async function saveLocalCache(db: IDBDatabase, masterKey: CryptoKey, cache: LocalCache): Promise<void> {
+  const json = JSON.stringify(cache);
+  const encoded = new TextEncoder().encode(json);
+  const encrypted = await encrypt(encoded, masterKey);
+  await putToDB(db, LOCAL_CACHE_KEY, encrypted);
+}
+
+/** Load cached vault keys + identity keys. Returns null if missing or decrypt fails. */
+export async function loadLocalCache(db: IDBDatabase, masterKey: CryptoKey): Promise<LocalCache | null> {
+  const encrypted = await getFromDB<Uint8Array>(db, LOCAL_CACHE_KEY);
+  if (!encrypted) return null;
+  try {
+    const decrypted = await decrypt(encrypted, masterKey);
+    const json = new TextDecoder().decode(decrypted);
+    return JSON.parse(json) as LocalCache;
+  } catch {
+    return null;
+  }
+}
+
+/** Clear the local cache (used on logout). */
+export async function clearLocalCache(db: IDBDatabase): Promise<void> {
+  await deleteToDB(db, LOCAL_CACHE_KEY);
+}
+
 // ── Shared IndexedDB opener ──
 
 export function openStoreDB(userId: string): Promise<IDBDatabase> {

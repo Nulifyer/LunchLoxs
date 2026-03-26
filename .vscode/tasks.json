@@ -45,6 +45,15 @@
       "dependsOrder": "parallel",
       "problemMatcher": [],
       "group": "build"
+    },
+    {
+      "label": "teardown",
+      "type": "shell",
+      "command": "pkill -f 'bun run dev|bun run watch' ; podman compose down -v",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent"
+      }
     }
   ]
 }

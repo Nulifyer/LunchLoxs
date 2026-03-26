@@ -6,7 +6,7 @@ import { log, warn, error } from "../lib/logger";
 import { initRecipeList } from "../views/recipe-list";
 import { initRecipeDetail, openRecipe, closeRecipe } from "../views/recipe-detail";
 import { recipeToMarkdown } from "../lib/export";
-import { showConfirm, showPrompt } from "../lib/dialogs";
+import { showConfirm, showSelect } from "../lib/dialogs";
 import { openModal, closeModal } from "../lib/modal";
 import { toastSuccess, toastWarning, toastError } from "../lib/toast";
 import {
@@ -44,7 +44,7 @@ export async function selectRecipe(id: string) {
     meta?.cookMinutes ? `${meta.cookMinutes}m cook` : "",
     ...(meta?.tags ?? []),
   ].filter(Boolean).join(" · ");
-  openRecipe(contentStore, title, metaText, canEditActiveBook(), meta?.updatedAt);
+  openRecipe(contentStore, title, metaText, canEditActiveBook(), meta?.updatedAt, activeBook?.name);
 }
 
 export function deselectRecipe() {
@@ -87,12 +87,55 @@ export function initRecipes() {
   });
 
   // -- Recipe detail callbacks --
+  let touchTimer: ReturnType<typeof setTimeout> | null = null;
+  const TOUCH_DEBOUNCE_MS = 5000;
+
+  /** Debounced: update the recipe's updatedAt in the catalog after content edits. */
+  function touchUpdatedAt() {
+    if (touchTimer) clearTimeout(touchTimer);
+    touchTimer = setTimeout(() => {
+      touchTimer = null;
+      const rid = getSelectedRecipeId();
+      const activeBook = getActiveBook();
+      const docMgr = getDocMgr();
+      if (!rid || !activeBook || !docMgr) return;
+      const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
+      if (!catalog) return;
+      catalog.change((doc) => {
+        const r = doc.recipes?.find((r: any) => r.id === rid);
+        if (r) r.updatedAt = Date.now();
+      });
+      pushSnapshot(catalogDocId());
+    }, TOUCH_DEBOUNCE_MS);
+  }
+
   initRecipeDetail({
-    onBack: deselectRecipe,
+    onBack: () => {
+      // Flush any pending updatedAt before closing
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+        const rid = getSelectedRecipeId();
+        const activeBook = getActiveBook();
+        const docMgr = getDocMgr();
+        if (rid && activeBook && docMgr) {
+          const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
+          if (catalog) {
+            catalog.change((doc) => {
+              const r = doc.recipes?.find((r: any) => r.id === rid);
+              if (r) r.updatedAt = Date.now();
+            });
+            pushSnapshot(catalogDocId());
+          }
+        }
+      }
+      deselectRecipe();
+    },
     onPushSnapshot: () => {
       const selectedRecipeId = getSelectedRecipeId();
       const activeBook = getActiveBook();
       if (selectedRecipeId && activeBook) pushSnapshot(`${activeBook.vaultId}/${selectedRecipeId}`);
+      touchUpdatedAt();
     },
     onSendPresence: (data) => {
       const selectedRecipeId = getSelectedRecipeId();
@@ -159,13 +202,13 @@ export function initRecipes() {
       }
       const otherBooks = books.filter((b) => b.vaultId !== activeBook!.vaultId && (b.role === "owner" || b.role === "editor"));
       if (otherBooks.length === 0) { toastWarning("No books you can edit."); return; }
-      // Build a simple picker using showPrompt with book names
-      const choices = otherBooks.map((b, i) => `${i + 1}. ${b.name}`).join("\n");
-      const pick = await showPrompt(`Copy to which book?\n\n${choices}`, { title: "Copy to Book", placeholder: "Enter number" });
+      const pick = await showSelect(
+        otherBooks.map((b) => ({ value: b.vaultId, label: b.name })),
+        { title: "Copy to Book" },
+      );
       if (!pick) return;
-      const idx = parseInt(pick) - 1;
-      if (idx < 0 || idx >= otherBooks.length) { toastError("Invalid selection."); return; }
-      const targetBook = otherBooks[idx];
+      const targetBook = otherBooks.find((b) => b.vaultId === pick);
+      if (!targetBook) return;
       // Get source recipe
       const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
       const meta = catalog?.getDoc()?.recipes?.find((r: any) => r.id === selectedRecipeId);

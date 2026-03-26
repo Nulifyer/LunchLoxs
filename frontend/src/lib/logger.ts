@@ -13,7 +13,11 @@ const MAX_ENTRIES = 2000;
 const entries: LogEntry[] = [];
 
 function push(level: LogEntry["level"], args: any[]) {
-  const msg = args.map((a) => typeof a === "object" ? JSON.stringify(a, null, 0) : String(a)).join(" ");
+  const msg = args.map((a) => {
+    if (a instanceof Error) return a.message || String(a);
+    if (typeof a === "object") return JSON.stringify(a, null, 0);
+    return String(a);
+  }).join(" ");
   entries.push({ ts: Date.now(), level, msg });
   if (entries.length > MAX_ENTRIES) entries.shift();
 }

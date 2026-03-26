@@ -620,12 +620,7 @@ dialog label:not(.sr-only)+select {
   flex-direction: column;
   gap: 0.4rem;
   border-bottom: 1px solid var(--border);
-}
-
-.sidebar-header select {
-  width: 100%;
-  font-size: 0.8rem;
-  padding: 0.3rem 1.5rem 0.3rem 0.5rem;
+  position: relative;
 }
 
 .sidebar-header-actions {
@@ -637,13 +632,159 @@ dialog label:not(.sr-only)+select {
   flex: 1;
 }
 
+.sidebar-breadcrumb {
+  font-size: 0.7rem;
+  color: var(--subtle);
+  padding-left: 0.1rem;
+}
+
+/* -- Sidebar views (drill-down: books -> recipes) -- */
+.sidebar-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sidebar-view[hidden] {
+  display: none;
+}
+
+/* -- Back button / nav row -- */
+.sidebar-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.sidebar-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 0.15rem 0;
+  min-width: 0;
+}
+
+.sidebar-back:hover {
+  text-decoration: underline;
+}
+
+.sidebar-back svg {
+  flex-shrink: 0;
+}
+
+.sidebar-nav-sep {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.sidebar-nav-title {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* -- Book list items -- */
+.book-list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+
+.book-list-item:hover {
+  background: var(--bg-hover);
+}
+
+.book-list-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.book-list-role {
+  font-size: 0.65rem;
+  color: var(--subtle);
+  background: var(--bg-hover);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.book-list-empty {
+  padding: 1.5rem 0.75rem;
+  color: var(--subtle);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+/* -- Detail breadcrumb -- */
+.detail-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.25rem;
+}
+
+.breadcrumb-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--accent);
+  padding: 0.15rem 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.breadcrumb-back:hover {
+  text-decoration: underline;
+}
+
+.breadcrumb-back svg {
+  flex-shrink: 0;
+}
+
+.breadcrumb-sep {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.breadcrumb-title {
+  font-size: 0.8rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sidebar-list {
   list-style: none;
   overflow-y: auto;
   flex: 1;
 }
 
-.sidebar-list li {
+#recipe-list li {
   padding: 0.5rem 0.75rem;
   cursor: pointer;
   border-bottom: 1px solid var(--border);
@@ -654,30 +795,30 @@ dialog label:not(.sr-only)+select {
   transition: background 0.1s;
 }
 
-.sidebar-list li:hover {
+#recipe-list li:hover {
   background: var(--bg-hover);
 }
 
-.sidebar-list li.selected {
+#recipe-list li.selected {
   background: var(--accent);
   color: var(--bg);
 }
 
-.sidebar-list li.selected small {
+#recipe-list li.selected small {
   color: inherit;
 }
 
-.sidebar-list li.selected .tag {
+#recipe-list li.selected .tag {
   color: var(--accent);
   background: var(--bg);
 }
 
-.sidebar-list li strong {
+#recipe-list li strong {
   font-size: 0.85rem;
   font-weight: 500;
 }
 
-.sidebar-list li small {
+#recipe-list li small {
   font-size: 0.7rem;
   color: var(--subtle);
 }
@@ -720,79 +861,78 @@ dialog label:not(.sr-only)+select {
   font-size: 0.9rem;
 }
 
-/* -- Sync badge -- */
-.sync-badge {
+/* -- Sync status bar -- */
+.sync-status-bar {
   font-size: 0.65rem;
   font-weight: 500;
-  color: var(--muted);
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.4rem;
 }
 
-.sync-badge::before {
+.conn-status,
+.sync-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.conn-status::before {
   content: "";
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--muted);
   flex-shrink: 0;
 }
 
-.sync-badge.connected {
-  color: var(--green);
+.conn-status.connected { color: var(--green); }
+.conn-status.connected::before { background: var(--green); }
+.conn-status.connecting { color: var(--yellow); }
+.conn-status.connecting::before { background: var(--yellow); }
+.conn-status.disconnected { color: var(--muted); }
+.conn-status.disconnected::before { background: var(--muted); }
+
+.sync-sep {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.5;
 }
 
-.sync-badge.connected::before {
-  background: var(--green);
-}
+.sync-progress.synced { color: var(--green); }
+.sync-progress.syncing { color: var(--text); }
+.sync-progress.pending { color: var(--muted); }
 
-.sync-badge.syncing {
+.sync-progress.syncing {
   animation: sync-pulse 1.2s ease-in-out infinite;
 }
 
-.sync-badge.syncing::before {
-  animation: sync-pulse-dot 1.2s ease-in-out infinite;
-}
-
 @keyframes sync-pulse {
-
-  0%,
-  100% {
-    color: var(--green);
-  }
-
-  50% {
-    color: var(--muted);
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
-@keyframes sync-pulse-dot {
-
-  0%,
-  100% {
-    background: var(--green);
-  }
-
-  50% {
-    background: var(--muted);
-  }
+/* -- Per-recipe sync dot -- */
+.recipe-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
-.sync-badge.connecting {
-  color: var(--yellow);
+.sync-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
-.sync-badge.connecting::before {
+.sync-dot.synced {
+  background: var(--green);
+}
+
+.sync-dot.pending {
   background: var(--yellow);
-}
-
-.sync-badge.disconnected {
-  color: var(--muted);
-}
-
-.sync-badge.disconnected::before {
-  background: var(--muted);
 }
 
 /* ============================================================

@@ -167,6 +167,12 @@ func (c *Client) ReadPump(ctx context.Context) {
 			continue
 		}
 
+		// Heartbeat pings bypass rate limiting
+		if msg.Type == "ping" {
+			c.sendJSON(ServerMessage{Type: "pong"})
+			continue
+		}
+
 		if !c.rateAllow() {
 			// Tell client how long to wait for 1 token to refill
 			retryMs := 1000 / c.Rate.PerSec

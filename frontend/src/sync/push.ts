@@ -1,14 +1,17 @@
 /**
- * Push / sync helpers -- delegates to PushQueue, plus catalog rendering and sync badge.
+ * Push / sync helpers -- delegates to PushQueue, plus catalog rendering.
  */
 
 import { renderRecipeList } from "../views/recipe-list";
 import {
-  getDocMgr, getActiveBook, getSyncStatus,
+  getDocMgr, getActiveBook,
   getSelectedRecipeId, getPushQueue,
 } from "../state";
 import type { RecipeCatalog } from "../types";
 import { canEditActiveBook } from "../sync/vault-helpers";
+
+// Re-export for backward compatibility during migration
+export { updateSyncBadge } from "../ui/sync-status";
 
 /** Mark a doc dirty and schedule a debounced push via the queue. */
 export function pushSnapshot(docId: string) {
@@ -31,10 +34,9 @@ export function renderCatalog() {
   const activeBook = getActiveBook();
   const selectedRecipeId = getSelectedRecipeId();
   if (!docMgr || !activeBook) {
-    // No active book -- clear the recipe list
     renderRecipeList([], null);
     const recipeCount = document.getElementById("recipe-count") as HTMLElement;
-    recipeCount.textContent = "";
+    if (recipeCount) recipeCount.textContent = "";
     return;
   }
   const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
@@ -43,31 +45,6 @@ export function renderCatalog() {
   const recipes = doc.recipes ?? [];
   renderRecipeList(recipes, selectedRecipeId);
   const recipeCount = document.getElementById("recipe-count") as HTMLElement;
-  recipeCount.textContent = `${recipes.length} recipe${recipes.length !== 1 ? "s" : ""}`;
+  if (recipeCount) recipeCount.textContent = `${recipes.length} recipe${recipes.length !== 1 ? "s" : ""}`;
   (document.getElementById("add-recipe-btn") as HTMLButtonElement).disabled = !canEditActiveBook();
-  updateSyncBadge();
-}
-
-export function updateSyncBadge() {
-  const syncStatus = getSyncStatus();
-  const pushQueue = getPushQueue();
-  const syncBadge = document.getElementById("sync-badge") as HTMLSpanElement;
-  syncBadge.hidden = false;
-
-  if (syncStatus === "connected") {
-    if (pushQueue?.hasDirty()) {
-      const count = pushQueue.dirtyCount();
-      syncBadge.className = "sync-badge syncing";
-      syncBadge.textContent = `syncing (${count})`;
-    } else {
-      syncBadge.className = "sync-badge connected";
-      syncBadge.textContent = "synced";
-    }
-  } else if (syncStatus === "connecting") {
-    syncBadge.className = "sync-badge connecting";
-    syncBadge.textContent = "connecting";
-  } else {
-    syncBadge.className = "sync-badge disconnected";
-    syncBadge.textContent = "offline";
-  }
 }

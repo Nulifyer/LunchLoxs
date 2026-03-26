@@ -7,6 +7,7 @@ import { initAccount } from "./ui/account";
 import { initBooks } from "./ui/books";
 import { initShare } from "./ui/share";
 import { initRecipes } from "./ui/recipes";
+import { initSyncStatus } from "./ui/sync-status";
 import { showAccountPage } from "./ui/account";
 import { logout } from "./ui/auth";
 
@@ -31,6 +32,7 @@ initAccount();
 initBooks();
 initShare();
 initRecipes();
+initSyncStatus();
 
 // -- Service worker --
 if ("serviceWorker" in navigator) {

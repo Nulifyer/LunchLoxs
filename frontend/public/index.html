@@ -76,18 +76,42 @@
     <!-- Shell: sidebar + main -->
     <div id="app-shell" class="app-shell">
       <aside class="sidebar" role="navigation" aria-label="Recipe navigation">
-        <div class="sidebar-header">
-          <label for="book-select" class="sr-only">Select book</label>
-          <select id="book-select" aria-label="Select recipe book"></select>
-          <div class="sidebar-header-actions">
-            <button id="manage-books-btn" class="sm">Manage</button>
-            <button id="add-recipe-btn" class="sm">Recipe +</button>
+        <!-- Book list view -->
+        <div id="book-list-view" class="sidebar-view">
+          <div class="sidebar-header">
+            <div class="sidebar-header-actions">
+              <button id="manage-books-btn" class="sm">Manage</button>
+            </div>
           </div>
+          <ul id="book-list" class="sidebar-list" role="listbox" aria-label="Book list"></ul>
         </div>
-        <ul id="recipe-list" class="sidebar-list" role="listbox" aria-label="Recipe list"></ul>
+
+        <!-- Recipe list view -->
+        <div id="recipe-list-view" class="sidebar-view" hidden>
+          <div class="sidebar-header">
+            <div class="sidebar-nav-row">
+              <button id="back-to-books" class="sidebar-back" aria-label="Back to books">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 3L5 8l5 5"/></svg>
+                Books
+              </button>
+              <span class="sidebar-nav-sep">/</span>
+              <span id="active-book-name" class="sidebar-nav-title">Book</span>
+              <span class="sync-dot pending" id="book-sync-dot" hidden></span>
+            </div>
+            <small id="recipe-count" class="sidebar-breadcrumb" aria-live="polite"></small>
+            <div class="sidebar-header-actions">
+              <button id="add-recipe-btn" class="sm">Recipe +</button>
+            </div>
+          </div>
+          <ul id="recipe-list" class="sidebar-list" role="listbox" aria-label="Recipe list"></ul>
+        </div>
+
         <div class="sidebar-footer">
-          <span id="sync-badge" class="sync-badge" hidden role="status"></span>
-          <small id="recipe-count" aria-live="polite"></small>
+          <div id="sync-badge" class="sync-status-bar" hidden role="status">
+            <span id="conn-status" class="conn-status"></span>
+            <span class="sync-sep"></span>
+            <span id="sync-progress" class="sync-progress"></span>
+          </div>
         </div>
       </aside>
 
@@ -157,8 +181,15 @@
         <!-- Recipe detail -->
         <div id="recipe-detail" hidden>
           <header>
+            <div class="detail-breadcrumb" id="detail-breadcrumb">
+              <button id="back-btn" class="breadcrumb-back" aria-label="Back to recipes">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 3L5 8l5 5"/></svg>
+                Recipes
+              </button>
+              <span class="breadcrumb-sep">/</span>
+              <span id="breadcrumb-book-name" class="breadcrumb-title"></span>
+            </div>
             <div class="detail-title-row">
-              <button id="back-btn" class="ghost mobile-only sm" aria-label="Back">&larr;</button>
               <h2 id="recipe-title"></h2>
               <button id="page-edit-btn" class="sm">Edit</button>
               <div id="recipe-actions-slot" style="display:flex"></div>

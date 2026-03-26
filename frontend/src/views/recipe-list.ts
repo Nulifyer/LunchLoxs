@@ -5,6 +5,7 @@
 import type { RecipeMeta } from "../types";
 import { escapeHtml } from "../lib/html";
 import { search, getIndexSize, type SearchResult } from "../lib/search";
+import { getPushQueue, getActiveBook } from "../state";
 
 export interface RecipeListCallbacks {
   onSelect: (id: string, vaultId?: string) => void;
@@ -165,14 +166,34 @@ function getMatchSnippet(_query: string, result: SearchResult): string {
 export function renderRecipeList(recipes: RecipeMeta[], selectedId: string | null) {
   container.innerHTML = "";
   const sorted = [...recipes].sort((a, b) => a.title.localeCompare(b.title));
+  const pq = getPushQueue();
+  const activeBook = getActiveBook();
+  const vaultId = activeBook?.vaultId;
+  // Catalog dirty means the book itself has unsynced changes
+  const catalogDirty = vaultId ? pq?.isDirty(`${vaultId}/catalog`) ?? false : false;
+
   for (const recipe of sorted) {
     const li = document.createElement("li");
     li.dataset.recipeId = recipe.id;
     li.className = recipe.id === selectedId ? "selected" : "";
 
+    const titleRow = document.createElement("div");
+    titleRow.className = "recipe-title-row";
+
     const strong = document.createElement("strong");
     strong.textContent = recipe.title;
-    li.appendChild(strong);
+    titleRow.appendChild(strong);
+
+    // Sync status dot
+    const recipeDirty = vaultId ? pq?.isDirty(`${vaultId}/${recipe.id}`) ?? false : false;
+    const dot = document.createElement("span");
+    const isDirty = recipeDirty || catalogDirty;
+    dot.className = "sync-dot pending";
+    dot.hidden = !isDirty;
+    dot.title = isDirty ? "Unsynced changes" : "";
+    titleRow.appendChild(dot);
+
+    li.appendChild(titleRow);
 
     const small = document.createElement("small");
     const tagHtml = recipe.tags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");

@@ -12,8 +12,7 @@
         "PORT": "8000",
         "FRONTEND_URL": "http://localhost:5000",
         "BIND_HOST": "127.0.0.1"
-      },
-      "preLaunchTask": "dev-frontend"
+      }
     },
     {
       "name": "Debug Frontend (Brave)",
@@ -21,13 +20,16 @@
       "request": "launch",
       "url": "http://localhost:5000",
       "webRoot": "${workspaceFolder}/frontend",
-      "runtimeExecutable": "C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe"
+      "runtimeExecutable": "C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe",
+      "runtimeArgs": ["--incognito"]
     }
   ],
   "compounds": [
     {
       "name": "Full Stack",
       "configurations": ["Debug Backend", "Debug Frontend (Brave)"],
+      "preLaunchTask": "dev-frontend",
+      "postDebugTask": "teardown",
       "stopAll": true
     }
   ]

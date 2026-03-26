@@ -15,6 +15,13 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { createDropdown } from "../lib/dropdown";
 
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  if (node.tagName === "A") {
+    node.setAttribute("target", "_blank");
+    node.setAttribute("rel", "noopener noreferrer");
+  }
+});
+
 // -- DOM refs --
 const detailView = document.getElementById("recipe-detail") as HTMLElement;
 const emptyState = document.getElementById("empty-state") as HTMLElement;
@@ -139,10 +146,13 @@ function timeAgo(ts: number): string {
   return `${years}y ago`;
 }
 
-export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: string, meta: string, editable = true, updatedAt?: number) {
+export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: string, meta: string, editable = true, updatedAt?: number, bookName?: string) {
   closeRecipe();
   store = recipeStore;
   titleEl.textContent = title;
+  // Update breadcrumb
+  const breadcrumbBookName = document.getElementById("breadcrumb-book-name") as HTMLElement;
+  if (breadcrumbBookName) breadcrumbBookName.textContent = bookName ?? "";
   metaEl.innerHTML = "";
   const metaText = document.createElement("span");
   metaText.textContent = meta;

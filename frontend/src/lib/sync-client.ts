@@ -92,6 +92,9 @@ interface ServerMessage {
   target_public_key?: string;
 }
 
+const HEARTBEAT_INTERVAL = 25000; // 25s (server pings at 30s, so we beat it)
+const HEARTBEAT_TIMEOUT = 10000;  // 10s to get pong back
+
 export class SyncClient {
   ws: WebSocket | null = null;
   opts: SyncClientOptions;
@@ -102,6 +105,10 @@ export class SyncClient {
   private subscriptions = new Set<string>();
   private lastSeqs = new Map<string, number>();
   private getLastSeq: (docId: string) => Promise<number> = () => Promise.resolve(0);
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
+  private onlineHandler: (() => void) | null = null;
+  private offlineHandler: (() => void) | null = null;
 
   /** Pending user lookup promises keyed by target user ID */
   private lookupResolvers = new Map<string, {
@@ -122,6 +129,7 @@ export class SyncClient {
     this.intentionalClose = false;
     this.messageQueue = Promise.resolve();
     this.opts.onStatusChange("connecting");
+    this.listenBrowserEvents();
 
     this.ws = new WebSocket(this.opts.url);
 
@@ -136,14 +144,18 @@ export class SyncClient {
       };
       if (this.opts.wrappedKey) msg.wrapped_key = this.opts.wrappedKey;
       this.ws!.send(JSON.stringify(msg));
+      this.startHeartbeat();
     };
 
     this.ws.onmessage = (event) => {
+      // Any message from server counts as a heartbeat response
+      this.clearHeartbeatTimeout();
       this.messageQueue = this.messageQueue.then(() => this.handleMessage(event.data));
     };
 
     this.ws.onclose = (ev) => {
       console.warn("sync: ws closed, code:", ev.code, "reason:", ev.reason || "(none)", "intentional:", this.intentionalClose);
+      this.stopHeartbeat();
       this.opts.onStatusChange("disconnected");
       if (!this.intentionalClose) {
         this.scheduleReconnect();
@@ -160,6 +172,7 @@ export class SyncClient {
 
     switch (msg.type) {
       case "connected":
+        this.opts.isSignup = false; // Never resend is_signup on reconnect
         this.opts.onStatusChange("connected");
         await this.opts.onConnected?.({
           wrappedKey: msg.payload || undefined,
@@ -490,6 +503,8 @@ export class SyncClient {
 
   disconnect(): void {
     this.intentionalClose = true;
+    this.stopHeartbeat();
+    this.unlistenBrowserEvents();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -501,6 +516,61 @@ export class SyncClient {
     }
     this.lookupResolvers.clear();
     this.ws?.close();
+  }
+
+  // -- Heartbeat: detect dead connections --
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: "ping" }));
+        // If no message arrives within timeout, connection is dead
+        this.heartbeatTimeout = setTimeout(() => {
+          console.warn("sync: heartbeat timeout, closing connection");
+          this.ws?.close();
+        }, HEARTBEAT_TIMEOUT);
+      }
+    }, HEARTBEAT_INTERVAL);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
+    this.clearHeartbeatTimeout();
+  }
+
+  private clearHeartbeatTimeout(): void {
+    if (this.heartbeatTimeout) { clearTimeout(this.heartbeatTimeout); this.heartbeatTimeout = null; }
+  }
+
+  // -- Browser online/offline events --
+
+  private listenBrowserEvents(): void {
+    if (this.onlineHandler) return; // already listening
+    // Both events just trigger a ping to verify the connection.
+    // If the WS is dead, the heartbeat timeout will close it and reconnect.
+    // If the WS is fine, the pong resets the timeout -- no disruption.
+    const probe = () => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        console.log("sync: network change, probing connection");
+        this.ws.send(JSON.stringify({ type: "ping" }));
+        // Start a timeout in case the ping never gets a response
+        this.clearHeartbeatTimeout();
+        this.heartbeatTimeout = setTimeout(() => {
+          console.warn("sync: probe timeout, closing connection");
+          this.ws?.close();
+        }, HEARTBEAT_TIMEOUT);
+      }
+    };
+    this.onlineHandler = probe;
+    this.offlineHandler = probe;
+    window.addEventListener("online", this.onlineHandler);
+    window.addEventListener("offline", this.offlineHandler);
+  }
+
+  private unlistenBrowserEvents(): void {
+    if (this.onlineHandler) { window.removeEventListener("online", this.onlineHandler); this.onlineHandler = null; }
+    if (this.offlineHandler) { window.removeEventListener("offline", this.offlineHandler); this.offlineHandler = null; }
   }
 
   /** Resolve the encryption key for a doc. Vault-scoped docs use getDocKey. */

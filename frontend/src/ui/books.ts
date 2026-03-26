@@ -11,19 +11,24 @@ import { toastSuccess, toastWarning, toastError } from "../lib/toast";
 import { parseRecipeMarkdown, recipeToMarkdown } from "../lib/export";
 import {
   getDocMgr, getSyncClient, getBooks, setBooks, getActiveBook, setActiveBook,
-  getSelectedRecipeId, getCurrentUsername, getCurrentUserId,
+  getSelectedRecipeId, getCurrentUsername, getCurrentUserId, getPushQueue,
 } from "../state";
-import { getIdentityPrivateKey, getIdentityPublicKey } from "../lib/auth";
-import { generateBookKey, encryptBookKeyForUser } from "../lib/crypto";
+import { getIdentityPrivateKey, getIdentityPublicKey, getSessionKeys } from "../lib/auth";
+import { generateBookKey, encryptBookKeyForUser, encrypt } from "../lib/crypto";
 import { toBase64 } from "../lib/encoding";
 import { pushSnapshot, renderCatalog, catalogDocId } from "../sync/push";
 import { refreshBookNameFromCatalog, rebuildBookIndex, canEditActiveBook, setRenderBookSelect } from "../sync/vault-helpers";
 import { openShareDialog } from "../ui/share";
 import { handleExportBook, handleImportToBook, handleZipImport, importRecipesIntoBook } from "../import-export";
 import { deselectRecipe } from "../ui/recipes";
+import { on as onSyncEvent } from "../sync/sync-events";
 import type { Book, RecipeCatalog, RecipeContent } from "../types";
 
-let bookSelect: HTMLSelectElement;
+let bookListView: HTMLElement;
+let recipeListView: HTMLElement;
+let bookListEl: HTMLUListElement;
+let activeBookName: HTMLElement;
+let bookSyncDot: HTMLElement;
 let manageBooksBtn: HTMLButtonElement;
 let manageBooksDialog: HTMLDialogElement;
 let bookListManage: HTMLUListElement;
@@ -33,36 +38,87 @@ let bulkCount: HTMLElement;
 let dropZone: HTMLElement;
 const selectedBookIds = new Set<string>();
 
-export function renderBookSelect() {
+function renderBookList() {
   const books = getBooks();
+  const pq = getPushQueue();
+  bookListEl.innerHTML = "";
+  const sorted = [...books].sort((a, b) => a.name.localeCompare(b.name));
+  for (const book of sorted) {
+    const li = document.createElement("li");
+    li.className = "book-list-item";
+    li.dataset.vaultId = book.vaultId;
+    li.setAttribute("role", "option");
+
+    const hasDirty = pq?.isDirty(`${book.vaultId}/catalog`) ?? false;
+    const dot = document.createElement("span");
+    dot.className = "sync-dot pending";
+    dot.hidden = !hasDirty;
+    li.appendChild(dot);
+
+    const name = document.createElement("span");
+    name.className = "book-list-item-name";
+    name.textContent = book.name;
+    li.appendChild(name);
+
+    if (book.role !== "owner") {
+      const role = document.createElement("span");
+      role.className = "book-list-role";
+      role.textContent = book.role;
+      li.appendChild(role);
+    }
+
+    li.addEventListener("click", () => switchBook(book.vaultId));
+    bookListEl.appendChild(li);
+  }
+  if (books.length === 0) {
+    const li = document.createElement("li");
+    li.className = "book-list-empty";
+    li.textContent = "No books yet";
+    bookListEl.appendChild(li);
+  }
+}
+
+export function showBookList() {
+  log("[books] showBookList");
+  recipeListView.hidden = true;
+  bookListView.hidden = false;
+  renderBookList();
+}
+
+function showRecipeView() {
+  log("[books] showRecipeView, activeBook:", getActiveBook()?.name ?? "none");
+  bookListView.hidden = true;
+  recipeListView.hidden = false;
+}
+
+export function renderBookSelect() {
   const activeBook = getActiveBook();
   const addRecipeBtn = document.getElementById("add-recipe-btn") as HTMLButtonElement;
   addRecipeBtn.disabled = !activeBook;
-  bookSelect.innerHTML = "";
-  const sortedBooks = [...books].sort((a, b) => a.name.localeCompare(b.name));
-  for (const book of sortedBooks) {
-    const opt = document.createElement("option");
-    opt.value = book.vaultId;
-    opt.textContent = book.name + (book.role === "owner" ? "" : ` (${book.role})`);
-    if (activeBook?.vaultId === book.vaultId) opt.selected = true;
-    bookSelect.appendChild(opt);
+  const pq = getPushQueue();
+
+  if (activeBook) {
+    activeBookName.textContent = activeBook.name;
+    const hasDirty = pq?.isDirty(`${activeBook.vaultId}/catalog`) ?? false;
+    bookSyncDot.className = "sync-dot pending";
+    bookSyncDot.hidden = !hasDirty;
   }
-  if (books.length === 0) {
-    const opt = document.createElement("option");
-    opt.textContent = "No books";
-    opt.disabled = true;
-    bookSelect.appendChild(opt);
+
+  // Keep book list updated if it's visible
+  if (!bookListView.hidden) {
+    renderBookList();
   }
 }
 
 export function switchBook(vaultId: string): Promise<void> {
-  log("[switchBook]", vaultId);
+  log("[switchBook]", vaultId.slice(0, 8));
   if (getSelectedRecipeId()) deselectRecipe();
   const books = getBooks();
   const book = books.find((b) => b.vaultId === vaultId);
-  if (!book || !book.encKey) { warn("[switchBook] no book or no key for", vaultId); return Promise.resolve(); }
+  if (!book || !book.encKey) { warn("[switchBook] no book or no key for", vaultId.slice(0, 8), "hasBook:", !!book, "hasKey:", !!book?.encKey); return Promise.resolve(); }
   setActiveBook(book);
   renderBookSelect();
+  showRecipeView();
   renderCatalog();
   return Promise.resolve();
 }
@@ -70,7 +126,7 @@ export function switchBook(vaultId: string): Promise<void> {
 export async function createBook(name: string) {
   const syncClient = getSyncClient();
   const docMgr = getDocMgr();
-  if (!syncClient || !docMgr) return;
+  if (!docMgr) return;
   const privKey = getIdentityPrivateKey();
   const pubKey = getIdentityPublicKey();
   if (!privKey || !pubKey) return;
@@ -81,16 +137,13 @@ export async function createBook(name: string) {
   const evk = toBase64(encryptedVaultKey);
   const spk = toBase64(pubKey);
   // Persist pending vault to IDB so it survives offline/refresh
-  const { setPendingVault, clearPendingVault } = await import("../lib/automerge-store");
+  const { setPendingVault, clearPendingVault, loadLocalCache, saveLocalCache } = await import("../lib/automerge-store");
   await setPendingVault(docMgr.getDb(), { vaultId, encryptedVaultKey: evk, senderPublicKey: spk });
-  // Try to create on server now; if offline, reconnect will pick it up
-  if (syncClient.isOpen()) {
-    try {
-      await syncClient.createVault(vaultId, evk, spk);
-      await clearPendingVault(docMgr.getDb(), vaultId);
-    } catch (e) {
-      warn("[createBook] vault creation deferred (will retry on reconnect):", e);
-    }
+  // Fire-and-forget vault creation -- pending vault in IDB handles retries on reconnect
+  if (syncClient?.isOpen()) {
+    syncClient.createVault(vaultId, evk, spk)
+      .then(() => clearPendingVault(docMgr.getDb(), vaultId))
+      .catch((e) => warn("[createBook] vault creation deferred (will retry on reconnect):", e));
   } else {
     log("[createBook] offline, vault creation deferred for", vaultId.slice(0, 8));
   }
@@ -101,6 +154,16 @@ export async function createBook(name: string) {
   books.push(book);
   setBooks(books);
   renderBookSelect();
+  // Append to offline cache
+  const session = getSessionKeys();
+  if (session?.masterKey) {
+    loadLocalCache(docMgr.getDb(), session.masterKey).then(async (cache) => {
+      if (!cache) return;
+      const wrappedVaultKey = toBase64(await encrypt(bookKeyRaw, session.masterKey));
+      cache.vaults.push({ vaultId, name, role: "owner", wrappedVaultKey });
+      await saveLocalCache(docMgr.getDb(), session.masterKey, cache);
+    }).catch((e) => warn("[createBook] cache update failed:", e));
+  }
   const catDocId = `${vaultId}/catalog`;
   const catalog = await docMgr.open<RecipeCatalog>(catDocId, (doc) => {
     doc.name = name;
@@ -114,7 +177,8 @@ export async function createBook(name: string) {
   pushSnapshot(catDocId);
   if (syncClient) await syncClient.subscribe(catDocId);
   setActiveBook(book);
-  bookSelect.value = vaultId;
+  renderBookSelect();
+  showRecipeView();
   renderCatalog();
 }
 
@@ -207,7 +271,7 @@ export function renderBookManageList() {
           syncClient?.deleteVault(book.vaultId);
           removeBookFromIndex(book.vaultId);
           setBooks(getBooks().filter((b) => b.vaultId !== book.vaultId));
-          if (getActiveBook()?.vaultId === book.vaultId) { setActiveBook(null); if (getBooks().length > 0) switchBook(getBooks()[0].vaultId); }
+          if (getActiveBook()?.vaultId === book.vaultId) { setActiveBook(null); if (getBooks().length > 0) switchBook(getBooks()[0].vaultId); else showBookList(); }
           renderBookSelect(); renderBookManageList();
           toastSuccess(`Deleted "${book.name}"`);
         },
@@ -220,7 +284,11 @@ export function renderBookManageList() {
 }
 
 export function initBooks() {
-  bookSelect = document.getElementById("book-select") as HTMLSelectElement;
+  bookListView = document.getElementById("book-list-view") as HTMLElement;
+  recipeListView = document.getElementById("recipe-list-view") as HTMLElement;
+  bookListEl = document.getElementById("book-list") as HTMLUListElement;
+  activeBookName = document.getElementById("active-book-name") as HTMLElement;
+  bookSyncDot = document.getElementById("book-sync-dot") as HTMLElement;
   manageBooksBtn = document.getElementById("manage-books-btn") as HTMLButtonElement;
   manageBooksDialog = document.getElementById("manage-books-dialog") as HTMLDialogElement;
   bookListManage = document.getElementById("book-list-manage") as HTMLUListElement;
@@ -232,7 +300,28 @@ export function initBooks() {
   // Wire up the renderBookSelect callback for vault-helpers
   setRenderBookSelect(renderBookSelect);
 
-  bookSelect.addEventListener("change", () => { const v = bookSelect.value; if (v) switchBook(v); });
+  // Re-render when books change from sync events
+  onSyncEvent("books-change", () => {
+    const prev = getActiveBook();
+    const books = getBooks();
+    log("[books] books-change event, prev:", prev?.name ?? "none", "prev.vaultId:", prev?.vaultId?.slice(0, 8) ?? "-", "new books:", books.length);
+    if (prev) {
+      const updated = books.find((b) => b.vaultId === prev.vaultId);
+      if (updated) {
+        log("[books] preserved active book:", updated.name);
+        setActiveBook(updated);
+      } else {
+        log("[books] active book not found in new list, showing book list");
+        setActiveBook(null);
+        showBookList();
+      }
+    }
+    renderBookSelect();
+    renderCatalog();
+  });
+
+  // Back button
+  (document.getElementById("back-to-books") as HTMLButtonElement).addEventListener("click", showBookList);
   manageBooksBtn.addEventListener("click", () => { renderBookManageList(); openModal(manageBooksDialog); });
 
   // Bulk actions
@@ -304,7 +393,7 @@ export function initBooks() {
       setBooks(getBooks().filter((b) => b.vaultId !== vid));
       if (getActiveBook()?.vaultId === vid) setActiveBook(null);
     }
-    if (!getActiveBook() && getBooks().length > 0) switchBook(getBooks()[0].vaultId);
+    if (!getActiveBook()) { if (getBooks().length > 0) switchBook(getBooks()[0].vaultId); else showBookList(); }
     renderBookSelect(); renderBookManageList();
     toastSuccess(`Deleted ${owned.length} book${owned.length !== 1 ? "s" : ""}`);
   });

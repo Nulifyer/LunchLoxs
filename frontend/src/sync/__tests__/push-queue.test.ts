@@ -241,7 +241,7 @@ describe("PushQueue integration", () => {
     pq.stop();
   });
 
-  test("onPushError gives up after MAX_PUSH_ERRORS (5) consecutive errors", async () => {
+  test("onPushError gives up after MAX_PUSH_ERRORS (5) consecutive errors for transient errors", async () => {
     const store = new MockStore(db, "vault1/doc1");
     await store.markDirty();
     const docMgr = createMockDocMgr(new Map([["vault1/doc1", store]]));
@@ -251,16 +251,34 @@ describe("PushQueue integration", () => {
 
     // First 4 errors: IDB dirty flag should persist
     for (let i = 0; i < 4; i++) {
-      // Re-add to dirty set (simulates poll re-discovering it)
       pq.markDirty("vault1/doc1");
-      await pq.onPushError("vault1/doc1", "insufficient permissions");
+      await pq.onPushError("vault1/doc1", "transient error");
       expect(await idbGet(db, "dirty:vault1/doc1")).toBe(true);
     }
 
     // 5th error: IDB dirty flag should be cleared
     pq.markDirty("vault1/doc1");
-    await pq.onPushError("vault1/doc1", "insufficient permissions");
+    await pq.onPushError("vault1/doc1", "transient error");
     expect(await idbGet(db, "dirty:vault1/doc1")).toBeUndefined();
+
+    pq.stop();
+  });
+
+  test("onPushError immediately fails vault on permission error", async () => {
+    const store1 = new MockStore(db, "vault1/doc1");
+    const store2 = new MockStore(db, "vault1/doc2");
+    await store1.markDirty();
+    await store2.markDirty();
+    const docMgr = createMockDocMgr(new Map([["vault1/doc1", store1], ["vault1/doc2", store2]]));
+    const syncClient = createMockSyncClient(true);
+    const pq = new PushQueue(docMgr as any, syncClient as any, db, noopSign);
+    await pq.start();
+
+    // Single permission error should clear all docs for that vault
+    await pq.onPushError("vault1/doc1", "insufficient permissions to write");
+    expect(await idbGet(db, "dirty:vault1/doc1")).toBeUndefined();
+    expect(await idbGet(db, "dirty:vault1/doc2")).toBeUndefined();
+    expect(pq.hasDirty()).toBe(false);
 
     pq.stop();
   });
@@ -347,9 +365,10 @@ describe("PushQueue integration", () => {
     expect(pq.hasDirty()).toBe(true);
     await pq.flushAllDirty();
 
-    // Removed from in-memory set
-    expect(pq.hasDirty()).toBe(false);
-    // But IDB dirty flag persists (poll will re-discover when key arrives)
+    // Doc stays in dirty set but is deferred (skipped during future flushes)
+    expect(pq.hasDirty()).toBe(true);
+    expect(pq.pushableCount()).toBe(0);
+    // IDB dirty flag persists (poll will re-discover when key arrives)
     expect(await idbGet(db, "dirty:vault1/catalog")).toBe(true);
     pq.stop();
   });

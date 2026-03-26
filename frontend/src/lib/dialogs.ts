@@ -170,3 +170,56 @@ export function showPrompt(
     input.select();
   });
 }
+
+/**
+ * Show a select dialog with a dropdown.
+ * Returns the selected value string, or null if cancelled.
+ */
+export function showSelect(
+  options: Array<{ value: string; label: string }>,
+  opts?: { title?: string; message?: string; confirmText?: string },
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    const { dialog, body, footer } = createDialogShell();
+
+    if (opts?.title) {
+      const h = document.createElement("strong");
+      h.textContent = opts.title;
+      h.style.display = "block";
+      h.style.marginBottom = "0.5rem";
+      body.appendChild(h);
+    }
+
+    if (opts?.message) {
+      const msg = document.createElement("p");
+      msg.style.fontSize = "0.85rem";
+      msg.textContent = opts.message;
+      body.appendChild(msg);
+    }
+
+    const select = document.createElement("select");
+    for (const opt of options) {
+      const o = document.createElement("option");
+      o.value = opt.value;
+      o.textContent = opt.label;
+      select.appendChild(o);
+    }
+    body.appendChild(select);
+
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => { dialog.close(); resolve(null); });
+    footer.appendChild(cancel);
+
+    const confirm = document.createElement("button");
+    confirm.textContent = opts?.confirmText ?? "OK";
+    confirm.className = "primary";
+    confirm.addEventListener("click", () => { dialog.close(); resolve(select.value); });
+    footer.appendChild(confirm);
+
+    dialog.addEventListener("cancel", () => resolve(null));
+
+    showAndCleanup(dialog);
+    select.focus();
+  });
+}
