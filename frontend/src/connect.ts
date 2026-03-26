@@ -227,6 +227,11 @@ export function createSyncConnection(
         // Tell push queue which vaults are still pending so it skips their docs
         pq.setPendingVaultIds(pendingVaultIds);
         await pq.createPendingVaults(serverVaultIds);
+        // Schedule a vault list refresh to catch any vault_created confirmations
+        // that were dropped due to send buffer overflow
+        if (pendingVaultIds.size > 0) {
+          setTimeout(() => { log("[ws] refreshing vault list after pending creations"); getSyncClient()?.listVaults(); }, 3000);
+        }
         // For purge, include locally-created books too (they have pending vaults, not orphans)
         const allVaultIds = new Set(getBooks().map((b) => b.vaultId));
         await pq.purgeOrphanedDirty(allVaultIds);
@@ -251,13 +256,17 @@ export function createSyncConnection(
         log("[ws] local cache saved:", vaultCacheEntries.length, "vaults");
       }
     },
-    onVaultCreated: (vid) => {
+    onVaultCreated: async (vid) => {
       log("[ws] vault_created:", vid);
-      // Only reload vault list if this is a vault we don't already have locally
-      // (i.e. created by another device). Local createBook() already added it.
-      if (!getBooks().find((b) => b.vaultId === vid)) {
-        getSyncClient()?.listVaults();
+      // Clear pending state so push queue can start pushing docs for this vault
+      const dm = getDocMgr();
+      if (dm) {
+        const { clearPendingVault } = await import("./lib/automerge-store");
+        await clearPendingVault(dm.getDb(), vid);
       }
+      getPushQueue()?.clearPendingVault(vid);
+      // Reload vault list to get server-confirmed keys
+      getSyncClient()?.listVaults();
     },
     onVaultInvited: async (vid) => { log("[ws] vault_invited:", vid); getSyncClient()?.listVaults(); },
     onVaultRemoved: (vid) => {

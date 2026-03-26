@@ -60,6 +60,10 @@ export class PushQueue {
   // Vault IDs still pending server confirmation -- skip their docs during flush
   private pendingVaultIds = new Set<string>();
 
+  // True after onVaultList has run post-connect. Prevents flushing before vault state is known.
+  // Starts true (initial PushQueue creation has vault context); set false on updateRefs (reconnect).
+  private ready = true;
+
   // Background poll
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -134,11 +138,19 @@ export class PushQueue {
 
   /** Server rejected a push for a specific doc (e.g. permissions). Track errors and give up after MAX_PUSH_ERRORS. */
   async onPushError(docId: string, message: string): Promise<void> {
-    // Permission errors are permanent -- fail the entire vault immediately
+    // Permission errors for vaults we know about are permanent -- fail immediately.
+    // But if the vault is still pending creation, this is expected -- just skip it.
     if (message.includes("insufficient permissions")) {
       const slashIdx = docId.indexOf("/");
       if (slashIdx > 0) {
         const vaultId = docId.slice(0, slashIdx);
+        if (this.pendingVaultIds.has(vaultId)) {
+          // Vault not yet created on server -- don't fail, just remove from dirty set.
+          // Poll will re-discover once the vault is created and pending cleared.
+          this.dirtySet.delete(docId);
+          this.onDirtyChange?.();
+          return;
+        }
         if (!this.failedVaults.has(vaultId)) {
           warn("[push-queue] vault", vaultId.slice(0, 8), "has insufficient permissions -- skipping all its docs");
           this.failedVaults.add(vaultId);
@@ -184,7 +196,7 @@ export class PushQueue {
 
   /** Push all dirty docs. Sends as fast as possible; server rate limiting is the throttle. */
   async flushAllDirty(): Promise<void> {
-    if (this.flushing || !this.isConnected()) return;
+    if (this.flushing || !this.isConnected() || !this.ready) return;
     this.flushing = true;
     this.ratePaused = false;
     const sizeBefore = this.dirtySet.size;
@@ -283,29 +295,25 @@ export class PushQueue {
 
   /**
    * Create any vaults that were created offline and haven't been confirmed by the server yet.
-   * Must be called before flushing dirty docs so the server accepts pushes for these vaults.
+   * Sends all create requests without blocking on confirmations -- the server's vault_created
+   * response triggers onVaultCreated which calls listVaults, refreshing the vault list.
+   * Pending flags are cleared when the vault appears in the next vault list.
    */
   async createPendingVaults(knownVaultIds: Set<string>): Promise<void> {
     const pending = await getAllPendingVaults(this.db);
     if (pending.length === 0) return;
+    let sent = 0;
     for (const pv of pending) {
       if (knownVaultIds.has(pv.vaultId)) {
-        // Server already knows about this vault -- clear the pending flag
         await clearPendingVault(this.db, pv.vaultId);
         log("[push-queue] pending vault already exists:", pv.vaultId.slice(0, 8));
         continue;
       }
-      log("[push-queue] creating pending vault:", pv.vaultId.slice(0, 8));
-      try {
-        if (!this.syncClient) { warn("[push-queue] no sync client"); continue; }
-        await this.syncClient.createVault(pv.vaultId, pv.encryptedVaultKey, pv.senderPublicKey);
-        await clearPendingVault(this.db, pv.vaultId);
-        this.pendingVaultIds.delete(pv.vaultId);
-        log("[push-queue] pending vault created:", pv.vaultId.slice(0, 8));
-      } catch (e) {
-        warn("[push-queue] pending vault creation failed:", pv.vaultId.slice(0, 8), e);
-      }
+      if (!this.syncClient) { warn("[push-queue] no sync client"); break; }
+      this.syncClient.createVaultFireAndForget(pv.vaultId, pv.encryptedVaultKey, pv.senderPublicKey);
+      sent++;
     }
+    if (sent > 0) log("[push-queue] sent", sent, "pending vault creation requests");
   }
 
   hasDirty(): boolean { return this.dirtySet.size > 0; }
@@ -327,8 +335,12 @@ export class PushQueue {
   /** Set vault IDs that are still pending server confirmation. Docs for these vaults are skipped during flush. */
   setPendingVaultIds(ids: Set<string>): void { this.pendingVaultIds = ids; }
 
+  /** Mark a single vault as no longer pending (server confirmed creation). */
+  clearPendingVault(vaultId: string): void { this.pendingVaultIds.delete(vaultId); }
+
   /** Called when vault keys change (e.g. onVaultList). Clears deferred and failed state so docs are retried. */
   onVaultsChanged(): void {
+    this.ready = true;
     if (this.deferredNoKey.size > 0) {
       log("[push-queue] vaults changed, clearing", this.deferredNoKey.size, "deferred docs");
       this.deferredNoKey.clear();
@@ -344,6 +356,7 @@ export class PushQueue {
   updateRefs(docMgr: DocumentManager, syncClient: SyncClient, signFn?: SignFn): void {
     this.docMgr = docMgr;
     this.syncClient = syncClient;
+    this.ready = false; // Wait for onVaultList before flushing
     if (signFn !== undefined) this.signFn = signFn;
   }
 

@@ -96,11 +96,7 @@ func (h *Hub) BroadcastDoc(userID, docID, senderDeviceID string, msg []byte) {
 		if c.DeviceID == senderDeviceID {
 			continue
 		}
-		select {
-		case c.Send <- msg:
-		default:
-			slog.Warn("hub: dropping message for slow client", "device", c.DeviceID)
-		}
+		c.Enqueue(msg)
 	}
 }
 
@@ -118,11 +114,7 @@ func (h *Hub) BroadcastVaultDoc(memberUserIDs []string, docID, senderDeviceID st
 			if c.DeviceID == senderDeviceID {
 				continue
 			}
-			select {
-			case c.Send <- msg:
-			default:
-				slog.Warn("hub: dropping message for slow client", "device", c.DeviceID)
-			}
+			c.Enqueue(msg)
 		}
 	}
 }
@@ -140,10 +132,6 @@ func (h *Hub) Broadcast(userID string, senderDeviceID string, msg []byte) {
 		if c.DeviceID == senderDeviceID {
 			continue
 		}
-		select {
-		case c.Send <- msg:
-		default:
-			slog.Warn("hub: dropping message for slow client", "device", c.DeviceID)
-		}
+		c.Enqueue(msg)
 	}
 }

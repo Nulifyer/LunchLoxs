@@ -93,7 +93,7 @@ interface ServerMessage {
 }
 
 const HEARTBEAT_INTERVAL = 25000; // 25s (server pings at 30s, so we beat it)
-const HEARTBEAT_TIMEOUT = 10000;  // 10s to get pong back
+const HEARTBEAT_TIMEOUT = 3000;   // 3s to get pong back
 
 export class SyncClient {
   ws: WebSocket | null = null;
@@ -416,6 +416,11 @@ export class SyncClient {
     });
   }
 
+  /** Send create_vault without waiting for confirmation. Used for bulk pending vault creation. */
+  createVaultFireAndForget(vaultId: string, encryptedVaultKey: string, senderPublicKey: string): void {
+    this.sendMsg({ type: "create_vault", vault_id: vaultId, encrypted_vault_key: encryptedVaultKey, sender_public_key: senderPublicKey });
+  }
+
   inviteToVault(vaultId: string, targetUserId: string, encryptedVaultKey: string, senderPublicKey: string, role = "editor"): void {
     this.sendMsg({ type: "invite_to_vault", vault_id: vaultId, target_user_id: targetUserId, encrypted_vault_key: encryptedVaultKey, sender_public_key: senderPublicKey, role });
   }
@@ -528,6 +533,7 @@ export class SyncClient {
         // If no message arrives within timeout, connection is dead
         this.heartbeatTimeout = setTimeout(() => {
           console.warn("sync: heartbeat timeout, closing connection");
+          this.opts.onStatusChange("disconnected");
           this.ws?.close();
         }, HEARTBEAT_TIMEOUT);
       }
@@ -558,6 +564,7 @@ export class SyncClient {
         this.clearHeartbeatTimeout();
         this.heartbeatTimeout = setTimeout(() => {
           console.warn("sync: probe timeout, closing connection");
+          this.opts.onStatusChange("disconnected");
           this.ws?.close();
         }, HEARTBEAT_TIMEOUT);
       }

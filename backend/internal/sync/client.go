@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	sendBufSize  = 256
 	writeWait    = 10 * time.Second
 	pingPeriod   = 30 * time.Second
 	maxReadBytes = 10 * 1024 * 1024 // 10 MB max WebSocket message size
+	maxQueueSize = 10000            // hard cap to prevent unbounded memory
 )
 
 // RateConfig holds configurable rate limiting parameters.
@@ -36,12 +36,28 @@ type Client struct {
 	UserID   string
 	DeviceID string
 	Conn     *websocket.Conn
-	Send     chan []byte
+	Send     chan []byte // fed by Enqueue, drained by WritePump
 	Hub      *Hub
 	Queries  *db.Queries
 	Rate     RateConfig
 	tokens   int
 	lastTick time.Time
+
+	enqueue chan []byte   // producers write here; queuePump moves to Send
+	done    chan struct{} // closed when connection tears down
+}
+
+// NewClient creates a Client with initialized channels.
+func NewClient(conn *websocket.Conn, hub *Hub, queries *db.Queries, rate RateConfig) *Client {
+	return &Client{
+		Conn:    conn,
+		Send:    make(chan []byte, 64), // small buffer; QueuePump handles backpressure
+		Hub:     hub,
+		Queries: queries,
+		Rate:    rate,
+		enqueue: make(chan []byte, 256), // producers write here
+		done:    make(chan struct{}),
+	}
 }
 
 // rateAllow checks if the client is within rate limits. Simple token bucket.
@@ -147,6 +163,7 @@ func (c *Client) ReadPump(ctx context.Context) {
 	c.lastTick = time.Now()
 
 	defer func() {
+		close(c.done)
 		c.Hub.Unregister(c)
 		c.Conn.Close(websocket.StatusNormalClosure, "")
 	}()
@@ -231,6 +248,52 @@ func (c *Client) ReadPump(ctx context.Context) {
 	}
 }
 
+// QueuePump buffers messages from Enqueue() into an internal FIFO and feeds
+// them to the Send channel for WritePump. This decouples producers from the
+// WebSocket write speed and prevents dropped messages under load.
+// Must be run as a goroutine. Exits when done is closed.
+func (c *Client) QueuePump() {
+	var queue [][]byte
+	defer close(c.Send)
+
+	for {
+		// If queue has messages, try to drain to Send alongside reading new ones
+		if len(queue) > 0 {
+			select {
+			case c.Send <- queue[0]:
+				queue[0] = nil // allow GC
+				queue = queue[1:]
+			case msg, ok := <-c.enqueue:
+				if !ok {
+					// enqueue closed -- drain remaining queue
+					for _, m := range queue {
+						c.Send <- m
+					}
+					return
+				}
+				if len(queue) < maxQueueSize {
+					queue = append(queue, msg)
+				} else {
+					slog.Warn("queue full, dropping message", "device", c.DeviceID, "queued", len(queue))
+				}
+			case <-c.done:
+				return
+			}
+		} else {
+			// Queue empty -- block on new messages
+			select {
+			case msg, ok := <-c.enqueue:
+				if !ok {
+					return
+				}
+				queue = append(queue, msg)
+			case <-c.done:
+				return
+			}
+		}
+	}
+}
+
 // WritePump sends messages from the Send channel to the WebSocket.
 func (c *Client) WritePump(ctx context.Context) {
 	ticker := time.NewTicker(pingPeriod)
@@ -258,6 +321,15 @@ func (c *Client) WritePump(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// Enqueue adds a message to the outbound queue. Non-blocking.
+// Used by Hub broadcasts. Prefer sendJSON for server-originated messages.
+func (c *Client) Enqueue(msg []byte) {
+	select {
+	case c.enqueue <- msg:
+	case <-c.done:
 	}
 }
 
@@ -1027,11 +1099,7 @@ func (c *Client) sendJSON(msg ServerMessage) {
 		slog.Error("marshal error", "device", c.DeviceID, "error", err)
 		return
 	}
-	select {
-	case c.Send <- data:
-	default:
-		slog.Warn("send buffer full, dropping message", "device", c.DeviceID)
-	}
+	c.Enqueue(data)
 }
 
 func (c *Client) sendError(message string) {

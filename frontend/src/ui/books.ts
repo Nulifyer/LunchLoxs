@@ -123,13 +123,13 @@ export function switchBook(vaultId: string): Promise<void> {
   return Promise.resolve();
 }
 
-export async function createBook(name: string) {
+export async function createBook(name: string): Promise<Book | null> {
   const syncClient = getSyncClient();
   const docMgr = getDocMgr();
-  if (!docMgr) return;
+  if (!docMgr) return null;
   const privKey = getIdentityPrivateKey();
   const pubKey = getIdentityPublicKey();
-  if (!privKey || !pubKey) return;
+  if (!privKey || !pubKey) return null;
   const vaultId = crypto.randomUUID();
   log("[createBook]", name, vaultId);
   const { bookKey, bookKeyRaw } = await generateBookKey();
@@ -176,10 +176,8 @@ export async function createBook(name: string) {
   catalog.onChange(() => { refreshBookNameFromCatalog(catDocId); rebuildBookIndex(vaultId); if (getActiveBook()?.vaultId === vaultId) renderCatalog(); });
   pushSnapshot(catDocId);
   if (syncClient) await syncClient.subscribe(catDocId);
-  setActiveBook(book);
   renderBookSelect();
-  showRecipeView();
-  renderCatalog();
+  return book;
 }
 
 function updateBulkToolbar() {
@@ -206,6 +204,14 @@ export function renderBookManageList() {
       updateBulkToolbar();
     });
     li.appendChild(cb);
+
+    // Sync dot
+    const pq = getPushQueue();
+    const hasDirty = pq?.isDirty(`${book.vaultId}/catalog`) ?? false;
+    const dot = document.createElement("span");
+    dot.className = "sync-dot pending";
+    dot.hidden = !hasDirty;
+    li.appendChild(dot);
 
     // Name
     const nameEl = document.createElement("span");
@@ -299,6 +305,12 @@ export function initBooks() {
 
   // Wire up the renderBookSelect callback for vault-helpers
   setRenderBookSelect(renderBookSelect);
+
+  // Update sync dots when dirty state changes
+  onSyncEvent("dirty-change", () => {
+    renderBookSelect();
+    if (manageBooksDialog.open) renderBookManageList();
+  });
 
   // Re-render when books change from sync events
   onSyncEvent("books-change", () => {
@@ -431,13 +443,14 @@ export function initBooks() {
     renderBookManageList();
   });
 
-  createBookForm.addEventListener("submit", (e) => {
+  createBookForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const ni = document.getElementById("new-book-name") as HTMLInputElement;
     const n = ni.value.trim();
     if (!n) return;
-    createBook(n);
+    const book = await createBook(n);
     ni.value = "";
     closeModal(manageBooksDialog);
+    if (book) switchBook(book.vaultId);
   });
 }

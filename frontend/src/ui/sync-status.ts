@@ -32,7 +32,7 @@ function updateSyncBadge() {
   }
 
   // Sync progress (right side)
-  if (pushableCount > 0) {
+  if (syncStatus === "connected" && pushableCount > 0) {
     syncEl.className = "sync-progress syncing";
     syncEl.textContent = `syncing ${pushableCount}`;
   } else if (dirtyCount > 0) {

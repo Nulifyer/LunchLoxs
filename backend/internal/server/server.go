@@ -27,15 +27,10 @@ func NewMux(queries *db.Queries, frontendURL string, rateConfig syncpkg.RateConf
 			return
 		}
 
-		client := &syncpkg.Client{
-			Conn:    conn,
-			Send:    make(chan []byte, 256),
-			Hub:     hub,
-			Queries: queries,
-			Rate:    rateConfig,
-		}
+		client := syncpkg.NewClient(conn, hub, queries, rateConfig)
 
 		ctx := r.Context()
+		go client.QueuePump()
 		go client.WritePump(ctx)
 		client.ReadPump(ctx)
 	})
