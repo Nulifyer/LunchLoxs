@@ -278,26 +278,31 @@ export class SyncClient {
         break;
       }
 
-      case "ownership_transferred":
+      case "ownership_transferred": {
+        // Resolve the transferOwnership() promise (server sends this instead of "transfer_ok")
+        const transferResolver = this.confirmResolvers.get("transfer_ok");
+        if (transferResolver) transferResolver();
         this.opts.onOwnershipTransferred?.(msg.vault_id ?? "", msg.target_user_id ?? "");
         break;
+      }
 
       case "ownership_received":
         this.opts.onOwnershipReceived?.(msg.vault_id ?? "", msg.target_user_id ?? "");
         break;
 
-      case "role_changed":
+      case "role_changed": {
+        // Resolve the changeRole() promise (server sends this instead of "role_change_ok")
+        const roleResolver = this.confirmResolvers.get("role_change_ok");
+        if (roleResolver) roleResolver();
         this.opts.onRoleChanged?.(msg.vault_id ?? "", msg.target_user_id ?? "", msg.new_role ?? "");
         break;
+      }
 
       case "vault_key_rotated":
         this.opts.onVaultKeyRotated?.(msg.vault_id ?? "");
         break;
 
-      case "vault_member_removed":
-      case "transfer_ok":
-      case "role_change_ok":
-      case "vault_key_rotation_ok": {
+      case "vault_member_removed": {
         const resolver = this.confirmResolvers.get(msg.type);
         if (resolver) resolver();
         break;
