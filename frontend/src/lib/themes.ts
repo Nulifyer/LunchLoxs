@@ -44,7 +44,7 @@ export const themes: Record<string, Theme> = {
   "catppuccin-mocha": {
     label: "Catppuccin Mocha",
     bg: "#1e1e2e", bgSurface: "#313244", bgHover: "#3b3c52", bgInput: "#1e1e2e",
-    border: "#313244", muted: "#585b70", text: "#cdd6f4", subtle: "#a6adc8",
+    border: "#45475a", muted: "#585b70", text: "#cdd6f4", subtle: "#a6adc8",
     accent: "#89b4fa", green: "#a6e3a1", yellow: "#f9e2af", red: "#f38ba8", purple: "#cba6f7", cyan: "#94e2d5",
   },
   "catppuccin-macchiato": {
@@ -68,13 +68,13 @@ export const themes: Record<string, Theme> = {
   "nord": {
     label: "Nord",
     bg: "#2e3440", bgSurface: "#3b4252", bgHover: "#434c5e", bgInput: "#2e3440",
-    border: "#3b4252", muted: "#4c566a", text: "#eceff4", subtle: "#d8dee9",
+    border: "#4c566a", muted: "#4c566a", text: "#eceff4", subtle: "#d8dee9",
     accent: "#88c0d0", green: "#a3be8c", yellow: "#ebcb8b", red: "#bf616a", purple: "#b48ead", cyan: "#8fbcbb",
   },
   "tokyo-night": {
     label: "Tokyo Night",
     bg: "#1a1b26", bgSurface: "#24283b", bgHover: "#292e42", bgInput: "#1a1b26",
-    border: "#292e42", muted: "#565f89", text: "#c0caf5", subtle: "#a9b1d6",
+    border: "#3b4261", muted: "#565f89", text: "#c0caf5", subtle: "#a9b1d6",
     accent: "#7aa2f7", green: "#9ece6a", yellow: "#e0af68", red: "#f7768e", purple: "#bb9af7", cyan: "#7dcfff",
   },
   "everforest": {

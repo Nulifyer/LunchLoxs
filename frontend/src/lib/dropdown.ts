@@ -37,8 +37,8 @@ document.addEventListener("keydown", (e) => {
  */
 export function createDropdown(items: DropdownItem[], opts?: { label?: string; className?: string }): HTMLButtonElement {
   const trigger = document.createElement("button");
-  trigger.className = opts?.className ?? "sm dropdown-trigger";
-  trigger.innerHTML = opts?.label ?? '<svg width="1.2em" height="1.2em" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>';
+  trigger.className = opts?.className ?? "icon-btn";
+  trigger.innerHTML = opts?.label ?? '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>';
   trigger.setAttribute("aria-label", "Actions");
   trigger.setAttribute("aria-haspopup", "true");
 
