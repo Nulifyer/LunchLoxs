@@ -51,11 +51,11 @@ type Client struct {
 func NewClient(conn *websocket.Conn, hub *Hub, queries *db.Queries, rate RateConfig) *Client {
 	return &Client{
 		Conn:    conn,
-		Send:    make(chan []byte, 64), // small buffer; QueuePump handles backpressure
+		Send:    make(chan []byte, 256),
 		Hub:     hub,
 		Queries: queries,
 		Rate:    rate,
-		enqueue: make(chan []byte, 256), // producers write here
+		enqueue: make(chan []byte, 256),
 		done:    make(chan struct{}),
 	}
 }
