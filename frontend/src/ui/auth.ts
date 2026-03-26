@@ -20,7 +20,7 @@ import { clearIndex, indexRecipe } from "../lib/search";
 import { isOpen as isDetailOpen } from "../views/recipe-detail";
 import {
   getDocMgr, setDocMgr, getSyncClient, setSyncClient,
-  setBooks, setActiveBook, setCurrentUsername, setCurrentUserId,
+  setBooks, setActiveBook, getActiveBook, setCurrentUsername, setCurrentUserId,
   getSigningKeyCache, getIsSignup, setIsSignup,
   getPushQueue, setPushQueue, setSyncStatus,
 } from "../state";

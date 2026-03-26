@@ -69,11 +69,11 @@ function parseIngredientTable(text: string): Ingredient[] {
 
     const cells = line.split("|").map((c) => c.trim()).filter(Boolean);
     if (cells.length >= 3) {
-      ingredients.push({ quantity: cells[0], unit: cells[1], item: cells[2] });
+      ingredients.push({ quantity: cells[0]!, unit: cells[1]!, item: cells[2]! });
     } else if (cells.length === 2) {
-      ingredients.push({ quantity: cells[0], unit: "", item: cells[1] });
+      ingredients.push({ quantity: cells[0]!, unit: "", item: cells[1]! });
     } else if (cells.length === 1) {
-      ingredients.push({ quantity: "", unit: "", item: cells[0] });
+      ingredients.push({ quantity: "", unit: "", item: cells[0]! });
     }
   }
 
@@ -191,24 +191,24 @@ export function parseRecipeMarkdown(md: string): { meta: Partial<RecipeMeta>; co
   const fmMatch = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!fmMatch) return null;
 
-  const frontmatter = fmMatch[1];
-  const body = fmMatch[2];
+  const frontmatter = fmMatch[1]!;
+  const body = fmMatch[2]!;
 
   const meta: Partial<RecipeMeta> = {};
   for (const line of frontmatter.split("\n")) {
     const m = line.match(/^(\w+):\s*(.+)$/);
     if (!m) continue;
     const [, key, rawVal] = m;
-    const val = rawVal.replace(/^"(.*)"$/, "$1");
+    const val = rawVal!.replace(/^"(.*)"$/, "$1");
     switch (key) {
       case "title": meta.title = val; break;
       case "servings": meta.servings = parseInt(val) || 4; break;
       case "prepMinutes": meta.prepMinutes = parseInt(val) || 0; break;
       case "cookMinutes": meta.cookMinutes = parseInt(val) || 0; break;
       case "tags": {
-        const tagMatch = rawVal.match(/\[([^\]]*)\]/);
+        const tagMatch = rawVal!.match(/\[([^\]]*)\]/);
         if (tagMatch) {
-          meta.tags = tagMatch[1].split(",").map((t) => t.trim().replace(/^"(.*)"$/, "$1")).filter(Boolean);
+          meta.tags = tagMatch[1]!.split(",").map((t) => t.trim().replace(/^"(.*)"$/, "$1")).filter(Boolean);
         }
         break;
       }
@@ -226,7 +226,7 @@ export function parseRecipeMarkdown(md: string): { meta: Partial<RecipeMeta>; co
   if (preHeading) content.description = preHeading;
 
   for (let i = 1; i < rawSections.length; i++) {
-    const section = rawSections[i];
+    const section = rawSections[i]!;
     const newlineIdx = section.indexOf("\n");
     if (newlineIdx === -1) continue;
     const heading = section.slice(0, newlineIdx).trim().toLowerCase();
@@ -295,7 +295,7 @@ export async function importFromZip(file: File): Promise<ImportedBook[]> {
 
     const parts = path.split("/");
     const folder = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
-    const bookName = folderNames.get(folder) || (parts.length > 1 ? parts[0] : "");
+    const bookName = folderNames.get(folder) || (parts.length > 1 ? parts[0]! : "");
 
     if (!bookMap.has(folder)) {
       bookMap.set(folder, { name: bookName, recipes: [] });

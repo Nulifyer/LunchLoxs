@@ -35,7 +35,7 @@ const deviceColors = new Map<string, string>();
 
 function getColor(deviceId: string): string {
   if (!deviceColors.has(deviceId)) {
-    deviceColors.set(deviceId, CURSOR_COLORS[colorIndex % CURSOR_COLORS.length]);
+    deviceColors.set(deviceId, CURSOR_COLORS[colorIndex % CURSOR_COLORS.length]!);
     colorIndex++;
   }
   return deviceColors.get(deviceId)!;
@@ -60,7 +60,7 @@ class CursorWidget extends WidgetType {
     return cursor;
   }
 
-  eq(other: CursorWidget): boolean {
+  override eq(other: CursorWidget): boolean {
     return this.color === other.color && this.name === other.name;
   }
 }

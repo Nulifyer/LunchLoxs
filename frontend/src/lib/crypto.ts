@@ -104,7 +104,7 @@ export async function unwrapMasterKey(wrappedMasterKey: Uint8Array, wrappingKey:
   const rawMasterKey = await decrypt(wrappedMasterKey, wrappingKey);
   return crypto.subtle.importKey(
     "raw",
-    rawMasterKey,
+    rawMasterKey as BufferSource,
     { name: "AES-GCM" },
     true, // extractable for re-wrapping
     ["encrypt", "decrypt"],
@@ -196,12 +196,12 @@ const SIGNED_VERSION = 0x01;
  */
 export async function signPayload(plaintext: Uint8Array, signingPrivateKeyPkcs8: Uint8Array): Promise<Uint8Array> {
   const privKey = await crypto.subtle.importKey(
-    "pkcs8", signingPrivateKeyPkcs8 as unknown as ArrayBuffer,
+    "pkcs8", signingPrivateKeyPkcs8 as unknown as BufferSource,
     { name: "ECDSA", namedCurve: "P-256" },
     false, ["sign"],
   );
   const signature = new Uint8Array(await crypto.subtle.sign(
-    { name: "ECDSA", hash: "SHA-256" }, privKey, plaintext as unknown as ArrayBuffer,
+    { name: "ECDSA", hash: "SHA-256" }, privKey, plaintext as unknown as BufferSource,
   ));
   // ECDSA P-256 signature is 64 bytes (r||s, each 32 bytes)
   const result = new Uint8Array(1 + signature.length + plaintext.length);
@@ -231,12 +231,12 @@ export async function verifyPayload(
   }
   try {
     const pubKey = await crypto.subtle.importKey(
-      "raw", signingPublicKeyRaw as unknown as ArrayBuffer,
+      "raw", signingPublicKeyRaw as unknown as BufferSource,
       { name: "ECDSA", namedCurve: "P-256" },
       false, ["verify"],
     );
     const valid = await crypto.subtle.verify(
-      { name: "ECDSA", hash: "SHA-256" }, pubKey, signature as unknown as ArrayBuffer, plaintext as unknown as ArrayBuffer,
+      { name: "ECDSA", hash: "SHA-256" }, pubKey, signature as unknown as BufferSource, plaintext as unknown as BufferSource,
     );
     return { plaintext, verified: valid };
   } catch {
@@ -262,7 +262,7 @@ export async function generateBookKey(): Promise<{ bookKey: CryptoKey; bookKeyRa
  */
 export async function importBookKey(raw: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.importKey(
-    "raw", raw, { name: "AES-GCM" }, true, ["encrypt", "decrypt"],
+    "raw", raw as BufferSource, { name: "AES-GCM" }, true, ["encrypt", "decrypt"],
   );
 }
 
@@ -304,12 +304,12 @@ export async function decryptBookKeyFromUser(
  */
 async function deriveSharedKey(privateKeyPkcs8: Uint8Array, publicKeyRaw: Uint8Array): Promise<CryptoKey> {
   const privateKey = await crypto.subtle.importKey(
-    "pkcs8", privateKeyPkcs8,
+    "pkcs8", privateKeyPkcs8 as BufferSource,
     { name: "ECDH", namedCurve: "P-256" },
     false, ["deriveBits"],
   );
   const publicKey = await crypto.subtle.importKey(
-    "raw", publicKeyRaw,
+    "raw", publicKeyRaw as BufferSource,
     { name: "ECDH", namedCurve: "P-256" },
     false, [],
   );
@@ -345,7 +345,7 @@ export async function encrypt(data: Uint8Array, key: CryptoKey): Promise<Uint8Ar
   const ciphertext = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
     key,
-    data,
+    data as BufferSource,
   );
   const result = new Uint8Array(iv.length + ciphertext.byteLength);
   result.set(iv, 0);

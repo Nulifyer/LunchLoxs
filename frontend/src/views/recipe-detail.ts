@@ -124,7 +124,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     const field = input.dataset.ingField as "quantity" | "unit" | "item";
     store.change((doc) => {
       if (doc.ingredients && idx >= 0 && idx < doc.ingredients.length) {
-        doc.ingredients[idx][field] = input.value;
+        doc.ingredients[idx]![field] = input.value;
       }
     });
     onPushSnapshot?.();

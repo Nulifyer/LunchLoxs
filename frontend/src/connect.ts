@@ -291,7 +291,7 @@ export function createSyncConnection(
       setBooks(getBooks().filter((b) => b.vaultId !== vid));
       if (wasActive) {
         setActiveBook(null);
-        if (getBooks().length > 0) switchBook(getBooks()[0].vaultId); else showBookList();
+        if (getBooks().length > 0) switchBook(getBooks()[0]!.vaultId); else showBookList();
       }
       syncEmit("books-change", getBooks());
     },
@@ -306,7 +306,7 @@ export function createSyncConnection(
         renderMemberList(members);
       }
     },
-    onVaultDeleted: (vid) => { log("[ws] vault_deleted:", vid); removeBookFromIndex(vid); setBooks(getBooks().filter((b) => b.vaultId !== vid)); if (getActiveBook()?.vaultId === vid) { setActiveBook(null); if (getBooks().length > 0) switchBook(getBooks()[0].vaultId); else showBookList(); } syncEmit("books-change", getBooks()); },
+    onVaultDeleted: (vid) => { log("[ws] vault_deleted:", vid); removeBookFromIndex(vid); setBooks(getBooks().filter((b) => b.vaultId !== vid)); if (getActiveBook()?.vaultId === vid) { setActiveBook(null); if (getBooks().length > 0) switchBook(getBooks()[0]!.vaultId); else showBookList(); } syncEmit("books-change", getBooks()); },
     onOwnershipTransferred: (vid) => { log("[ws] ownership_transferred:", vid); getSyncClient()?.listVaults(); },
     onOwnershipReceived: (vid, fromUserId) => {
       log("[ws] ownership_received:", vid, "from:", fromUserId);

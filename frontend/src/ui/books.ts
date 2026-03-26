@@ -277,7 +277,7 @@ export function renderBookManageList() {
           syncClient?.deleteVault(book.vaultId);
           removeBookFromIndex(book.vaultId);
           setBooks(getBooks().filter((b) => b.vaultId !== book.vaultId));
-          if (getActiveBook()?.vaultId === book.vaultId) { setActiveBook(null); if (getBooks().length > 0) switchBook(getBooks()[0].vaultId); else showBookList(); }
+          if (getActiveBook()?.vaultId === book.vaultId) { setActiveBook(null); if (getBooks().length > 0) switchBook(getBooks()[0]!.vaultId); else showBookList(); }
           renderBookSelect(); renderBookManageList();
           toastSuccess(`Deleted "${book.name}"`);
         },
@@ -329,6 +329,7 @@ export function initBooks() {
       }
     }
     renderBookSelect();
+    if (manageBooksDialog.open) renderBookManageList();
     renderCatalog();
   });
 
@@ -405,7 +406,7 @@ export function initBooks() {
       setBooks(getBooks().filter((b) => b.vaultId !== vid));
       if (getActiveBook()?.vaultId === vid) setActiveBook(null);
     }
-    if (!getActiveBook()) { if (getBooks().length > 0) switchBook(getBooks()[0].vaultId); else showBookList(); }
+    if (!getActiveBook()) { if (getBooks().length > 0) switchBook(getBooks()[0]!.vaultId); else showBookList(); }
     renderBookSelect(); renderBookManageList();
     toastSuccess(`Deleted ${owned.length} book${owned.length !== 1 ? "s" : ""}`);
   });

@@ -56,7 +56,7 @@ export async function importRecipesIntoBook(
   // Build content docs
   const contentDocIds: string[] = [];
   for (let i = 0; i < entries.length; i++) {
-    const { id, content } = entries[i];
+    const { id, content } = entries[i]!;
     const contentDocId = `${book.vaultId}/${id}`;
     const cs = await docMgr.open<RecipeContent>(contentDocId, (d) => { d.description = content.description ?? ""; d.ingredients = (content.ingredients ?? []) as any; d.instructions = content.instructions ?? ""; d.imageUrls = []; d.notes = content.notes ?? ""; });
     cs.ensureInitialized();
@@ -91,17 +91,17 @@ export async function handleZipImport(file: File, targetBook?: Book): Promise<vo
     const totalRecipes = importedBooks.reduce((sum, ib) => sum + ib.recipes.length, 0);
     let totalImported = 0;
 
-    const allRootLevel = importedBooks.length === 1 && importedBooks[0].name === "";
+    const allRootLevel = importedBooks.length === 1 && importedBooks[0]!.name === "";
     if (allRootLevel && targetBook) {
       loading.update(`Book: ${targetBook.name}`);
       const progress = (current: number) => {
         loading.updateLine2(`Recipe ${current} / ${totalRecipes}`);
       };
-      totalImported = await importRecipesIntoBook(targetBook, importedBooks[0].recipes, progress);
+      totalImported = await importRecipesIntoBook(targetBook, importedBooks[0]!.recipes, progress);
       toastSuccess(`Imported ${totalImported} recipe${totalImported !== 1 ? "s" : ""} into "${targetBook.name}"`);
     } else {
       for (let i = 0; i < importedBooks.length; i++) {
-        const ib = importedBooks[i];
+        const ib = importedBooks[i]!;
         const bookName = ib.name || file.name.replace(/\.zip$/i, "");
         loading.update(`Book ${i + 1} / ${importedBooks.length}: ${bookName}`);
         loading.updateLine2("");

@@ -103,7 +103,7 @@ export function createDropdown(items: DropdownItem[], opts?: { label?: string; c
     requestAnimationFrame(() => {
       if (actionEls.length > 0) {
         activeIdx = 0;
-        actionEls[0].focus();
+        actionEls[0]!.focus();
       }
     });
 

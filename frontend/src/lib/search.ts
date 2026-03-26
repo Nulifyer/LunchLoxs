@@ -61,7 +61,7 @@ function fzfScore(pattern: string, text: string): number {
   let startIdx = -1;
   let endIdx = -1;
   for (let ti = 0; ti < tLen && pi < pLen; ti++) {
-    if (text[ti].toLowerCase() === pattern[pi]) {
+    if (text[ti]!.toLowerCase() === pattern[pi]) {
       if (pi === 0) startIdx = ti;
       pi++;
       if (pi === pLen) endIdx = ti + 1;
@@ -72,7 +72,7 @@ function fzfScore(pattern: string, text: string): number {
   // Backward contraction: find the shortest substring ending at endIdx
   pi = pLen - 1;
   for (let ti = endIdx - 1; ti >= startIdx && pi >= 0; ti--) {
-    if (text[ti].toLowerCase() === pattern[pi]) {
+    if (text[ti]!.toLowerCase() === pattern[pi]) {
       pi--;
       if (pi < 0) startIdx = ti;
     }
@@ -89,12 +89,12 @@ function fzfScore(pattern: string, text: string): number {
   let firstBonus = 0;
   let gapLen = 0;
   const maxGap = 16;  // Max characters between two consecutive matched chars
-  let prevClass = startIdx > 0 ? charClass(text[startIdx - 1]) : CH_WHITE;
+  let prevClass = startIdx > 0 ? charClass(text[startIdx - 1]!) : CH_WHITE;
   pi = 0;
 
   for (let ti = startIdx; ti < endIdx && pi < pLen; ti++) {
-    const curClass = charClass(text[ti]);
-    if (text[ti].toLowerCase() === pattern[pi]) {
+    const curClass = charClass(text[ti]!);
+    if (text[ti]!.toLowerCase() === pattern[pi]) {
       if (pi > 0 && gapLen > maxGap) return 0;  // Single gap too large
       gapLen = 0;
       const bonus = bonusFor(prevClass, curClass);

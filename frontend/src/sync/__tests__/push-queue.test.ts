@@ -457,7 +457,7 @@ describe("PushQueue integration", () => {
 
     expect(signFn).toHaveBeenCalledTimes(1);
     // Verify the signed payload was passed to push
-    const pushCall = syncClient.push.mock.calls[0];
+    const pushCall = syncClient.push.mock.calls[0]!;
     expect(pushCall[1]).toEqual(new Uint8Array([1, 2, 3, 0xff]));
     pq.stop();
   });

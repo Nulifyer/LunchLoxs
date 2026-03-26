@@ -446,7 +446,7 @@ export class PushQueue {
     const heads = store.getHeads();
     const raw = store.save();
     const payload = this.signFn ? await this.signFn(raw) : raw;
-    const result = await this.syncClient.push(docId, payload);
+    const result = await this.syncClient!.push(docId, payload);
 
     if (result === "sent") {
       store.setPushHeads(heads);

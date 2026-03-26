@@ -60,7 +60,7 @@ export class AutomergeStore<T> {
       doc = Automerge.init<T>();
     }
 
-    const store = new AutomergeStore(doc, db, docId, encKey);
+    const store = new AutomergeStore<T>(doc, db, docId, encKey);
     store.initFn = needsInit ? initFn : null;
     await store.persist();
     return store;
