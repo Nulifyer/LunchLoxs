@@ -132,13 +132,13 @@ export interface ConvertedUnit {
  * Return all units a given source unit can convert to (same dimension, other system + own system).
  * Includes "original" as a reset option. Each entry has: canonical unit name and system label.
  */
-export function getConversionTargets(fromUnit: string): { unit: string; label: string }[] {
+export function getConversionTargets(fromUnit: string): { unit: string; label: string; system: "metric" | "imperial" }[] {
   const def = resolveUnit(fromUnit);
   if (!def) return [];
-  const targets: { unit: string; label: string }[] = [];
+  const targets: { unit: string; label: string; system: "metric" | "imperial" }[] = [];
   for (const d of UNIT_DEFS) {
     if (d.dimension === def.dimension && d.canonical !== def.canonical && !d.sourceOnly) {
-      targets.push({ unit: d.canonical, label: d.canonical });
+      targets.push({ unit: d.canonical, label: d.canonical, system: d.system });
     }
   }
   return targets;

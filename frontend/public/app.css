@@ -1285,6 +1285,15 @@ dialog label:not(.sr-only)+select {
   font-weight: 600;
 }
 
+.dropdown-group-label {
+  padding: 0.25rem 0.6rem 0.15rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 #ingredients-list li .ing-text {
   flex: 1;
 }

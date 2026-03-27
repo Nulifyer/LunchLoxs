@@ -203,86 +203,79 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     const itemName = ing?.item ?? "";
     const scaledNum = parseQty(scaleQty(rawQty, scaleFactor));
 
+    // Build conversion entries grouped by: metric, imperial, density-based
+    type PickerEntry = { qty: number; label: string; overrideKey: string; group: "metric" | "imperial" | "density" };
+    const entries: PickerEntry[] = [];
+
     // Same-dimension conversions
     for (const t of targets) {
       const converted = scaledNum !== null ? convertToUnit(scaledNum, rawUnit, t.unit) : null;
-      // Only show units that produce a readable quantity (0.1 to 999)
       if (!converted || converted.qty < 0.1 || converted.qty > 999) continue;
-      const btn = document.createElement("button");
-      btn.className = "dropdown-item" + (unitOverrides.get(idx) === t.unit ? " unit-active" : "");
-      const label = `${formatQty(converted.qty)} ${t.label}`;
-      btn.textContent = label;
-      btn.setAttribute("role", "menuitem");
-      btn.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        unitOverrides.set(idx, t.unit);
-        closeUnitPicker();
-        if (store) renderIngredients(store.getDoc());
-      });
-      menu.appendChild(btn);
+      entries.push({ qty: converted.qty, label: `${formatQty(converted.qty)} ${t.label}`, overrideKey: t.unit, group: t.system });
     }
 
     // Density-based cross-dimension conversions (volume <-> weight)
     const unitDef = resolveUnit(rawUnit);
     const density = findDensity(itemName);
     if (density && unitDef && scaledNum !== null) {
-      const sep2 = document.createElement("div");
-      sep2.className = "dropdown-sep";
-      menu.appendChild(sep2);
-
       const isVolume = unitDef.dimension === "volume";
       if (isVolume) {
-        // Volume -> weight: convert qty to mL, then to grams via density
         const volumeMl = scaledNum * unitDef.toBase;
         const grams = volumeToWeight(volumeMl, density);
-        const weightTargets: { unit: string; label: string; grams: number }[] = [
-          { unit: "g", label: "g", grams: 1 },
-          { unit: "kg", label: "kg", grams: 1000 },
-          { unit: "oz", label: "oz", grams: 28.3495 },
-          { unit: "lb", label: "lb", grams: 453.592 },
-        ];
-        for (const wt of weightTargets) {
-          const val = grams / wt.grams;
+        for (const [unit, divisor] of [["g", 1], ["kg", 1000], ["oz", 28.3495], ["lb", 453.592]] as const) {
+          const val = Math.round(grams / divisor * 10) / 10;
           if (val < 0.1 || val > 999) continue;
-          const btn = document.createElement("button");
-          // Use ~ prefix to indicate approximate density-based conversion
-          btn.className = "dropdown-item" + (unitOverrides.get(idx) === `~${wt.unit}` ? " unit-active" : "");
-          btn.textContent = `~${formatQty(Math.round(val * 10) / 10)} ${wt.label}`;
-          btn.setAttribute("role", "menuitem");
-          btn.addEventListener("click", (ev) => {
-            ev.stopPropagation();
-            unitOverrides.set(idx, `~${wt.unit}`);
-            closeUnitPicker();
-            if (store) renderIngredients(store.getDoc());
-          });
-          menu.appendChild(btn);
+          entries.push({ qty: val, label: `~${formatQty(val)} ${unit}`, overrideKey: `~${unit}`, group: "density" });
         }
       } else {
-        // Weight -> volume: convert qty to grams, then to mL via density
         const grams = scaledNum * unitDef.toBase;
         const volumeMl = weightToVolume(grams, density);
-        const volTargets: { unit: string; label: string; mlPer: number }[] = [
-          { unit: "tsp", label: "tsp", mlPer: 4.929 },
-          { unit: "tbsp", label: "tbsp", mlPer: 14.787 },
-          { unit: "cup", label: "cup", mlPer: 236.588 },
-          { unit: "ml", label: "ml", mlPer: 1 },
-          { unit: "l", label: "l", mlPer: 1000 },
-        ];
-        for (const vt of volTargets) {
-          const val = volumeMl / vt.mlPer;
+        for (const [unit, divisor] of [["tsp", 4.929], ["tbsp", 14.787], ["cup", 236.588], ["ml", 1], ["l", 1000]] as const) {
+          const val = Math.round(volumeMl / divisor * 10) / 10;
           if (val < 0.1 || val > 999) continue;
-          const btn = document.createElement("button");
-          btn.className = "dropdown-item" + (unitOverrides.get(idx) === `~${vt.unit}` ? " unit-active" : "");
-          btn.textContent = `~${formatQty(Math.round(val * 10) / 10)} ${vt.label}`;
-          btn.setAttribute("role", "menuitem");
-          btn.addEventListener("click", (ev) => {
-            ev.stopPropagation();
-            unitOverrides.set(idx, `~${vt.unit}`);
-            closeUnitPicker();
-            if (store) renderIngredients(store.getDoc());
-          });
-          menu.appendChild(btn);
+          entries.push({ qty: val, label: `~${formatQty(val)} ${unit}`, overrideKey: `~${unit}`, group: "density" });
         }
+      }
+    }
+
+    // Sort within each group by closeness to original quantity
+    const refQty = scaledNum ?? 1;
+    const byCloseness = (a: PickerEntry, b: PickerEntry) =>
+      Math.abs(Math.log(a.qty / refQty)) - Math.abs(Math.log(b.qty / refQty));
+
+    // Determine which system to show first (opposite of source unit's system)
+    const sourceSystem = unitDef?.system;
+    const groupOrder: ("metric" | "imperial" | "density")[] =
+      sourceSystem === "metric" ? ["imperial", "metric", "density"] : ["metric", "imperial", "density"];
+    const GROUP_LABELS: Record<string, string> = { metric: "Metric", imperial: "Imperial", density: "By weight" };
+    // If source is a weight unit, density section is volume
+    if (unitDef?.dimension === "weight") GROUP_LABELS.density = "By volume";
+
+    for (const group of groupOrder) {
+      const groupEntries = entries.filter(e => e.group === group).sort(byCloseness);
+      if (groupEntries.length === 0) continue;
+
+      const groupSep = document.createElement("div");
+      groupSep.className = "dropdown-sep";
+      menu.appendChild(groupSep);
+      const groupLabel = document.createElement("div");
+      groupLabel.className = "dropdown-group-label";
+      groupLabel.textContent = GROUP_LABELS[group];
+      menu.appendChild(groupLabel);
+
+      for (const entry of groupEntries) {
+        const btn = document.createElement("button");
+        btn.className = "dropdown-item" + (unitOverrides.get(idx) === entry.overrideKey ? " unit-active" : "");
+        btn.textContent = entry.label;
+        btn.setAttribute("role", "menuitem");
+        const key = entry.overrideKey;
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          unitOverrides.set(idx, key);
+          closeUnitPicker();
+          if (store) renderIngredients(store.getDoc());
+        });
+        menu.appendChild(btn);
       }
     }
 

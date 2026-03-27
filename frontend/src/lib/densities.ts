@@ -31,7 +31,7 @@ const DENSITIES: [string[], number][] = [
   // King Arthur: 113 g/cup
   [["pastry flour"], 113],
   // King Arthur: 128 g/cup
-  [["whole wheat flour", "wholemeal flour", "whole-wheat flour"], 128],
+  [["whole wheat flour", "wholemeal flour", "whole-wheat flour", "ww flour"], 128],
   // Bob's Red Mill: 92 g/cup
   [["oat flour"], 92],
   // King Arthur: 96 g/cup
@@ -53,11 +53,11 @@ const DENSITIES: [string[], number][] = [
 
   // -- Sugars & syrups --
   // King Arthur: 198 g/cup
-  [["granulated sugar", "white sugar", "caster sugar", "sugar"], 198],
+  [["granulated sugar", "white sugar", "caster sugar", "sugar", "castor sugar"], 198],
   // King Arthur: 213 g/cup
-  [["brown sugar", "light brown sugar", "dark brown sugar"], 213],
+  [["brown sugar", "light brown sugar", "dark brown sugar", "packed brown sugar", "demerara sugar", "muscovado sugar"], 213],
   // King Arthur: 113 g/cup
-  [["powdered sugar", "confectioners sugar", "icing sugar", "confectioners' sugar"], 113],
+  [["powdered sugar", "confectioners sugar", "icing sugar", "confectioners' sugar", "10x sugar"], 113],
   // Cafe Fernando: 340 g/cup
   [["honey"], 340],
   // Cafe Fernando: 312 g/cup
@@ -69,11 +69,11 @@ const DENSITIES: [string[], number][] = [
 
   // -- Fats --
   // King Arthur: 227 g/cup
-  [["butter", "unsalted butter", "salted butter"], 227],
+  [["butter", "unsalted butter", "salted butter", "melted butter", "cold butter", "softened butter"], 227],
   // Cafe Fernando: 216 g/cup
-  [["olive oil", "extra virgin olive oil"], 216],
+  [["olive oil", "extra virgin olive oil", "evoo"], 216],
   // Cafe Fernando: 218 g/cup
-  [["vegetable oil", "canola oil", "sunflower oil", "oil"], 218],
+  [["vegetable oil", "canola oil", "sunflower oil", "oil", "cooking oil", "neutral oil", "avocado oil", "grapeseed oil"], 218],
   // Cafe Fernando: 218 g/cup
   [["coconut oil"], 218],
   // King Arthur: 191 g/cup
@@ -85,9 +85,9 @@ const DENSITIES: [string[], number][] = [
   // Cotswold Flour: 4.8 g/tsp = 230 g/cup
   [["baking powder"], 230],
   // Cotswold Flour: 7 g/tsp = 336 g/cup
-  [["baking soda", "bicarbonate of soda", "bicarb"], 336],
+  [["baking soda", "bicarbonate of soda", "bicarb", "bi-carb"], 336],
   // King Arthur: 82 g/cup
-  [["cocoa powder", "cocoa", "cacao powder", "cacao"], 82],
+  [["cocoa powder", "cocoa", "cacao powder", "cacao", "dutch process cocoa", "unsweetened cocoa"], 82],
   // Cotswold Flour: 3 g/tsp = 144 g/cup
   [["cinnamon", "ground cinnamon"], 144],
   // Cotswold Flour: 6 g/tsp = 288 g/cup
@@ -95,25 +95,25 @@ const DENSITIES: [string[], number][] = [
 
   // -- Dairy --
   // King Arthur: 245 g/cup (close to water)
-  [["milk", "whole milk", "skim milk", "2% milk", "buttermilk"], 245],
+  [["milk", "whole milk", "skim milk", "2% milk", "buttermilk", "1% milk", "nonfat milk", "skimmed milk"], 245],
   // King Arthur: 238 g/cup
-  [["heavy cream", "whipping cream", "heavy whipping cream", "double cream"], 238],
+  [["heavy cream", "whipping cream", "heavy whipping cream", "double cream", "cream", "single cream", "light cream"], 238],
   // King Arthur: 230 g/cup
   [["sour cream"], 230],
   // King Arthur: 245 g/cup
-  [["yogurt", "yoghurt", "greek yogurt", "plain yogurt"], 245],
+  [["yogurt", "yoghurt", "greek yogurt", "plain yogurt", "greek yoghurt", "natural yogurt"], 245],
   // King Arthur: 232 g/cup
   [["cream cheese"], 232],
 
   // -- Starches & grains --
   // King Arthur: 128 g/cup
-  [["cornstarch", "corn starch"], 128],
+  [["cornstarch", "corn starch", "cornflour", "corn flour"], 128],
   // King Arthur: 138 g/cup
   [["cornmeal", "corn meal", "polenta"], 138],
   // King Arthur: 185 g/cup
-  [["rice", "white rice", "long grain rice", "basmati rice", "jasmine rice"], 185],
+  [["rice", "white rice", "long grain rice", "basmati rice", "jasmine rice", "sushi rice", "arborio rice"], 185],
   // King Arthur: 80 g/cup
-  [["oats", "rolled oats", "old-fashioned oats", "old fashioned oats"], 80],
+  [["oats", "rolled oats", "old-fashioned oats", "old fashioned oats", "oatmeal"], 80],
   // Cafe Fernando: 108 g/cup
   [["breadcrumbs", "bread crumbs"], 108],
   // Cafe Fernando: 50 g/cup
@@ -133,11 +133,11 @@ const DENSITIES: [string[], number][] = [
   // Cafe Fernando: 146 g/cup
   [["peanuts"], 146],
   // King Arthur: 258 g/cup
-  [["peanut butter", "almond butter", "nut butter"], 258],
+  [["peanut butter", "almond butter", "nut butter", "cashew butter", "sunflower butter", "tahini"], 258],
 
   // -- Chocolate --
   // King Arthur: 170 g/cup
-  [["chocolate chips", "chocolate morsels"], 170],
+  [["chocolate chips", "chocolate morsels", "choc chips"], 170],
 ];
 
 /** Grams per mL, derived from g/cup. */
