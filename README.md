@@ -1,18 +1,36 @@
 # LunchLoxs
 
-End-to-end encrypted recipe manager. Your data stays yours.
+A privacy-first recipe manager with end-to-end encryption. Organize, scale, convert, and share recipes -- your data never leaves your devices unencrypted.
+
+Built as an offline-first PWA with real-time collaboration, so you can cook from your phone even without signal, and edit together with family in real time.
 
 ## Features
 
-- **End-to-end encryption** -- Proton Pass-style key hierarchy: passphrase -> Argon2id -> wrapping key -> master key -> data encryption
-- **Vault-based sharing** -- ECDH P-256 key exchange, per-vault encryption keys, role-based access (owner/editor/viewer)
-- **Real-time collaboration** -- Automerge CRDTs with WebSocket sync, live cursors, conflict-free editing
-- **Payload signing** -- ECDSA P-256 signatures on all sync payloads
-- **Offline-first PWA** -- Service worker caching, IndexedDB storage, works without network
-- **Markdown instructions** -- CodeMirror editor with live preview via marked + DOMPurify
-- **Import/Export** -- Markdown with YAML frontmatter, zip archives for multi-book import
-- **Fuzzy search** -- fzf-style scoring across titles, tags, and book names
-- **12 themes** -- Dracula, Catppuccin (Latte/Frappe/Macchiato/Mocha), Nord, Tokyo Night, Everforest, Gruvbox, Dark, Light
+### 🔒 Privacy & Security
+- 🔑 **End-to-end encrypted** -- Proton Pass-style key hierarchy. The server never sees your recipes, titles, or ingredients in plaintext.
+- 👥 **Vault-based sharing** -- Share recipe books with family or friends via ECDH key exchange. Each vault has its own encryption key with role-based access (owner/editor/viewer).
+- ✍️ **Signed payloads** -- Every sync message is ECDSA P-256 signed to prevent tampering.
+
+### 📖 Recipe Management
+- 📚 **Organized in books** -- Group recipes into books (e.g. "Weeknight Dinners", "Holiday Baking"). Drag to reorder.
+- 📝 **Rich editing** -- Markdown instructions with live preview, structured ingredient lists with inline editing, drag-to-reorder, and image support.
+- 📦 **Import & export** -- Markdown with YAML frontmatter. Bulk import/export as zip archives.
+- 🔍 **Fuzzy search** -- Fast fzf-style scoring across titles, tags, and book names. Optional vector search for semantic matching.
+
+### 🍲 Cooking Tools
+- ⚖️ **Ingredient scaling** -- Adjust servings with +/- buttons or quick double/halve. Handles fractions, ranges, and locked amounts.
+- 🔄 **Unit conversion** -- Click any unit to convert between metric and imperial. Grouped by system with live previews.
+- 📐 **Density-based conversion** -- Volume-to-weight conversion for 50+ common ingredients (flour, sugar, butter, etc.) sourced from King Arthur Baking and NIST standards.
+- ✅ **Check-off ingredients** -- Tap to strike through ingredients as you go.
+
+### ⚡ Collaboration
+- 🔁 **Real-time sync** -- Automerge CRDTs over WebSocket. Multiple people can edit the same recipe simultaneously with no conflicts.
+- 🎯 **Live cursors** -- See where collaborators are editing in real time.
+- 📶 **Offline-first** -- Full service worker caching and IndexedDB storage. Works without network, syncs when reconnected.
+
+### 🎨 Customization
+- 🖌️ **12 themes** -- Dracula, Catppuccin (Latte/Frappe/Macchiato/Mocha), Nord, Tokyo Night, Everforest, Gruvbox, Dark, Light.
+- 📱 **Installable PWA** -- Add to home screen on any device. Feels native on mobile and desktop.
 
 ## Architecture
 
@@ -100,8 +118,8 @@ All three images (frontend, backend, migrate) are pulled from GHCR -- no need to
 To pin a specific version instead of `latest`:
 ```sh
 # In docker-compose.prod.yml, replace :latest with a tag
-image: ghcr.io/nulifyer/lunchloxs-backend:v0.1.0
-image: ghcr.io/nulifyer/lunchloxs-frontend:v0.1.0
+image: ghcr.io/nulifyer/lunchloxs-backend:v1.1.0
+image: ghcr.io/nulifyer/lunchloxs-frontend:v1.1.0
 ```
 
 ### Generate test data
@@ -118,7 +136,7 @@ cd frontend
 bun add -d @resvg/resvg-js && bun run scripts/gen-icons.ts && bun remove @resvg/resvg-js
 ```
 
-## Security model
+## Security Model
 
 | Layer | Mechanism |
 |---|---|
