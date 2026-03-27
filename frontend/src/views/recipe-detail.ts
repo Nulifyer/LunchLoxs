@@ -14,6 +14,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { createDropdown } from "../lib/dropdown";
+import { parseQty, formatQty, scaleQty } from "../lib/quantity";
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
@@ -32,11 +33,8 @@ const pageEditBtn = document.getElementById("page-edit-btn") as HTMLButtonElemen
 const actionsSlot = document.getElementById("recipe-actions-slot") as HTMLElement;
 
 const ingredientsList = document.getElementById("ingredients-list") as HTMLElement;
-const addIngredientBtn = document.getElementById("add-ingredient-btn") as HTMLButtonElement;
-const ingredientForm = document.getElementById("ingredient-form") as HTMLFormElement;
-const ingQtyInput = document.getElementById("ing-qty") as HTMLInputElement;
-const ingUnitInput = document.getElementById("ing-unit") as HTMLInputElement;
-const ingItemInput = document.getElementById("ing-item") as HTMLInputElement;
+const scaleBar = document.getElementById("ingredient-scale-bar") as HTMLElement;
+const scaleDisplay = document.getElementById("scale-display") as HTMLElement;
 
 const instrEditorContainer = document.getElementById("editor-container") as HTMLElement;
 const instrPreviewContainer = document.getElementById("preview-container") as HTMLElement;
@@ -55,6 +53,10 @@ let notesCursors = new Map<string, RemoteCursor>();
 let onPushSnapshot: (() => void) | null = null;
 let onSendPresence: ((data: any) => void) | null = null;
 let canEdit = true;
+let checkedIngredients = new Set<number>();
+let scaleFactor = 1;
+let baseServings = 4;
+let currentServings = 4;
 let presenceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
@@ -107,45 +109,46 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     if (pageEditing) notesEditorView?.focus();
   });
 
-  addIngredientBtn.addEventListener("click", () => {
-    if (!pageEditing) setPageEditing(true);
-    const showing = ingredientForm.classList.contains("open");
-    ingredientForm.classList.toggle("open", !showing);
-    if (!showing) ingItemInput.focus();
-  });
-
-  ingredientForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    if (!store) return;
-    const item = ingItemInput.value.trim();
-    if (!item) return;
-    store.change((doc) => {
-      if (!doc.ingredients) doc.ingredients = [];
-      doc.ingredients.push({ item, quantity: ingQtyInput.value.trim(), unit: ingUnitInput.value.trim() });
-    });
-    ingQtyInput.value = "";
-    ingUnitInput.value = "";
-    ingItemInput.value = "";
-    ingItemInput.focus();
-    onPushSnapshot?.();
-  });
+  // -- Ingredient event delegation --
 
   ingredientsList.addEventListener("click", (e) => {
-    const btn = (e.target as HTMLElement).closest("[data-delete-ing]") as HTMLElement;
-    if (!btn || !store) return;
-    const idx = parseInt(btn.dataset.deleteIng!);
-    store.change((doc) => {
-      if (doc.ingredients && idx >= 0 && idx < doc.ingredients.length) {
-        doc.ingredients.splice(idx, 1);
-      }
-    });
-    onPushSnapshot?.();
+    const target = e.target as HTMLElement;
+
+    // Delete button
+    const deleteBtn = target.closest("[data-delete-ing]") as HTMLElement;
+    if (deleteBtn && store) {
+      const idx = parseInt(deleteBtn.dataset.deleteIng!);
+      store.change((doc) => {
+        if (doc.ingredients && idx >= 0 && idx < doc.ingredients.length) {
+          doc.ingredients.splice(idx, 1);
+        }
+      });
+      onPushSnapshot?.();
+      return;
+    }
+
+    // Check-off toggle (view mode)
+    const check = target.closest(".ing-check") as HTMLElement;
+    if (check) {
+      const li = check.closest("li") as HTMLElement;
+      const idx = parseInt(li.dataset.ingIdx ?? "-1");
+      if (idx < 0) return;
+      if (checkedIngredients.has(idx)) checkedIngredients.delete(idx);
+      else checkedIngredients.add(idx);
+      li.classList.toggle("ing-checked", checkedIngredients.has(idx));
+      return;
+    }
   });
 
   ingredientsList.addEventListener("input", (e) => {
     const input = e.target as HTMLInputElement;
-    if (!input.dataset.ingIdx || !input.dataset.ingField || !store) return;
-    const idx = parseInt(input.dataset.ingIdx);
+    if (!input.dataset.ingField || !store) return;
+
+    // Ghost row input
+    if (input.dataset.ghost) return;
+
+    const idx = parseInt(input.dataset.ingIdx ?? "-1");
+    if (idx < 0) return;
     const field = input.dataset.ingField as "quantity" | "unit" | "item";
     store.change((doc) => {
       if (doc.ingredients && idx >= 0 && idx < doc.ingredients.length) {
@@ -153,6 +156,131 @@ export function initRecipeDetail(cb: DetailCallbacks) {
       }
     });
     onPushSnapshot?.();
+  });
+
+  // Ghost row: commit on Enter
+  ingredientsList.addEventListener("keydown", (e) => {
+    const input = e.target as HTMLInputElement;
+    if (!input.dataset.ghost || e.key !== "Enter") return;
+    e.preventDefault();
+    commitGhostRow();
+  });
+
+  // Ghost row: commit on blur of item field if it has a value
+  ingredientsList.addEventListener("focusout", (e) => {
+    const input = e.target as HTMLInputElement;
+    if (!input.dataset.ghost || input.dataset.ingField !== "item") return;
+    // Delay slightly so clicking another ghost field doesn't trigger
+    setTimeout(() => {
+      const ghostLi = ingredientsList.querySelector(".ing-ghost");
+      if (ghostLi && !ghostLi.contains(document.activeElement)) {
+        commitGhostRow();
+      }
+    }, 50);
+  });
+
+  // -- Pointer-based drag-to-reorder (works for mouse + touch) --
+
+  let dragIdx: number | null = null;
+  let dragClone: HTMLElement | null = null;
+  let dropIdx: number | null = null;
+  let dragPointerId: number | null = null;
+
+  // Drop indicator line
+  const dropLine = document.createElement("div");
+  dropLine.className = "ing-drop-line";
+
+  function clearDragState() {
+    if (dragClone) { dragClone.remove(); dragClone = null; }
+    dropLine.remove();
+    ingredientsList.querySelectorAll(".ing-dragging").forEach((el) => el.classList.remove("ing-dragging"));
+    dragIdx = null;
+    dropIdx = null;
+    dragPointerId = null;
+  }
+
+  ingredientsList.addEventListener("pointerdown", (e) => {
+    const handle = (e.target as HTMLElement).closest(".ing-drag-handle") as HTMLElement;
+    if (!handle) return;
+    const li = handle.closest("li[data-ing-idx]") as HTMLElement;
+    if (!li) return;
+    e.preventDefault();
+    dragIdx = parseInt(li.dataset.ingIdx!);
+    dragPointerId = e.pointerId;
+    li.classList.add("ing-dragging");
+    li.setPointerCapture(e.pointerId);
+    // Floating clone
+    dragClone = li.cloneNode(true) as HTMLElement;
+    dragClone.classList.remove("ing-dragging");
+    dragClone.style.cssText = `position:fixed;pointer-events:none;opacity:0.75;z-index:999;width:${li.offsetWidth}px;margin:0;`;
+    document.body.appendChild(dragClone);
+    dragClone.style.left = e.clientX - 20 + "px";
+    dragClone.style.top = e.clientY - 15 + "px";
+  });
+
+  ingredientsList.addEventListener("pointermove", (e) => {
+    if (dragIdx === null || !dragClone || e.pointerId !== dragPointerId) return;
+    dragClone.style.left = e.clientX - 20 + "px";
+    dragClone.style.top = e.clientY - 15 + "px";
+    // Find insertion point between rows
+    const items = Array.from(ingredientsList.querySelectorAll("li[data-ing-idx]")) as HTMLElement[];
+    dropLine.remove();
+    dropIdx = null;
+    for (const item of items) {
+      const idx = parseInt(item.dataset.ingIdx!);
+      if (idx === dragIdx) continue;
+      const rect = item.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      if (e.clientY < midY) {
+        // Insert before this item
+        dropIdx = idx;
+        item.before(dropLine);
+        return;
+      }
+    }
+    // Past the last item -- insert at end
+    const lastItem = items[items.length - 1];
+    if (lastItem) {
+      dropIdx = parseInt(lastItem.dataset.ingIdx!) + 1;
+      lastItem.after(dropLine);
+    }
+  });
+
+  ingredientsList.addEventListener("pointerup", (e) => {
+    if (dragIdx === null || e.pointerId !== dragPointerId) return;
+    const from = dragIdx;
+    let to = dropIdx;
+    clearDragState();
+    if (to === null || !store) return;
+    // Adjust target index since removing the source shifts indices
+    if (to > from) to--;
+    if (to === from) return;
+    store.change((doc) => {
+      if (!doc.ingredients) return;
+      const src = doc.ingredients[from];
+      if (!src) return;
+      // Copy values -- Automerge can't reinsert a spliced-out reference
+      const copy = { item: src.item, quantity: src.quantity, unit: src.unit };
+      doc.ingredients.splice(from, 1);
+      doc.ingredients.splice(to!, 0, copy);
+    });
+    onPushSnapshot?.();
+  });
+
+  ingredientsList.addEventListener("pointercancel", () => clearDragState());
+
+  // -- Scale bar --
+
+  scaleBar.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest("[data-scale]") as HTMLElement;
+    if (!btn) return;
+    const action = btn.dataset.scale;
+    if (action === "increase") currentServings++;
+    else if (action === "decrease" && currentServings > 1) currentServings--;
+    else if (action === "reset") { currentServings = baseServings; checkedIngredients.clear(); }
+    scaleFactor = currentServings / baseServings;
+    updateScaleDisplay();
+    if (store) renderIngredients(store.getDoc());
   });
 }
 
@@ -171,8 +299,13 @@ function timeAgo(ts: number): string {
   return `${years}y ago`;
 }
 
-export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: string, meta: string, editable = true, updatedAt?: number, bookName?: string) {
+export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: string, meta: string, editable = true, updatedAt?: number, bookName?: string, servings?: number) {
   closeRecipe();
+  // Reset ingredient UI state
+  checkedIngredients.clear();
+  baseServings = servings ?? 4;
+  currentServings = baseServings;
+  scaleFactor = 1;
   store = recipeStore;
   titleEl.textContent = title;
   // Update breadcrumb
@@ -193,9 +326,6 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
   canEdit = editable;
   emptyState.hidden = true;
   detailView.hidden = false;
-  ingredientForm.classList.remove("open");
-  ingredientForm.reset();
-
   // Edit button for viewers is hidden
   pageEditBtn.hidden = !canEdit;
 
@@ -355,6 +485,9 @@ export function closeRecipe() {
   pageEditing = false;
   instrCursors.clear();
   notesCursors.clear();
+  checkedIngredients.clear();
+  scaleFactor = 1;
+  scaleBar.hidden = true;
   detailView.hidden = true;
   emptyState.hidden = false;
 }
@@ -426,9 +559,15 @@ function setPageEditing(editing: boolean) {
   detailView.classList.toggle("editing", editing);
   pageEditBtn.textContent = editing ? "Done" : "Edit";
 
-  addIngredientBtn.hidden = !editing;
-  if (!editing) {
-    ingredientForm.classList.remove("open");
+  // Scale bar: show in view mode, hide in edit mode
+  scaleBar.hidden = editing;
+  if (editing) {
+    // Reset scaling and checks when entering edit mode
+    checkedIngredients.clear();
+    currentServings = baseServings;
+    scaleFactor = 1;
+    updateScaleDisplay();
+  } else {
     // Tell remote users our cursors are gone
     sendPresenceNow({ field: "instructions", active: false });
     sendPresenceNow({ field: "notes", active: false });
@@ -453,43 +592,97 @@ function setPageEditing(editing: boolean) {
 
 // -- Render --
 
+function commitGhostRow() {
+  if (!store) return;
+  const ghostLi = ingredientsList.querySelector(".ing-ghost");
+  if (!ghostLi) return;
+  const qtyIn = ghostLi.querySelector("[data-ing-field='quantity']") as HTMLInputElement;
+  const unitIn = ghostLi.querySelector("[data-ing-field='unit']") as HTMLInputElement;
+  const itemIn = ghostLi.querySelector("[data-ing-field='item']") as HTMLInputElement;
+  const item = itemIn?.value.trim();
+  if (!item) return;
+  store.change((doc) => {
+    if (!doc.ingredients) doc.ingredients = [];
+    doc.ingredients.push({ item, quantity: qtyIn?.value.trim() ?? "", unit: unitIn?.value.trim() ?? "" });
+  });
+  onPushSnapshot?.();
+  // Re-render will create a fresh ghost row; focus its item field
+  renderIngredients(store.getDoc());
+  const newGhost = ingredientsList.querySelector(".ing-ghost [data-ing-field='quantity']") as HTMLInputElement;
+  newGhost?.focus();
+}
+
+function updateScaleDisplay() {
+  scaleDisplay.textContent = `${currentServings} servings`;
+  scaleBar.classList.toggle("scaled", currentServings !== baseServings);
+}
+
+function scaleQtyHtml(raw: string): string {
+  return escapeHtml(scaleQty(raw, scaleFactor));
+}
+
 function renderIngredients(doc: RecipeContent) {
   const ingredients = doc.ingredients ?? [];
-  if (ingredients.length === 0) {
-    ingredientsList.innerHTML = pageEditing
-      ? "<li><em>No ingredients yet. Click + Add.</em></li>"
-      : "<li><em>No ingredients.</em></li>";
-    return;
-  }
 
   if (pageEditing) {
+    // Save focus state before re-render
     const focused = document.activeElement as HTMLInputElement | null;
-    const focusKey = focused?.dataset.ingIdx && focused?.dataset.ingField
+    const focusGhost = focused?.dataset.ghost === "true";
+    const focusKey = !focusGhost && focused?.dataset.ingIdx && focused?.dataset.ingField
       ? `${focused.dataset.ingIdx}:${focused.dataset.ingField}` : null;
+    const ghostFocusField = focusGhost ? focused?.dataset.ingField ?? null : null;
     const focusPos = focused?.selectionStart ?? 0;
 
-    ingredientsList.innerHTML = ingredients
-      .map((ing, i) => `<li>
-        <input class="ing-edit ing-qty" data-ing-idx="${i}" data-ing-field="quantity" value="${escapeAttr(ing.quantity)}" placeholder="qty" />
-        <input class="ing-edit ing-unit" data-ing-idx="${i}" data-ing-field="unit" value="${escapeAttr(ing.unit)}" placeholder="unit" />
-        <input class="ing-edit ing-text" data-ing-idx="${i}" data-ing-field="item" value="${escapeAttr(ing.item)}" placeholder="ingredient" />
-        <button data-delete-ing="${i}" title="Remove">&times;</button>
-      </li>`)
-      .join("");
+    let html = "";
+    if (ingredients.length === 0) {
+      html += '<li class="ing-empty"><em>No ingredients yet. Type below to add.</em></li>';
+    } else {
+      html += ingredients
+        .map((ing, i) => `<li data-ing-idx="${i}">
+          <span class="ing-drag-handle">&#x283F;</span>
+          <input class="ing-edit ing-qty" data-ing-idx="${i}" data-ing-field="quantity" value="${escapeAttr(ing.quantity)}" placeholder="qty" />
+          <input class="ing-edit ing-unit" data-ing-idx="${i}" data-ing-field="unit" value="${escapeAttr(ing.unit)}" placeholder="unit" />
+          <input class="ing-edit ing-text" data-ing-idx="${i}" data-ing-field="item" value="${escapeAttr(ing.item)}" placeholder="ingredient" />
+          <button data-delete-ing="${i}" title="Remove">&times;</button>
+        </li>`)
+        .join("");
+    }
+    // Ghost row for adding
+    html += `<li class="ing-ghost">
+      <span class="ing-drag-handle" style="visibility:hidden">&#x283F;</span>
+      <input class="ing-edit ing-qty" data-ghost="true" data-ing-field="quantity" value="" placeholder="qty" />
+      <input class="ing-edit ing-unit" data-ghost="true" data-ing-field="unit" value="" placeholder="unit" />
+      <input class="ing-edit ing-text" data-ghost="true" data-ing-field="item" value="" placeholder="add ingredient..." />
+    </li>`;
+    ingredientsList.innerHTML = html;
 
+    // Restore focus
     if (focusKey) {
       const [idx, field] = focusKey.split(":");
-      const el = ingredientsList.querySelector(`[data-ing-idx="${idx}"][data-ing-field="${field}"]`) as HTMLInputElement;
+      const el = ingredientsList.querySelector(`[data-ing-idx="${idx}"][data-ing-field="${field}"]:not([data-ghost])`) as HTMLInputElement;
+      if (el) { el.focus(); el.setSelectionRange(focusPos, focusPos); }
+    } else if (ghostFocusField) {
+      const el = ingredientsList.querySelector(`.ing-ghost [data-ing-field="${ghostFocusField}"]`) as HTMLInputElement;
       if (el) { el.focus(); el.setSelectionRange(focusPos, focusPos); }
     }
   } else {
-    ingredientsList.innerHTML = ingredients
-      .map((ing) => `<li>
-        <span class="ing-qty">${escapeHtml(ing.quantity)}</span>
-        <span class="ing-unit">${escapeHtml(ing.unit)}</span>
-        <span class="ing-text">${escapeHtml(ing.item)}</span>
-      </li>`)
-      .join("");
+    // View mode with check-off and scaling
+    if (ingredients.length === 0) {
+      ingredientsList.innerHTML = '<li class="ing-empty"><em>No ingredients.</em></li>';
+    } else {
+      ingredientsList.innerHTML = ingredients
+        .map((ing, i) => {
+          const checked = checkedIngredients.has(i);
+          return `<li data-ing-idx="${i}" class="${checked ? "ing-checked" : ""}">
+            <span class="ing-check"></span>
+            <span class="ing-qty">${scaleQtyHtml(ing.quantity)}</span>
+            <span class="ing-unit">${escapeHtml(ing.unit)}</span>
+            <span class="ing-text">${escapeHtml(ing.item)}</span>
+          </li>`;
+        })
+        .join("");
+    }
+    updateScaleDisplay();
   }
 }
 

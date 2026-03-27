@@ -201,15 +201,14 @@
 
           <div class="section-header">
             <h3>Ingredients</h3>
-            <button id="add-ingredient-btn" class="sm" hidden aria-label="Add ingredient">+ Add</button>
+          </div>
+          <div id="ingredient-scale-bar" class="scale-bar" hidden>
+            <button class="scale-btn" data-scale="decrease" aria-label="Decrease servings">&minus;</button>
+            <span id="scale-display"></span>
+            <button class="scale-btn" data-scale="increase" aria-label="Increase servings">+</button>
+            <button class="scale-btn scale-reset" data-scale="reset">Reset</button>
           </div>
           <ul id="ingredients-list"></ul>
-          <form id="ingredient-form" class="ingredient-form">
-            <div><label for="ing-qty">Qty</label><input type="text" id="ing-qty" placeholder="2" /></div>
-            <div><label for="ing-unit">Unit</label><input type="text" id="ing-unit" placeholder="cups" /></div>
-            <div><label for="ing-item">Ingredient</label><input type="text" id="ing-item" placeholder="flour" required /></div>
-            <button type="submit">Add</button>
-          </form>
 
           <div class="section-header"><h3>Instructions</h3></div>
           <div id="editor-container" class="editor-wrap" hidden></div>

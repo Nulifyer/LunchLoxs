@@ -43,7 +43,7 @@ export async function selectRecipe(id: string) {
     meta?.cookMinutes ? `${meta.cookMinutes}m cook` : "",
     ...(meta?.tags ?? []),
   ].filter(Boolean).join(" · ");
-  openRecipe(contentStore, title, metaText, canEditActiveBook(), meta?.updatedAt, activeBook?.name);
+  openRecipe(contentStore, title, metaText, canEditActiveBook(), meta?.updatedAt, activeBook?.name, meta?.servings ? parseInt(String(meta.servings)) : undefined);
   // Prioritize this recipe for vector indexing (if stale)
   import("../lib/vector-search").then(({ enqueueRecipe }) => enqueueRecipe(activeBook.vaultId, id, "high")).catch(() => {});
 }
