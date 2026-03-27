@@ -77,6 +77,7 @@ self.addEventListener("fetch", (event) => {
 
 self.addEventListener("message", (event) => {
   if (event.data === "check-update") checkForUpdate();
+  if (event.data === "visibility-visible") checkForUpdate();
 });
 
 function startVersionCheck() {

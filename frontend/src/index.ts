@@ -45,4 +45,10 @@ if ("serviceWorker" in navigator) {
       banner.appendChild(btn); document.body.prepend(banner);
     }
   });
+  // Check for updates when the user returns to the tab (mobile can suspend for hours)
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      navigator.serviceWorker.controller?.postMessage("visibility-visible");
+    }
+  });
 }
