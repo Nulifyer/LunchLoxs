@@ -261,6 +261,7 @@ export function logout() {
   getSigningKeyCache().clear();
   // Clear stale UI so it doesn't flash for the next user
   clearAppUI();
+  setLoginMode(false); // Reset to login tab
   loginSection.hidden = false; appSection.hidden = true;
 }
 

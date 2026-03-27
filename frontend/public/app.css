@@ -898,8 +898,7 @@ dialog label:not(.sr-only)+select {
   width: 3px;
   height: 3px;
   border-radius: 50%;
-  background: var(--muted);
-  opacity: 0.5;
+  background: var(--subtle);
 }
 
 .sync-progress.synced { color: var(--green); }
@@ -994,6 +993,11 @@ dialog label:not(.sr-only)+select {
 .login-tab.active {
   color: var(--accent);
   border-bottom-color: var(--accent);
+}
+
+.login-tab:disabled {
+  cursor: default;
+  background: none;
 }
 
 .login-card p {
