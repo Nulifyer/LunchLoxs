@@ -91,7 +91,9 @@ const DENSITIES: [string[], number][] = [
   // Cotswold Flour: 3 g/tsp = 144 g/cup
   [["cinnamon", "ground cinnamon"], 144],
   // Cotswold Flour: 6 g/tsp = 288 g/cup
-  [["salt", "table salt", "fine salt", "sea salt", "kosher salt"], 288],
+  [["salt", "table salt", "fine salt", "sea salt", "fine sea salt"], 288],
+  // Morton's kosher salt ~140 g/cup (coarser grain, less dense)
+  [["kosher salt", "coarse salt"], 140],
 
   // -- Dairy --
   // King Arthur: 245 g/cup (close to water)
@@ -150,6 +152,27 @@ export interface DensityMatch {
   matchedAs: string;
 }
 
+// Pre-computed candidates sorted by keyword length descending (most specific first),
+// with pre-compiled regex patterns. Built once at module load.
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const CANDIDATES: { pattern: RegExp; gramsPerCup: number; keyword: string }[] = (() => {
+  const list: { keyword: string; gramsPerCup: number }[] = [];
+  for (const [keywords, gramsPerCup] of DENSITIES) {
+    for (const kw of keywords) {
+      list.push({ keyword: kw, gramsPerCup });
+    }
+  }
+  list.sort((a, b) => b.keyword.length - a.keyword.length);
+  return list.map(({ keyword, gramsPerCup }) => ({
+    pattern: new RegExp(`\\b${escapeRegex(keyword)}\\b`, "i"),
+    gramsPerCup,
+    keyword,
+  }));
+})();
+
 /**
  * Look up density for an ingredient name.
  * Matches if any keyword is found as a whole word in the item text.
@@ -159,28 +182,12 @@ export interface DensityMatch {
 export function findDensity(item: string): DensityMatch | null {
   if (!item) return null;
   const lower = item.toLowerCase();
-
-  // Build candidates sorted by keyword length descending (most specific first)
-  const candidates: { keyword: string; gramsPerCup: number }[] = [];
-  for (const [keywords, gramsPerCup] of DENSITIES) {
-    for (const kw of keywords) {
-      candidates.push({ keyword: kw, gramsPerCup });
-    }
-  }
-  candidates.sort((a, b) => b.keyword.length - a.keyword.length);
-
-  for (const { keyword, gramsPerCup } of candidates) {
-    // Whole-word match to avoid "flour" matching "cauliflower"
-    const pattern = new RegExp(`\\b${escapeRegex(keyword)}\\b`, "i");
+  for (const { pattern, gramsPerCup, keyword } of CANDIDATES) {
     if (pattern.test(lower)) {
       return { gramsPerMl: gramsPerCup / ML_PER_CUP, matchedAs: keyword };
     }
   }
   return null;
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
@@ -201,4 +208,44 @@ export function volumeToWeight(volumeMl: number, density: DensityMatch): number 
  */
 export function weightToVolume(grams: number, density: DensityMatch): number {
   return Math.round((grams / density.gramsPerMl) * 100) / 100;
+}
+
+/** Unit divisors for density-based conversions. Shared between picker and renderer. */
+export const WEIGHT_UNITS: [string, number][] = [["g", 1], ["kg", 1000], ["oz", 28.3495], ["lb", 453.592]];
+export const VOLUME_UNITS: [string, number][] = [["tsp", 4.929], ["tbsp", 14.787], ["cup", 236.588], ["ml", 1], ["l", 1000]];
+
+export interface DensityConversion {
+  qty: number;
+  unit: string; // prefixed with ~ for display
+}
+
+/**
+ * Convert a quantity+unit via ingredient density (volume<->weight).
+ * @param qty - the numeric quantity (already scaled)
+ * @param fromUnitToBase - the source unit's toBase factor (mL or g)
+ * @param fromDimension - "volume" or "weight"
+ * @param targetUnit - the target unit canonical name (without ~ prefix)
+ * @param density - from findDensity()
+ * @returns the converted result, or null if target unit is invalid
+ */
+export function convertViaDensity(
+  qty: number,
+  fromUnitToBase: number,
+  fromDimension: "volume" | "weight",
+  targetUnit: string,
+  density: DensityMatch,
+): DensityConversion | null {
+  if (fromDimension === "volume") {
+    const volumeMl = qty * fromUnitToBase;
+    const grams = volumeToWeight(volumeMl, density);
+    const divisor = WEIGHT_UNITS.find(([u]) => u === targetUnit)?.[1];
+    if (!divisor) return null;
+    return { qty: Math.round(grams / divisor * 10) / 10, unit: `~${targetUnit}` };
+  } else {
+    const grams = qty * fromUnitToBase;
+    const volumeMl = weightToVolume(grams, density);
+    const divisor = VOLUME_UNITS.find(([u]) => u === targetUnit)?.[1];
+    if (!divisor) return null;
+    return { qty: Math.round(volumeMl / divisor * 10) / 10, unit: `~${targetUnit}` };
+  }
 }

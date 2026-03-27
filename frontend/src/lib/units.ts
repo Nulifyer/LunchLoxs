@@ -36,10 +36,11 @@ const UNIT_DEFS: UnitDef[] = [
   { canonical: "dl",    dimension: "volume", system: "metric",   toBase: 100 },
   { canonical: "l",     dimension: "volume", system: "metric",   toBase: 1000 },
 
+  { canonical: "stick", dimension: "volume", system: "imperial", toBase: 118.294, sourceOnly: true }, // 1 stick butter = 1/2 cup = 8 tbsp
+
   // Imperial weight
   { canonical: "oz",    dimension: "weight", system: "imperial", toBase: 28.3495 },
   { canonical: "lb",    dimension: "weight", system: "imperial", toBase: 453.592 },
-  { canonical: "stick", dimension: "volume", system: "imperial", toBase: 118.294, sourceOnly: true }, // 1 stick butter = 1/2 cup = 8 tbsp
 
   // Metric weight
   { canonical: "g",     dimension: "weight", system: "metric",   toBase: 1 },

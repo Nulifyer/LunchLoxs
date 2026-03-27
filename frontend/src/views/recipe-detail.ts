@@ -16,7 +16,7 @@ import DOMPurify from "dompurify";
 import { createDropdown } from "../lib/dropdown";
 import { parseQty, formatQty, scaleQty } from "../lib/quantity";
 import { convertIngredient, convertToUnit, resolveUnit, getConversionTargets, type UnitSystem } from "../lib/units";
-import { findDensity, volumeToWeight, weightToVolume } from "../lib/densities";
+import { findDensity, convertViaDensity, WEIGHT_UNITS, VOLUME_UNITS } from "../lib/densities";
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
@@ -161,6 +161,8 @@ export function initRecipeDetail(cb: DetailCallbacks) {
   // -- Per-ingredient unit picker (right-click / long-press) --
   let longPressTimer: ReturnType<typeof setTimeout> | null = null;
   let longPressTarget: HTMLElement | null = null;
+  let longPressOriginX = 0;
+  let longPressOriginY = 0;
 
   function showUnitPicker(unitSpan: HTMLElement, x: number, y: number) {
     const li = unitSpan.closest("li") as HTMLElement;
@@ -218,23 +220,11 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     const unitDef = resolveUnit(rawUnit);
     const density = findDensity(itemName);
     if (density && unitDef && scaledNum !== null) {
-      const isVolume = unitDef.dimension === "volume";
-      if (isVolume) {
-        const volumeMl = scaledNum * unitDef.toBase;
-        const grams = volumeToWeight(volumeMl, density);
-        for (const [unit, divisor] of [["g", 1], ["kg", 1000], ["oz", 28.3495], ["lb", 453.592]] as const) {
-          const val = Math.round(grams / divisor * 10) / 10;
-          if (val < 0.1 || val > 999) continue;
-          entries.push({ qty: val, label: `~${formatQty(val)} ${unit}`, overrideKey: `~${unit}`, group: "density" });
-        }
-      } else {
-        const grams = scaledNum * unitDef.toBase;
-        const volumeMl = weightToVolume(grams, density);
-        for (const [unit, divisor] of [["tsp", 4.929], ["tbsp", 14.787], ["cup", 236.588], ["ml", 1], ["l", 1000]] as const) {
-          const val = Math.round(volumeMl / divisor * 10) / 10;
-          if (val < 0.1 || val > 999) continue;
-          entries.push({ qty: val, label: `~${formatQty(val)} ${unit}`, overrideKey: `~${unit}`, group: "density" });
-        }
+      const targetUnits = unitDef.dimension === "volume" ? WEIGHT_UNITS : VOLUME_UNITS;
+      for (const [unit] of targetUnits) {
+        const result = convertViaDensity(scaledNum, unitDef.toBase, unitDef.dimension, unit, density);
+        if (!result || result.qty < 0.1 || result.qty > 999) continue;
+        entries.push({ qty: result.qty, label: `~${formatQty(result.qty)} ${unit}`, overrideKey: `~${unit}`, group: "density" });
       }
     }
 
@@ -334,6 +324,8 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     if (!rawUnit || !resolveUnit(rawUnit)) return;
 
     longPressTarget = unitSpan;
+    longPressOriginX = e.clientX;
+    longPressOriginY = e.clientY;
     longPressTimer = setTimeout(() => {
       longPressTimer = null;
       showUnitPicker(unitSpan, e.clientX, e.clientY);
@@ -347,11 +339,10 @@ export function initRecipeDetail(cb: DetailCallbacks) {
 
   ingredientsList.addEventListener("pointermove", (e) => {
     if (longPressTimer && longPressTarget) {
-      // Cancel if finger moves too far
-      const t = longPressTarget.getBoundingClientRect();
-      const dx = e.clientX - (t.left + t.width / 2);
-      const dy = e.clientY - (t.top + t.height / 2);
-      if (Math.sqrt(dx * dx + dy * dy) > 20) {
+      // Cancel if finger moves too far from initial press point
+      const dx = e.clientX - longPressOriginX;
+      const dy = e.clientY - longPressOriginY;
+      if (dx * dx + dy * dy > 400) { // 20px radius
         clearTimeout(longPressTimer);
         longPressTimer = null;
         longPressTarget = null;
@@ -498,7 +489,15 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     else if (action === "decrease" && currentServings > 1) currentServings--;
     else if (action === "double") currentServings *= 2;
     else if (action === "half" && currentServings > 1) currentServings = Math.max(1, Math.round(currentServings / 2));
-    else if (action === "reset") { currentServings = baseServings; checkedIngredients.clear(); }
+    else if (action === "reset") {
+      currentServings = baseServings;
+      checkedIngredients.clear();
+      unitOverrides.clear();
+      unitSystem = "original";
+      localStorage.setItem("unit-system", unitSystem);
+      unitToggleBtn.textContent = UNIT_LABELS[unitSystem];
+      unitToggleBtn.dataset.unitSystem = unitSystem;
+    }
     scaleFactor = currentServings / baseServings;
     updateScaleDisplay();
     if (store) renderIngredients(store.getDoc());
@@ -537,7 +536,7 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
   // Reset ingredient UI state
   checkedIngredients.clear();
   unitOverrides.clear();
-  baseServings = servings ?? 4;
+  baseServings = servings || 4;
   currentServings = baseServings;
   scaleFactor = 1;
   store = recipeStore;
@@ -852,9 +851,6 @@ function updateScaleDisplay() {
   scaleBar.classList.toggle("scaled", currentServings !== baseServings);
 }
 
-function scaleQtyHtml(raw: string): string {
-  return escapeHtml(scaleQty(raw, scaleFactor));
-}
 
 function renderIngredients(doc: RecipeContent) {
   const ingredients = doc.ingredients ?? [];
@@ -920,22 +916,10 @@ function renderIngredients(doc: RecipeContent) {
             if (overrideUnit?.startsWith("~")) {
               // Density-based cross-dimension conversion
               const targetUnit = overrideUnit.slice(1);
-              const unitDef = resolveUnit(ing.unit);
-              const density = findDensity(ing.item);
-              if (unitDef && density) {
-                if (unitDef.dimension === "volume") {
-                  const volumeMl = scaledNum * unitDef.toBase;
-                  const grams = volumeToWeight(volumeMl, density);
-                  const targetDef: Record<string, number> = { g: 1, kg: 1000, oz: 28.3495, lb: 453.592 };
-                  const divisor = targetDef[targetUnit];
-                  if (divisor) result = { qty: Math.round(grams / divisor * 10) / 10, unit: `~${targetUnit}` };
-                } else {
-                  const grams = scaledNum * unitDef.toBase;
-                  const volumeMl = weightToVolume(grams, density);
-                  const targetDef: Record<string, number> = { tsp: 4.929, tbsp: 14.787, cup: 236.588, ml: 1, l: 1000 };
-                  const divisor = targetDef[targetUnit];
-                  if (divisor) result = { qty: Math.round(volumeMl / divisor * 10) / 10, unit: `~${targetUnit}` };
-                }
+              const ud = resolveUnit(ing.unit);
+              const den = findDensity(ing.item);
+              if (ud && den) {
+                result = convertViaDensity(scaledNum, ud.toBase, ud.dimension, targetUnit, den);
               }
             } else if (overrideUnit) {
               result = convertToUnit(scaledNum, ing.unit, overrideUnit);
