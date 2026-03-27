@@ -109,6 +109,7 @@ export class SyncClient {
   private heartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
   private onlineHandler: (() => void) | null = null;
   private offlineHandler: (() => void) | null = null;
+  private visibilityHandler: (() => void) | null = null;
 
   /** Pending user lookup promises keyed by target user ID */
   private lookupResolvers = new Map<string, {
@@ -571,13 +572,16 @@ export class SyncClient {
     };
     this.onlineHandler = probe;
     this.offlineHandler = probe;
+    this.visibilityHandler = () => { if (document.visibilityState === "visible") probe(); };
     window.addEventListener("online", this.onlineHandler);
     window.addEventListener("offline", this.offlineHandler);
+    document.addEventListener("visibilitychange", this.visibilityHandler);
   }
 
   private unlistenBrowserEvents(): void {
     if (this.onlineHandler) { window.removeEventListener("online", this.onlineHandler); this.onlineHandler = null; }
     if (this.offlineHandler) { window.removeEventListener("offline", this.offlineHandler); this.offlineHandler = null; }
+    if (this.visibilityHandler) { document.removeEventListener("visibilitychange", this.visibilityHandler); this.visibilityHandler = null; }
   }
 
   /** Resolve the encryption key for a doc. Vault-scoped docs use getDocKey. */

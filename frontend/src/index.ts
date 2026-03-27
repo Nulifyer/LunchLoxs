@@ -45,10 +45,16 @@ if ("serviceWorker" in navigator) {
       banner.appendChild(btn); document.body.prepend(banner);
     }
   });
-  // Check for updates when the user returns to the tab (mobile can suspend for hours)
+  // Check for updates when the user returns to the tab/app
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       navigator.serviceWorker.controller?.postMessage("visibility-visible");
+      // Also trigger the browser's built-in SW update check
+      navigator.serviceWorker.getRegistration().then((reg) => reg?.update());
     }
+  });
+  // Check on first load once the SW is ready
+  navigator.serviceWorker.ready.then((reg) => {
+    reg.active?.postMessage("check-update");
   });
 }

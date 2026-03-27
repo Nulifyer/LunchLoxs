@@ -20,9 +20,8 @@ import type { RecipeCatalog, RecipeContent, Book } from "../types";
 
 export async function selectRecipe(id: string) {
   const docMgr = getDocMgr();
-  const syncClient = getSyncClient();
   const activeBook = getActiveBook();
-  if (!docMgr || !syncClient || !activeBook) return;
+  if (!docMgr || !activeBook) return;
   log("[selectRecipe]", id);
   const accountPage = document.getElementById("account-page") as HTMLElement;
   const appShell = document.getElementById("app-shell") as HTMLElement;
@@ -34,7 +33,7 @@ export async function selectRecipe(id: string) {
   const contentStore = await docMgr.open<RecipeContent>(contentDocId, (doc) => {
     doc.description = ""; doc.ingredients = []; doc.instructions = ""; doc.imageUrls = []; doc.notes = "";
   });
-  await syncClient.subscribe(contentDocId);
+  getSyncClient()?.subscribe(contentDocId);
   const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
   const meta = catalog?.getDoc()?.recipes?.find((r: any) => r.id === id);
   const title = meta?.title ?? "Untitled";
