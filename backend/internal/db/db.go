@@ -229,6 +229,13 @@ func (q *Queries) GetVaultMemberIDs(ctx context.Context, vaultID string) ([]stri
 	})
 }
 
+// GetAuthHash returns a user's current auth hash for re-authentication checks.
+func (q *Queries) GetAuthHash(ctx context.Context, userID string) (string, error) {
+	var hash string
+	err := q.pool.QueryRow(ctx, `SELECT auth_hash FROM users WHERE user_id = $1`, userID).Scan(&hash)
+	return hash, err
+}
+
 // UpdateAuthHash updates a user's auth hash (for password change).
 func (q *Queries) UpdateAuthHash(ctx context.Context, userID, newAuthHash string) error {
 	_, err := q.pool.Exec(ctx,

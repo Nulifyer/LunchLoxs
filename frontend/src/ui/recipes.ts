@@ -93,10 +93,12 @@ export function initRecipes() {
 
   /** Debounced: update the recipe's updatedAt in the catalog after content edits. */
   function touchUpdatedAt() {
+    const targetRid = getSelectedRecipeId();
     if (touchTimer) clearTimeout(touchTimer);
     touchTimer = setTimeout(() => {
       touchTimer = null;
       const rid = getSelectedRecipeId();
+      if (rid !== targetRid) return; // recipe changed during debounce, skip
       const activeBook = getActiveBook();
       const docMgr = getDocMgr();
       if (!rid || !activeBook || !docMgr) return;

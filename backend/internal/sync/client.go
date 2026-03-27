@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -11,6 +12,11 @@ import (
 
 	"github.com/kyle/recipepwa/backend/internal/db"
 )
+
+// dbCtx wraps a parent context with a 5-second timeout for database operations.
+func dbCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, 5*time.Second)
+}
 
 const (
 	writeWait    = 10 * time.Second
@@ -42,6 +48,10 @@ type Client struct {
 	Rate     RateConfig
 	tokens   int
 	lastTick time.Time
+
+	// Ping flood detection
+	lastPingTime time.Time
+	pingCount    int
 
 	enqueue chan []byte   // producers write here; queuePump moves to Send
 	done    chan struct{} // closed when connection tears down
@@ -84,6 +94,7 @@ type ClientMessage struct {
 	UserID      string          `json:"user_id,omitempty"`
 	DeviceID    string          `json:"device_id,omitempty"`
 	AuthHash    string          `json:"auth_hash,omitempty"`
+	OldAuthHash string          `json:"old_auth_hash,omitempty"`
 	NewAuthHash string          `json:"new_auth_hash,omitempty"`
 	IsSignup    bool            `json:"is_signup,omitempty"`
 	WrappedKey  string          `json:"wrapped_key,omitempty"`
@@ -184,8 +195,19 @@ func (c *Client) ReadPump(ctx context.Context) {
 			continue
 		}
 
-		// Heartbeat pings bypass rate limiting
+		// Heartbeat pings bypass rate limiting but are flood-protected
 		if msg.Type == "ping" {
+			now := time.Now()
+			if now.Sub(c.lastPingTime) < time.Second {
+				c.pingCount++
+				if c.pingCount > 5 {
+					slog.Warn("ping flood, dropping connection", "device", c.DeviceID)
+					return
+				}
+			} else {
+				c.pingCount = 0
+			}
+			c.lastPingTime = now
 			c.sendJSON(ServerMessage{Type: "pong"})
 			continue
 		}
@@ -341,7 +363,9 @@ func (c *Client) handleConnect(ctx context.Context, msg ClientMessage) {
 
 	// Auth check with minimum 2s duration to prevent timing-based enumeration
 	start := time.Now()
-	authResult, err := c.Queries.UpsertUser(ctx, msg.UserID, msg.AuthHash, msg.IsSignup)
+	dCtx, dCancel := dbCtx(ctx)
+	authResult, err := c.Queries.UpsertUser(dCtx, msg.UserID, msg.AuthHash, msg.IsSignup)
+	dCancel()
 	if elapsed := time.Since(start); elapsed < 2*time.Second {
 		time.Sleep(2*time.Second - elapsed)
 	}
@@ -366,12 +390,16 @@ func (c *Client) handleConnect(ctx context.Context, msg ClientMessage) {
 
 	// Store wrapped master key if provided (first device)
 	if msg.WrappedKey != "" && (authResult.IsNew || authResult.WrappedMasterKey == nil) {
-		if err := c.Queries.SetWrappedMasterKey(ctx, msg.UserID, []byte(msg.WrappedKey)); err != nil {
+		dCtx2, dCancel2 := dbCtx(ctx)
+		if err := c.Queries.SetWrappedMasterKey(dCtx2, msg.UserID, []byte(msg.WrappedKey)); err != nil {
 			slog.Error("failed to store wrapped key", "error", err)
 		}
+		dCancel2()
 	}
 
-	if err := c.Queries.UpsertDevice(ctx, msg.DeviceID, msg.UserID); err != nil {
+	dCtx3, dCancel3 := dbCtx(ctx)
+	defer dCancel3()
+	if err := c.Queries.UpsertDevice(dCtx3, msg.DeviceID, msg.UserID); err != nil {
 		c.sendError("device registration failed")
 		slog.Error("device register error", "error", err)
 		return
@@ -393,12 +421,12 @@ func (c *Client) handleConnect(ctx context.Context, msg ClientMessage) {
 		connMsg.SigningPublicKey = string(authResult.SigningPublicKey)
 	}
 	// Include wrapped private key so other devices can get it
-	wpk, _ := c.Queries.GetWrappedPrivateKey(ctx, msg.UserID)
+	wpk, _ := c.Queries.GetWrappedPrivateKey(dCtx3, msg.UserID)
 	if wpk != nil {
 		connMsg.WrappedPrivateKey = string(wpk)
 	}
 	// Include wrapped signing private key
-	wsk, _ := c.Queries.GetWrappedSigningPrivateKey(ctx, msg.UserID)
+	wsk, _ := c.Queries.GetWrappedSigningPrivateKey(dCtx3, msg.UserID)
 	if wsk != nil {
 		connMsg.WrappedSigningPrivateKey = string(wsk)
 	}
@@ -462,8 +490,11 @@ func (c *Client) handleSubscribe(ctx context.Context, msg ClientMessage) {
 		return
 	}
 
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+
 	// Vault-scoped authorization
-	if !c.checkVaultAccess(ctx, msg.DocID) {
+	if !c.checkVaultAccess(dCtx, msg.DocID) {
 		c.sendError("not a member of this vault")
 		return
 	}
@@ -474,9 +505,9 @@ func (c *Client) handleSubscribe(ctx context.Context, msg ClientMessage) {
 	var messages []db.SyncMessage
 	var err error
 	if vaultID := extractVaultID(msg.DocID); vaultID != "" {
-		messages, err = c.Queries.GetVaultMessagesSince(ctx, vaultID, msg.DocID, msg.LastSeq)
+		messages, err = c.Queries.GetVaultMessagesSince(dCtx, vaultID, msg.DocID, msg.LastSeq)
 	} else {
-		messages, err = c.Queries.GetMessagesSince(ctx, c.UserID, msg.DocID, msg.LastSeq)
+		messages, err = c.Queries.GetMessagesSince(dCtx, c.UserID, msg.DocID, msg.LastSeq)
 	}
 	if err != nil {
 		c.sendError("failed to fetch history")
@@ -521,8 +552,11 @@ func (c *Client) handlePush(ctx context.Context, msg ClientMessage) {
 		docID = "catalog" // backward compat
 	}
 
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+
 	// Vault-scoped authorization: need write access (owner or editor) to push
-	if !c.checkVaultWriteAccess(ctx, docID) {
+	if !c.checkVaultWriteAccess(dCtx, docID) {
 		c.sendJSON(ServerMessage{Type: "push_error", DocID: docID, Message: "insufficient permissions to write"})
 		return
 	}
@@ -532,9 +566,9 @@ func (c *Client) handlePush(ctx context.Context, msg ClientMessage) {
 	var seq int64
 	var err error
 	if vaultID != "" {
-		seq, err = c.Queries.StoreVaultMessage(ctx, vaultID, docID, c.UserID, c.DeviceID, []byte(msg.Payload))
+		seq, err = c.Queries.StoreVaultMessage(dCtx, vaultID, docID, c.UserID, c.DeviceID, []byte(msg.Payload))
 	} else {
-		seq, err = c.Queries.StoreMessage(ctx, c.UserID, docID, c.DeviceID, []byte(msg.Payload))
+		seq, err = c.Queries.StoreMessage(dCtx, c.UserID, docID, c.DeviceID, []byte(msg.Payload))
 	}
 	if err != nil {
 		c.sendJSON(ServerMessage{Type: "push_error", DocID: docID, Message: "failed to store message"})
@@ -544,11 +578,11 @@ func (c *Client) handlePush(ctx context.Context, msg ClientMessage) {
 
 	// Compact: keep only the latest snapshot
 	if vaultID != "" {
-		if err := c.Queries.CompactVaultDocument(ctx, vaultID, docID); err != nil {
+		if err := c.Queries.CompactVaultDocument(dCtx, vaultID, docID); err != nil {
 			slog.Error("compact error", "device", c.DeviceID, "doc", docID, "error", err)
 		}
 	} else {
-		if err := c.Queries.CompactDocument(ctx, c.UserID, docID); err != nil {
+		if err := c.Queries.CompactDocument(dCtx, c.UserID, docID); err != nil {
 			slog.Error("compact error", "device", c.DeviceID, "doc", docID, "error", err)
 		}
 	}
@@ -567,7 +601,10 @@ func (c *Client) handlePush(ctx context.Context, msg ClientMessage) {
 	})
 	if vaultID != "" {
 		// Broadcast to all vault members subscribed to this doc
-		memberIDs, _ := c.Queries.GetVaultMemberIDs(ctx, vaultID)
+		memberIDs, mErr := c.Queries.GetVaultMemberIDs(dCtx, vaultID)
+		if mErr != nil {
+			slog.Warn("failed to get member IDs for broadcast", "vault", vaultID, "error", mErr)
+		}
 		c.Hub.BroadcastVaultDoc(memberIDs, docID, c.DeviceID, relay)
 	} else {
 		c.Hub.BroadcastDoc(c.UserID, docID, c.DeviceID, relay)
@@ -583,7 +620,9 @@ func (c *Client) handleSetKey(ctx context.Context, msg ClientMessage) {
 		c.sendError("wrapped_key required")
 		return
 	}
-	if err := c.Queries.SetWrappedMasterKey(ctx, c.UserID, []byte(msg.WrappedKey)); err != nil {
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+	if err := c.Queries.SetWrappedMasterKey(dCtx, c.UserID, []byte(msg.WrappedKey)); err != nil {
 		c.sendError("failed to store key")
 		slog.Error("set key error", "device", c.DeviceID, "error", err)
 		return
@@ -597,7 +636,9 @@ func (c *Client) handlePurge(ctx context.Context) {
 		return
 	}
 
-	if err := c.Queries.PurgeUser(ctx, c.UserID); err != nil {
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+	if err := c.Queries.PurgeUser(dCtx, c.UserID); err != nil {
 		c.sendError("purge failed")
 		slog.Error("purge error", "device", c.DeviceID, "error", err)
 		return
@@ -614,19 +655,38 @@ func (c *Client) handleChangePassword(ctx context.Context, msg ClientMessage) {
 		c.sendError("must connect before changing password")
 		return
 	}
+	if msg.OldAuthHash == "" {
+		c.sendError("old_auth_hash required")
+		return
+	}
 	if msg.NewAuthHash == "" {
 		c.sendError("new_auth_hash required")
 		return
 	}
 
-	if err := c.Queries.UpdateAuthHash(ctx, c.UserID, msg.NewAuthHash); err != nil {
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+
+	// Verify old password before allowing change
+	storedHash, err := c.Queries.GetAuthHash(dCtx, c.UserID)
+	if err != nil {
+		c.sendError("password change failed")
+		slog.Error("get auth hash error", "device", c.DeviceID, "error", err)
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(storedHash), []byte(msg.OldAuthHash)) != 1 {
+		c.sendError("incorrect current password")
+		return
+	}
+
+	if err := c.Queries.UpdateAuthHash(dCtx, c.UserID, msg.NewAuthHash); err != nil {
 		c.sendError("password change failed")
 		slog.Error("change password error", "device", c.DeviceID, "error", err)
 		return
 	}
 
 	if msg.WrappedKey != "" {
-		if err := c.Queries.SetWrappedMasterKey(ctx, c.UserID, []byte(msg.WrappedKey)); err != nil {
+		if err := c.Queries.SetWrappedMasterKey(dCtx, c.UserID, []byte(msg.WrappedKey)); err != nil {
 			slog.Error("failed to update wrapped key", "device", c.DeviceID, "error", err)
 		}
 	}
@@ -674,12 +734,17 @@ func (c *Client) handleSetIdentity(ctx context.Context, msg ClientMessage) {
 		c.sendError("public_key and wrapped_private_key required")
 		return
 	}
-	if err := c.Queries.SetIdentityKeys(ctx, c.UserID, []byte(msg.PublicKey), []byte(msg.WrappedPrivateKey)); err != nil {
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+	if err := c.Queries.SetIdentityKeys(dCtx, c.UserID, []byte(msg.PublicKey), []byte(msg.WrappedPrivateKey)); err != nil {
 		c.sendError("failed to store identity keys")
 		slog.Error("set identity error", "device", c.DeviceID, "error", err)
 		return
 	}
 	c.sendJSON(ServerMessage{Type: "identity_stored"})
+	// Notify other devices of key change
+	relay, _ := json.Marshal(ServerMessage{Type: "identity_keys_changed"})
+	c.Hub.Broadcast(c.UserID, c.DeviceID, relay)
 }
 
 func (c *Client) handleSetSigningIdentity(ctx context.Context, msg ClientMessage) {
@@ -691,12 +756,17 @@ func (c *Client) handleSetSigningIdentity(ctx context.Context, msg ClientMessage
 		c.sendError("signing_public_key and wrapped_signing_private_key required")
 		return
 	}
-	if err := c.Queries.SetSigningKeys(ctx, c.UserID, []byte(msg.SigningPublicKey), []byte(msg.WrappedSigningPrivateKey)); err != nil {
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+	if err := c.Queries.SetSigningKeys(dCtx, c.UserID, []byte(msg.SigningPublicKey), []byte(msg.WrappedSigningPrivateKey)); err != nil {
 		c.sendError("failed to store signing identity keys")
 		slog.Error("set signing identity error", "device", c.DeviceID, "error", err)
 		return
 	}
 	c.sendJSON(ServerMessage{Type: "signing_identity_stored"})
+	// Notify other devices of key change
+	relay, _ := json.Marshal(ServerMessage{Type: "signing_keys_changed"})
+	c.Hub.Broadcast(c.UserID, c.DeviceID, relay)
 }
 
 // -- Vault handlers --
@@ -710,7 +780,9 @@ func (c *Client) handleCreateVault(ctx context.Context, msg ClientMessage) {
 		c.sendError("vault_id and encrypted_vault_key required")
 		return
 	}
-	if err := c.Queries.CreateVault(ctx, msg.VaultID, c.UserID, []byte(msg.EncryptedVaultKey), []byte(msg.SenderPublicKey)); err != nil {
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+	if err := c.Queries.CreateVault(dCtx, msg.VaultID, c.UserID, []byte(msg.EncryptedVaultKey), []byte(msg.SenderPublicKey)); err != nil {
 		c.sendError("failed to create vault")
 		slog.Error("create vault error", "device", c.DeviceID, "error", err)
 		return
@@ -727,7 +799,9 @@ func (c *Client) handleListVaults(ctx context.Context) {
 		c.sendError("must connect first")
 		return
 	}
-	vaults, err := c.Queries.ListVaults(ctx, c.UserID)
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+	vaults, err := c.Queries.ListVaults(dCtx, c.UserID)
 	if err != nil {
 		c.sendError("failed to list vaults")
 		slog.Error("list vaults error", "device", c.DeviceID, "error", err)
@@ -755,8 +829,11 @@ func (c *Client) handleInviteToVault(ctx context.Context, msg ClientMessage) {
 		return
 	}
 
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+
 	// Check inviter is owner/editor of this vault
-	isMember, role, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	isMember, role, err := c.Queries.IsVaultMember(dCtx, msg.VaultID, c.UserID)
 	if err != nil || !isMember {
 		c.sendError("not a member of this vault")
 		return
@@ -767,7 +844,7 @@ func (c *Client) handleInviteToVault(ctx context.Context, msg ClientMessage) {
 	}
 
 	// Check target user exists (only need the first return value for existence check)
-	pk, _, err := c.Queries.LookupUserByID(ctx, msg.TargetUserID)
+	pk, _, err := c.Queries.LookupUserByID(dCtx, msg.TargetUserID)
 	if err != nil || pk == nil {
 		c.sendError("target user not found")
 		return
@@ -782,7 +859,7 @@ func (c *Client) handleInviteToVault(ctx context.Context, msg ClientMessage) {
 		return
 	}
 
-	if err := c.Queries.AddVaultMember(ctx, msg.VaultID, msg.TargetUserID, []byte(msg.EncryptedVaultKey), []byte(msg.SenderPublicKey), inviteRole, c.UserID); err != nil {
+	if err := c.Queries.AddVaultMember(dCtx, msg.VaultID, msg.TargetUserID, []byte(msg.EncryptedVaultKey), []byte(msg.SenderPublicKey), inviteRole, c.UserID); err != nil {
 		c.sendError("failed to invite user")
 		slog.Error("invite error", "device", c.DeviceID, "error", err)
 		return
@@ -811,7 +888,10 @@ func (c *Client) handleRemoveFromVault(ctx context.Context, msg ClientMessage) {
 		return
 	}
 
-	isMember, role, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+
+	isMember, role, err := c.Queries.IsVaultMember(dCtx, msg.VaultID, c.UserID)
 	if err != nil || !isMember || role != "owner" {
 		c.sendError("only the owner can remove members")
 		return
@@ -824,13 +904,13 @@ func (c *Client) handleRemoveFromVault(ctx context.Context, msg ClientMessage) {
 	}
 
 	// Prevent removing the last owner
-	_, targetRole, err := c.Queries.IsVaultMember(ctx, msg.VaultID, msg.TargetUserID)
+	_, targetRole, err := c.Queries.IsVaultMember(dCtx, msg.VaultID, msg.TargetUserID)
 	if err != nil {
 		c.sendError("failed to check target member")
 		return
 	}
 	if targetRole == "owner" {
-		ownerCount, err := c.Queries.CountVaultOwners(ctx, msg.VaultID)
+		ownerCount, err := c.Queries.CountVaultOwners(dCtx, msg.VaultID)
 		if err != nil {
 			c.sendError("failed to count owners")
 			return
@@ -841,7 +921,7 @@ func (c *Client) handleRemoveFromVault(ctx context.Context, msg ClientMessage) {
 		}
 	}
 
-	if err := c.Queries.RemoveVaultMember(ctx, msg.VaultID, msg.TargetUserID); err != nil {
+	if err := c.Queries.RemoveVaultMember(dCtx, msg.VaultID, msg.TargetUserID); err != nil {
 		c.sendError("failed to remove member")
 		slog.Error("remove member error", "device", c.DeviceID, "error", err)
 		return
@@ -865,13 +945,16 @@ func (c *Client) handleListVaultMembers(ctx context.Context, msg ClientMessage) 
 		return
 	}
 
-	isMember, _, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+
+	isMember, _, err := c.Queries.IsVaultMember(dCtx, msg.VaultID, c.UserID)
 	if err != nil || !isMember {
 		c.sendError("not a member of this vault")
 		return
 	}
 
-	members, err := c.Queries.ListVaultMembers(ctx, msg.VaultID)
+	members, err := c.Queries.ListVaultMembers(dCtx, msg.VaultID)
 	if err != nil {
 		c.sendError("failed to list members")
 		slog.Error("list members error", "device", c.DeviceID, "error", err)
@@ -900,14 +983,20 @@ func (c *Client) handleDeleteVault(ctx context.Context, msg ClientMessage) {
 		return
 	}
 
-	isMember, role, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+
+	isMember, role, err := c.Queries.IsVaultMember(dCtx, msg.VaultID, c.UserID)
 	if err != nil || !isMember || role != "owner" {
 		c.sendError("only the owner can delete a vault")
 		return
 	}
 
 	// Notify all members before deleting
-	members, _ := c.Queries.ListVaultMembers(ctx, msg.VaultID)
+	members, mErr := c.Queries.ListVaultMembers(dCtx, msg.VaultID)
+	if mErr != nil {
+		slog.Warn("failed to list members for delete broadcast", "vault", msg.VaultID, "error", mErr)
+	}
 	for _, m := range members {
 		if m.UserID != c.UserID {
 			relay, _ := json.Marshal(ServerMessage{Type: "vault_deleted", VaultID: msg.VaultID})
@@ -915,7 +1004,7 @@ func (c *Client) handleDeleteVault(ctx context.Context, msg ClientMessage) {
 		}
 	}
 
-	if err := c.Queries.DeleteVault(ctx, msg.VaultID); err != nil {
+	if err := c.Queries.DeleteVault(dCtx, msg.VaultID); err != nil {
 		c.sendError("failed to delete vault")
 		slog.Error("delete vault error", "device", c.DeviceID, "error", err)
 		return
@@ -937,7 +1026,9 @@ func (c *Client) handleLookupUser(ctx context.Context, msg ClientMessage) {
 		c.sendError("target_user_id required")
 		return
 	}
-	pk, signingPk, err := c.Queries.LookupUserByID(ctx, msg.TargetUserID)
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+	pk, signingPk, err := c.Queries.LookupUserByID(dCtx, msg.TargetUserID)
 	if err != nil || pk == nil {
 		c.sendError("user not found or no public key")
 		return
@@ -959,14 +1050,17 @@ func (c *Client) handleTransferOwnership(ctx context.Context, msg ClientMessage)
 		return
 	}
 
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+
 	// Verify requester is owner
-	isMember, role, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	isMember, role, err := c.Queries.IsVaultMember(dCtx, msg.VaultID, c.UserID)
 	if err != nil || !isMember || role != "owner" {
 		c.sendError("only the owner can transfer ownership")
 		return
 	}
 
-	if err := c.Queries.TransferOwnership(ctx, msg.VaultID, c.UserID, msg.TargetUserID); err != nil {
+	if err := c.Queries.TransferOwnership(dCtx, msg.VaultID, c.UserID, msg.TargetUserID); err != nil {
 		c.sendError("failed to transfer ownership")
 		slog.Error("transfer ownership error", "device", c.DeviceID, "error", err)
 		return
@@ -1000,8 +1094,11 @@ func (c *Client) handleChangeRole(ctx context.Context, msg ClientMessage) {
 		return
 	}
 
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+
 	// Verify requester is owner
-	isMember, role, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	isMember, role, err := c.Queries.IsVaultMember(dCtx, msg.VaultID, c.UserID)
 	if err != nil || !isMember || role != "owner" {
 		c.sendError("only the owner can change roles")
 		return
@@ -1014,13 +1111,13 @@ func (c *Client) handleChangeRole(ctx context.Context, msg ClientMessage) {
 	}
 
 	// Prevent demoting the last owner
-	_, targetRole, err := c.Queries.IsVaultMember(ctx, msg.VaultID, msg.TargetUserID)
+	_, targetRole, err := c.Queries.IsVaultMember(dCtx, msg.VaultID, msg.TargetUserID)
 	if err != nil {
 		c.sendError("target user is not a member")
 		return
 	}
 	if targetRole == "owner" && msg.NewRole != "owner" {
-		ownerCount, err := c.Queries.CountVaultOwners(ctx, msg.VaultID)
+		ownerCount, err := c.Queries.CountVaultOwners(dCtx, msg.VaultID)
 		if err != nil {
 			c.sendError("failed to count owners")
 			return
@@ -1031,7 +1128,7 @@ func (c *Client) handleChangeRole(ctx context.Context, msg ClientMessage) {
 		}
 	}
 
-	if err := c.Queries.ChangeRole(ctx, msg.VaultID, msg.TargetUserID, msg.NewRole); err != nil {
+	if err := c.Queries.ChangeRole(dCtx, msg.VaultID, msg.TargetUserID, msg.NewRole); err != nil {
 		c.sendError("failed to change role")
 		slog.Error("change role error", "device", c.DeviceID, "error", err)
 		return
@@ -1060,11 +1157,32 @@ func (c *Client) handleRotateVaultKey(ctx context.Context, msg ClientMessage) {
 		return
 	}
 
+	dCtx, dCancel := dbCtx(ctx)
+	defer dCancel()
+
 	// Verify sender is owner
-	isMember, role, err := c.Queries.IsVaultMember(ctx, msg.VaultID, c.UserID)
+	isMember, role, err := c.Queries.IsVaultMember(dCtx, msg.VaultID, c.UserID)
 	if err != nil || !isMember || role != "owner" {
 		c.sendError("only the owner can rotate vault keys")
 		return
+	}
+
+	// Validate that all current members are included in the update
+	currentMembers, err := c.Queries.GetVaultMemberIDs(dCtx, msg.VaultID)
+	if err != nil {
+		c.sendError("failed to verify members")
+		slog.Error("rotate: member lookup error", "vault", msg.VaultID, "error", err)
+		return
+	}
+	updateUserIDs := make(map[string]struct{}, len(msg.VaultKeyUpdates))
+	for _, u := range msg.VaultKeyUpdates {
+		updateUserIDs[u.UserID] = struct{}{}
+	}
+	for _, uid := range currentMembers {
+		if _, ok := updateUserIDs[uid]; !ok {
+			c.sendError("vault_key_updates missing member")
+			return
+		}
 	}
 
 	// Convert wire format to DB format
@@ -1077,7 +1195,7 @@ func (c *Client) handleRotateVaultKey(ctx context.Context, msg ClientMessage) {
 		}
 	}
 
-	if err := c.Queries.RotateVaultKeys(ctx, msg.VaultID, updates); err != nil {
+	if err := c.Queries.RotateVaultKeys(dCtx, msg.VaultID, updates); err != nil {
 		c.sendError("failed to rotate vault keys")
 		slog.Error("rotate vault key error", "device", c.DeviceID, "vault", msg.VaultID, "error", err)
 		return
@@ -1086,7 +1204,10 @@ func (c *Client) handleRotateVaultKey(ctx context.Context, msg ClientMessage) {
 	slog.Info("vault key rotated", "vault", msg.VaultID, "user", c.UserID)
 
 	// Broadcast vault_key_rotated to all members
-	memberIDs, _ := c.Queries.GetVaultMemberIDs(ctx, msg.VaultID)
+	memberIDs, mErr := c.Queries.GetVaultMemberIDs(dCtx, msg.VaultID)
+	if mErr != nil {
+		slog.Warn("failed to get member IDs for rotation broadcast", "vault", msg.VaultID, "error", mErr)
+	}
 	relay, _ := json.Marshal(ServerMessage{Type: "vault_key_rotated", VaultID: msg.VaultID})
 	for _, uid := range memberIDs {
 		c.Hub.Broadcast(uid, "", relay)

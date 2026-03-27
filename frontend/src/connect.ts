@@ -153,7 +153,12 @@ export function createSyncConnection(
         } catch (e) { warn("[ws] failed to decrypt vault key for", vi.vaultId.slice(0, 8), e); }
       }
       const failed = vaultInfos.length - newBooks.length;
-      if (failed > 0) warn("[ws] vault key summary:", newBooks.length, "ok,", failed, "failed");
+      if (failed > 0) {
+        warn("[ws] vault key summary:", newBooks.length, "ok,", failed, "failed");
+        import("./lib/toast").then(({ toastWarning }) => {
+          toastWarning(`${failed} vault(s) could not be decrypted. You may need to be re-invited.`);
+        }).catch(() => {});
+      }
       // Reconcile: keep locally-created pending vaults that the server doesn't know about yet
       const serverVaultSet = new Set(newBooks.map((b) => b.vaultId));
       const docMgrCleanup = getDocMgr();

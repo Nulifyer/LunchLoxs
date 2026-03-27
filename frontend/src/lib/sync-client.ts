@@ -232,7 +232,11 @@ export class SyncClient {
         this.opts.onPasswordChanged?.();
         break;
 
-      case "password_change_ok":
+      case "password_change_ok": {
+        const pwResolver = this.confirmResolvers.get("password_change_ok");
+        if (pwResolver) pwResolver.resolve();
+        break;
+      }
       case "key_stored":
       case "identity_stored":
         break;
@@ -252,7 +256,7 @@ export class SyncClient {
         const vid = msg.vault_id ?? "";
         // Resolve the createVault() promise if this device initiated it
         const resolver = this.confirmResolvers.get(`vault_created:${vid}`);
-        if (resolver) resolver();
+        if (resolver) resolver.resolve();
         this.opts.onVaultCreated?.(vid);
         break;
       }
@@ -295,7 +299,7 @@ export class SyncClient {
       case "ownership_transferred": {
         // Resolve the transferOwnership() promise (server sends this instead of "transfer_ok")
         const transferResolver = this.confirmResolvers.get("transfer_ok");
-        if (transferResolver) transferResolver();
+        if (transferResolver) transferResolver.resolve();
         this.opts.onOwnershipTransferred?.(msg.vault_id ?? "", msg.target_user_id ?? "");
         break;
       }
@@ -307,7 +311,7 @@ export class SyncClient {
       case "role_changed": {
         // Resolve the changeRole() promise (server sends this instead of "role_change_ok")
         const roleResolver = this.confirmResolvers.get("role_change_ok");
-        if (roleResolver) roleResolver();
+        if (roleResolver) roleResolver.resolve();
         this.opts.onRoleChanged?.(msg.vault_id ?? "", msg.target_user_id ?? "", msg.new_role ?? "");
         break;
       }
@@ -318,7 +322,7 @@ export class SyncClient {
 
       case "vault_member_removed": {
         const resolver = this.confirmResolvers.get(msg.type);
-        if (resolver) resolver();
+        if (resolver) resolver.resolve();
         break;
       }
 
@@ -338,6 +342,10 @@ export class SyncClient {
           this.opts.onRateLimited?.(msg.retry_after_ms);
         } else {
           console.error("sync: server error:", msg.message);
+          // Reject any pending confirmation that might have caused this
+          for (const [key, pending] of this.confirmResolvers) {
+            pending.reject(new Error(msg.message ?? "Server error"));
+          }
           // Reject any pending lookup that might have caused this
           for (const [id, pending] of this.lookupResolvers) {
             clearTimeout(pending.timer);
@@ -393,8 +401,10 @@ export class SyncClient {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
-  changePassword(newAuthHash: string, wrappedKey: string): void {
-    this.sendMsg({ type: "change_password", new_auth_hash: newAuthHash, wrapped_key: wrappedKey });
+  changePassword(oldAuthHash: string, newAuthHash: string, wrappedKey: string): Promise<void> {
+    return this.awaitConfirmation("password_change_ok", () => {
+      this.sendMsg({ type: "change_password", old_auth_hash: oldAuthHash, new_auth_hash: newAuthHash, wrapped_key: wrappedKey });
+    });
   }
 
   // -- Vault operations --
@@ -459,11 +469,14 @@ export class SyncClient {
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.confirmResolvers.delete(confirmType); reject(new Error(`${confirmType} timed out`)); }, timeoutMs);
-      this.confirmResolvers.set(confirmType, () => { clearTimeout(timer); this.confirmResolvers.delete(confirmType); resolve(); });
+      this.confirmResolvers.set(confirmType, {
+        resolve: () => { clearTimeout(timer); this.confirmResolvers.delete(confirmType); resolve(); },
+        reject: (err: Error) => { clearTimeout(timer); this.confirmResolvers.delete(confirmType); reject(err); },
+      });
       send();
     });
   }
-  private confirmResolvers = new Map<string, () => void>();
+  private confirmResolvers = new Map<string, { resolve: () => void; reject: (err: Error) => void }>();
 
   setSigningIdentity(signingPublicKey: string, wrappedSigningPrivateKey: string): void {
     this.sendMsg({ type: "set_signing_identity", signing_public_key: signingPublicKey, wrapped_signing_private_key: wrappedSigningPrivateKey });

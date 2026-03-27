@@ -80,6 +80,11 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("message", (event) => {
   if (event.data === "check-update") checkForUpdate();
   if (event.data === "visibility-visible") checkForUpdate();
+  if (event.data === "check-update-status") {
+    checkForUpdateStatus().then((status) => {
+      event.source?.postMessage({ type: "update-status", ...status });
+    });
+  }
 });
 
 function startVersionCheck() {
@@ -120,6 +125,24 @@ async function checkForUpdate() {
     }
   } catch {
     // Offline or fetch failed
+  }
+}
+
+async function checkForUpdateStatus(): Promise<{ serverVersion: string; localVersion: string | null; updateAvailable: boolean }> {
+  try {
+    const res = await fetch("/version.json", { cache: "no-store" });
+    if (!res.ok) return { serverVersion: "unknown", localVersion: knownVersion, updateAvailable: false };
+    const { version } = await res.json();
+    const updateAvailable = knownVersion !== null && version !== knownVersion;
+    if (updateAvailable) {
+      // Trigger the full update flow (cache bust + notify)
+      await checkForUpdate();
+    } else if (knownVersion === null) {
+      knownVersion = version;
+    }
+    return { serverVersion: version, localVersion: knownVersion, updateAvailable };
+  } catch {
+    return { serverVersion: "offline", localVersion: knownVersion, updateAvailable: false };
   }
 }
 

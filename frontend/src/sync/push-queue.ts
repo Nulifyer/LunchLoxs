@@ -471,6 +471,7 @@ export class PushQueue {
     if (this.backoffTimer) return;
     this.backoffTimer = setTimeout(async () => {
       this.backoffTimer = null;
+      this.ratePaused = false;
       this.backoffMs = Math.min(this.backoffMs * 2, BACKOFF_MAX);
       await this.flushAllDirty();
     }, this.backoffMs);

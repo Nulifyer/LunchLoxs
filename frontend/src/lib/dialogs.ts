@@ -32,7 +32,24 @@ function showAndCleanup(dialog: HTMLDialogElement): void {
   backdrop.style.zIndex = "200";
   document.body.insertBefore(backdrop, dialog);
   dialog.show();
+  // Focus trap: cycle Tab/Shift+Tab within the dialog
+  const focusTrap = (e: KeyboardEvent) => {
+    if (e.key !== "Tab") return;
+    const focusable = dialog.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+    } else {
+      if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  };
+  dialog.addEventListener("keydown", focusTrap);
   const cleanup = () => {
+    dialog.removeEventListener("keydown", focusTrap);
     backdrop.remove();
     dialog.remove();
     document.body.style.overflow = "";

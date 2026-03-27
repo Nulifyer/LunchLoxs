@@ -97,7 +97,7 @@ export class AutomergeStore<T> {
   applyChange(change: Uint8Array): void {
     const [newDoc] = Automerge.applyChanges(this.doc, [change]);
     this.doc = newDoc;
-    this.persist();
+    this.enqueuePersist();
     this.notify();
   }
 
@@ -105,7 +105,7 @@ export class AutomergeStore<T> {
     if (changes.length === 0) return;
     const [newDoc] = Automerge.applyChanges(this.doc, changes);
     this.doc = newDoc;
-    this.persist();
+    this.enqueuePersist();
     this.notify();
   }
 
@@ -124,7 +124,7 @@ export class AutomergeStore<T> {
   merge(otherDoc: Uint8Array): void {
     const other = Automerge.load<T>(otherDoc);
     this.doc = Automerge.merge(this.doc, other);
-    this.persist();
+    this.enqueuePersist();
     this.notify();
   }
 
@@ -195,6 +195,13 @@ export class AutomergeStore<T> {
     const binary = Automerge.save(this.doc);
     const encrypted = await encrypt(binary, this.encKey);
     await putToDB(this.db, `doc:${this.docId}`, encrypted);
+  }
+
+  /** Enqueue a persist for remote changes (no dirty flag -- remote data shouldn't trigger a push). */
+  private enqueuePersist(): void {
+    this.pendingWrite = this.pendingWrite
+      .then(() => this.persist())
+      .catch((e) => console.error("persist failed:", e));
   }
 
   /** Enqueue a write so change() stays synchronous but writes are serialized and tracked. */

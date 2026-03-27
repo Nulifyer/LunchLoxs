@@ -31,13 +31,13 @@ export function openModal(dialog: HTMLDialogElement): void {
   // Close on backdrop click
   (backdrop as HTMLElement).onclick = () => closeModal(dialog);
 
-  // Close on ESC
-  const escHandler = (e: KeyboardEvent) => {
+  // Close on ESC (AbortController ensures cleanup even if openModal is called twice)
+  if ((dialog as any)._escAbort) (dialog as any)._escAbort.abort();
+  const ac = new AbortController();
+  (dialog as any)._escAbort = ac;
+  document.addEventListener("keydown", (e: KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); closeModal(dialog); }
-  };
-  dialog.setAttribute("data-esc-handler", "true");
-  document.addEventListener("keydown", escHandler);
-  (dialog as any)._escHandler = escHandler;
+  }, { signal: ac.signal });
 
   // Show dialog (non-modal, so it stays in normal DOM flow)
   dialog.show();
@@ -64,9 +64,9 @@ export function closeModal(dialog: HTMLDialogElement): void {
   }
 
   // Remove ESC handler
-  if ((dialog as any)._escHandler) {
-    document.removeEventListener("keydown", (dialog as any)._escHandler);
-    delete (dialog as any)._escHandler;
+  if ((dialog as any)._escAbort) {
+    (dialog as any)._escAbort.abort();
+    delete (dialog as any)._escAbort;
   }
 
   // Unlock body scroll if no other modals

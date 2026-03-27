@@ -58,7 +58,7 @@
           <input type="search" id="search-input" placeholder="Search recipes..." aria-label="Search recipes" />
           <span id="vector-spinner" class="vector-spinner" hidden></span>
         </div>
-        <ul id="search-results" class="search-results" role="listbox"></ul>
+        <ul id="search-results" class="search-results" role="listbox" aria-live="polite"></ul>
       </div>
 
       <div class="topbar-profile">
@@ -133,6 +133,8 @@
             <article>
               <header>Change Password</header>
               <form id="change-pw-form">
+                <label for="old-pw">Current password</label>
+                <input type="password" id="old-pw" required />
                 <label for="new-pw">New password</label>
                 <input type="password" id="new-pw" required />
                 <label for="confirm-pw">Confirm password</label>

@@ -80,16 +80,19 @@ export function initAccount() {
 
   changePwForm.addEventListener("submit", async (e) => {
     e.preventDefault(); pwError.hidden = true; pwSuccess.hidden = true;
+    const oldPw = (document.getElementById("old-pw") as HTMLInputElement).value;
     const newPw = (document.getElementById("new-pw") as HTMLInputElement).value;
     const confirmPw = (document.getElementById("confirm-pw") as HTMLInputElement).value;
+    if (!oldPw) { pwError.textContent = "Current password is required."; pwError.hidden = false; return; }
     if (newPw !== confirmPw) { pwError.textContent = "Passwords don't match."; pwError.hidden = false; return; }
     const username = getStoredUsername(); const syncClient = getSyncClient();
     if (!username || !syncClient) return;
     try {
-      const [nd, uid] = await Promise.all([deriveKeys(username, newPw), deriveUserId(username)]);
+      const [od, nd, uid] = await Promise.all([deriveKeys(username, oldPw), deriveKeys(username, newPw), deriveUserId(username)]);
       const session = getSessionKeys(); if (!session) return;
       const nw = await rewrapMasterKey(session.masterKey, nd.wrappingKey);
-      updateWrappedKey(uid, nw); syncClient.changePassword(nd.authHash, toBase64(nw));
+      updateWrappedKey(uid, nw);
+      await syncClient.changePassword(od.authHash, nd.authHash, toBase64(nw));
       pwSuccess.textContent = "Password changed."; pwSuccess.hidden = false; changePwForm.reset();
     } catch (e: any) { pwError.textContent = "Failed: " + (e.message ?? e); pwError.hidden = false; }
   });
@@ -127,14 +130,25 @@ export function initAccount() {
   // Check for update
   (document.getElementById("check-update-btn") as HTMLButtonElement).addEventListener("click", async () => {
     try {
-      const res = await fetch("/version.json", { cache: "no-store" });
-      if (!res.ok) { toastError("Failed to fetch version"); return; }
-      const { version, built } = await res.json();
-      const reg = await navigator.serviceWorker?.getRegistration();
-      await reg?.update();
-      // Force SW to re-check and clear stale caches
-      navigator.serviceWorker?.controller?.postMessage("check-update");
-      toastSuccess(`Server: ${version} (${new Date(built).toLocaleString()}). SW updated.`);
+      const sw = navigator.serviceWorker?.controller;
+      if (!sw) { toastError("Service worker not active"); return; }
+      const result = await new Promise<any>((resolve) => {
+        const handler = (event: MessageEvent) => {
+          if (event.data?.type === "update-status") {
+            navigator.serviceWorker.removeEventListener("message", handler);
+            resolve(event.data);
+          }
+        };
+        navigator.serviceWorker.addEventListener("message", handler);
+        setTimeout(() => { navigator.serviceWorker.removeEventListener("message", handler); resolve(null); }, 5000);
+        sw.postMessage("check-update-status");
+      });
+      if (!result) { toastError("Update check timed out"); return; }
+      if (result.updateAvailable) {
+        toastWarning(`Update available! Running: ${result.localVersion}, Server: ${result.serverVersion}. Reload to update.`);
+      } else {
+        toastSuccess(`Up to date (${result.serverVersion})`);
+      }
     } catch (e: any) { toastError("Update check failed: " + (e.message ?? e)); }
   });
 
