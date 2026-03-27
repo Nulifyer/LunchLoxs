@@ -4,7 +4,7 @@
 
 import type { RecipeMeta } from "../types";
 import { escapeHtml } from "../lib/html";
-import { search, getIndexSize, type SearchResult } from "../lib/search";
+import { search, hybridSearch, getIndexSize, type SearchResult } from "../lib/search";
 import { getPushQueue, getActiveBook } from "../state";
 
 export interface RecipeListCallbacks {
@@ -97,17 +97,16 @@ function updateActiveItem(items: NodeListOf<Element>) {
   if (activeIdx >= 0) (items[activeIdx] as HTMLElement).scrollIntoView({ block: "nearest" });
 }
 
-function renderSearchDropdown() {
-  const indexSize = getIndexSize();
-  console.log("[search] query:", JSON.stringify(currentSearch), "index size:", indexSize);
-
-  if (!currentSearch) {
+async function renderSearchDropdown() {
+  const query = currentSearch;
+  if (!query) {
     searchResults.classList.remove("open");
     return;
   }
 
-  const results = search(currentSearch);
-  console.log("[search] results:", results.length);
+  const results = await hybridSearch(query);
+  // Guard against stale results (user kept typing)
+  if (query !== currentSearch) return;
 
   if (results.length === 0) {
     searchResults.innerHTML = `<li class="search-empty">No results</li>`;

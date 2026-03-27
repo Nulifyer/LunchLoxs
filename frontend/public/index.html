@@ -56,6 +56,7 @@
         <div class="input-wrap">
           <span class="input-icon">&#128269;</span>
           <input type="search" id="search-input" placeholder="Search recipes..." aria-label="Search recipes" />
+          <span id="vector-spinner" class="vector-spinner" hidden></span>
         </div>
         <ul id="search-results" class="search-results" role="listbox"></ul>
       </div>
@@ -158,6 +159,8 @@
               <div style="display:flex;gap:0.4rem;flex-wrap:wrap">
                 <button id="export-logs-btn" class="sm">Download Logs</button>
                 <button id="copy-logs-btn" class="sm">Copy to Clipboard</button>
+                <button id="rebuild-embeddings-btn" class="sm">Rebuild Embeddings</button>
+                <button id="check-update-btn" class="sm">Check for Update</button>
                 <button id="generate-data-btn" class="sm" hidden>Generate Test Data</button>
               </div>
             </article>
@@ -222,6 +225,7 @@
           <span class="sync-sep"></span>
           <span id="sync-progress" class="sync-progress"></span>
         </div>
+        <span id="vector-status" class="vector-status" hidden></span>
       </div>
     </div>
   </div>

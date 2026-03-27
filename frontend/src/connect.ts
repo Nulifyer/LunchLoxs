@@ -255,6 +255,8 @@ export function createSyncConnection(
         );
         log("[ws] local cache saved:", vaultCacheEntries.length, "vaults");
       }
+      // Start vector search indexing (background, non-blocking)
+      import("./lib/vector-search").then(({ initVectorSearch }) => initVectorSearch(userId)).catch(() => {});
     },
     onVaultCreated: async (vid) => {
       log("[ws] vault_created:", vid);
@@ -272,6 +274,7 @@ export function createSyncConnection(
     onVaultRemoved: (vid) => {
       log("[ws] vault_removed:", vid);
       removeBookFromIndex(vid);
+      import("./lib/vector-search").then(({ removeBook }) => removeBook(vid)).catch(() => {});
       const wasActive = getActiveBook()?.vaultId === vid;
       // Close open recipe if it belongs to this vault
       if (wasActive && getSelectedRecipeId()) {

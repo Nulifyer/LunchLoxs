@@ -245,3 +245,32 @@ export function search(query: string, limit = 15): SearchResult[] {
   results.sort((a, b) => b.score - a.score);
   return results.slice(0, limit);
 }
+
+// -- Hybrid search: vector when ready, fzf fallback --
+
+import { isVectorSearchReady, vectorSearch } from "./vector-search";
+
+export async function hybridSearch(query: string, limit = 15): Promise<SearchResult[]> {
+  if (!isVectorSearchReady()) {
+    console.log("[search] vector not ready, using fzf");
+    return search(query, limit);
+  }
+
+  try {
+    const vectorHits = await vectorSearch(query, limit);
+    console.log("[search] vector returned", vectorHits.length, "hits", vectorHits.slice(0, 3).map(h => `${h.key.slice(-8)}:${h.score.toFixed(3)}`));
+    if (vectorHits.length === 0) return search(query, limit);
+
+    // Map vector results to SearchResult using the fzf index for metadata
+    const results: SearchResult[] = [];
+    for (const { key } of vectorHits) {
+      const entry = index.get(key);
+      if (entry) results.push({ entry, score: 0, matchField: "title" });
+    }
+    console.log("[search] mapped", results.length, "results from", vectorHits.length, "vector hits");
+    return results;
+  } catch (e) {
+    console.error("[search] vector search failed, falling back to fzf:", e);
+    return search(query, limit);
+  }
+}

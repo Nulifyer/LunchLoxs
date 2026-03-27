@@ -14,8 +14,8 @@ import { themes, applyTheme, getStoredTheme } from "../lib/themes";
 import { showConfirm } from "../lib/dialogs";
 import { toastSuccess, toastError } from "../lib/toast";
 import { isOpen as isDetailOpen } from "../views/recipe-detail";
-import { getSyncClient } from "../state";
-import { purgeLocalData } from "../ui/auth";
+import { getSyncClient, getPushQueue } from "../state";
+import { purgeLocalData, logout } from "../ui/auth";
 import { deselectRecipe } from "../ui/recipes";
 
 let accountPage: HTMLElement;
@@ -99,12 +99,20 @@ export function initAccount() {
     const ci = (document.getElementById("purge-confirm") as HTMLInputElement).value.trim().toLowerCase();
     const un = (getStoredUsername() ?? "").trim().toLowerCase();
     if (ci !== un) { purgeError.textContent = "Username doesn't match."; purgeError.hidden = false; return; }
-    getSyncClient()?.purge();
+    const syncClient = getSyncClient();
+    if (!syncClient?.isOpen()) { purgeError.textContent = "Must be connected to the server to purge."; purgeError.hidden = false; return; }
+    // Stop background work before purge
+    getPushQueue()?.stop();
+    import("../lib/vector-search").then(({ clearAll }) => clearAll()).catch(() => {});
+    syncClient.purge();
   });
 
   (document.getElementById("purge-local-btn") as HTMLButtonElement).addEventListener("click", async () => {
     const ok = await showConfirm("Clear all local data on this device? You will need to log in again.", { title: "Clear Local Data", confirmText: "Clear", danger: true });
     if (!ok) return;
+    // Stop background work before clearing
+    getPushQueue()?.stop();
+    import("../lib/vector-search").then(({ clearAll }) => clearAll()).catch(() => {});
     await purgeLocalData();
     location.reload();
   });
@@ -114,5 +122,32 @@ export function initAccount() {
   (document.getElementById("copy-logs-btn") as HTMLButtonElement).addEventListener("click", async () => {
     const ok = await copyLogs();
     if (ok) toastSuccess("Logs copied to clipboard."); else toastError("Failed to copy. Try the download button.");
+  });
+
+  // Check for update
+  (document.getElementById("check-update-btn") as HTMLButtonElement).addEventListener("click", async () => {
+    try {
+      const res = await fetch("/version.json", { cache: "no-store" });
+      if (!res.ok) { toastError("Failed to fetch version"); return; }
+      const { version, built } = await res.json();
+      const reg = await navigator.serviceWorker?.getRegistration();
+      await reg?.update();
+      // Force SW to re-check and clear stale caches
+      navigator.serviceWorker?.controller?.postMessage("check-update");
+      toastSuccess(`Server: ${version} (${new Date(built).toLocaleString()}). SW updated.`);
+    } catch (e: any) { toastError("Update check failed: " + (e.message ?? e)); }
+  });
+
+  // Rebuild embeddings
+  (document.getElementById("rebuild-embeddings-btn") as HTMLButtonElement).addEventListener("click", async () => {
+    const ok = await showConfirm("Rebuild all recipe embeddings? This may take a few minutes.", { title: "Rebuild Embeddings", confirmText: "Rebuild" });
+    if (!ok) return;
+    try {
+      const { clearAll, initVectorSearch } = await import("../lib/vector-search");
+      const { getCurrentUserId } = await import("../state");
+      await clearAll();
+      await initVectorSearch(getCurrentUserId());
+      toastSuccess("Embedding rebuild started");
+    } catch (e: any) { toastError("Failed: " + (e.message ?? e)); }
   });
 }

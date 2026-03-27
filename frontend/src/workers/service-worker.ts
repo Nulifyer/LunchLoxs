@@ -2,6 +2,7 @@
 declare const self: ServiceWorkerGlobalScope;
 
 const CACHE_NAME = "recipes-v1";
+const MODEL_CACHE = "transformers-cache";
 const VERSION_CHECK_INTERVAL = 60 * 1000;
 const STATIC_FALLBACK = ["/", "/index.html", "/index.js", "/app.css"];
 
@@ -28,7 +29,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+      Promise.all(keys.filter((k) => k !== CACHE_NAME && k !== MODEL_CACHE).map((k) => caches.delete(k)))
     )
   );
   self.clients.claim();
@@ -41,6 +42,7 @@ self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
   const url = new URL(request.url);
+
   if (url.origin !== self.location.origin) return;
   if (url.pathname === "/version.json" || url.pathname === "/asset-manifest.json") return;
 
@@ -99,7 +101,7 @@ async function checkForUpdate() {
     if (version !== knownVersion) {
       knownVersion = version;
       const keys = await caches.keys();
-      await Promise.all(keys.map((k) => caches.delete(k)));
+      await Promise.all(keys.filter((k) => k !== MODEL_CACHE).map((k) => caches.delete(k)));
 
       try {
         const manifestRes = await fetch("/asset-manifest.json", { cache: "no-store" });

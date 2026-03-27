@@ -216,6 +216,8 @@ async function localBoot(
   pq.setDirtyChangeListener(() => syncEmit("dirty-change", { dirtyCount: pq.dirtyCount(), pushableCount: pq.pushableCount() }));
   setPushQueue(pq);
   updateSyncBadge();
+  // Start vector search indexing (background, non-blocking)
+  import("../lib/vector-search").then(({ initVectorSearch }) => initVectorSearch(userId)).catch(() => {});
   log("[localBoot] complete");
 }
 
@@ -256,6 +258,7 @@ export function logout() {
   if (dm) clearLocalCache(dm.getDb()).catch(() => {});
   dm?.closeAll(); setDocMgr(null);
   clearSession(); clearIdentityKeys(); clearIndex();
+  import("../lib/vector-search").then(({ clearAll }) => clearAll()).catch(() => {});
   setBooks([]); setActiveBook(null);
   setCurrentUsername(""); setCurrentUserId("");
   getSigningKeyCache().clear();

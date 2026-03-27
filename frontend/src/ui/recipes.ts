@@ -44,6 +44,8 @@ export async function selectRecipe(id: string) {
     ...(meta?.tags ?? []),
   ].filter(Boolean).join(" · ");
   openRecipe(contentStore, title, metaText, canEditActiveBook(), meta?.updatedAt, activeBook?.name);
+  // Prioritize this recipe for vector indexing (if stale)
+  import("../lib/vector-search").then(({ enqueueRecipe }) => enqueueRecipe(activeBook.vaultId, id, "high")).catch(() => {});
 }
 
 export function deselectRecipe() {
@@ -133,7 +135,10 @@ export function initRecipes() {
     onPushSnapshot: () => {
       const selectedRecipeId = getSelectedRecipeId();
       const activeBook = getActiveBook();
-      if (selectedRecipeId && activeBook) pushSnapshot(`${activeBook.vaultId}/${selectedRecipeId}`);
+      if (selectedRecipeId && activeBook) {
+        pushSnapshot(`${activeBook.vaultId}/${selectedRecipeId}`);
+        import("../lib/vector-search").then(({ invalidateRecipe }) => invalidateRecipe(activeBook.vaultId, selectedRecipeId)).catch(() => {});
+      }
       touchUpdatedAt();
     },
     onSendPresence: (data) => {
