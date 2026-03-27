@@ -35,6 +35,11 @@
   padding: 0;
 }
 
+html, body {
+  height: 100dvh;
+  overflow: hidden;
+}
+
 html {
   font-family: var(--font);
   font-size: 16px;
@@ -43,11 +48,6 @@ html {
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
   box-sizing: border-box;
-}
-
-body {
-  height: 100vh;
-  overflow: hidden;
 }
 
 /* -- Typography -- */
@@ -597,6 +597,11 @@ dialog label:not(.sr-only)+select {
 }
 
 /* -- App shell -- */
+#app-section {
+  height: 100dvh;
+  overflow: hidden;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 260px 1fr;
