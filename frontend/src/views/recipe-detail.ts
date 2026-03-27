@@ -15,6 +15,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { createDropdown } from "../lib/dropdown";
 import { parseQty, formatQty, scaleQty } from "../lib/quantity";
+import { convertIngredient, convertToUnit, resolveUnit, getConversionTargets, type UnitSystem } from "../lib/units";
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
@@ -57,6 +58,21 @@ let checkedIngredients = new Set<number>();
 let scaleFactor = 1;
 let baseServings = 4;
 let currentServings = 4;
+let unitSystem: UnitSystem = (localStorage.getItem("unit-system") as UnitSystem) || "original";
+let unitOverrides = new Map<number, string>(); // per-ingredient overrides: idx -> target unit canonical name
+const unitToggleBtn = document.getElementById("unit-toggle-btn") as HTMLButtonElement;
+
+function cycleUnitSystem(current: UnitSystem): UnitSystem {
+  if (current === "original") return "metric";
+  if (current === "metric") return "imperial";
+  return "original";
+}
+
+const UNIT_LABELS: Record<UnitSystem, string> = {
+  original: "Original",
+  metric: "Metric",
+  imperial: "Imperial",
+};
 let presenceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
@@ -137,6 +153,148 @@ export function initRecipeDetail(cb: DetailCallbacks) {
       else checkedIngredients.add(idx);
       li.classList.toggle("ing-checked", checkedIngredients.has(idx));
       return;
+    }
+
+  });
+
+  // -- Per-ingredient unit picker (right-click / long-press) --
+  let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+  let longPressTarget: HTMLElement | null = null;
+
+  function showUnitPicker(unitSpan: HTMLElement, x: number, y: number) {
+    const li = unitSpan.closest("li") as HTMLElement;
+    const idx = parseInt(li.dataset.ingIdx ?? "-1");
+    if (idx < 0) return;
+    const rawUnit = li.dataset.origUnit;
+    if (!rawUnit || !resolveUnit(rawUnit)) return;
+
+    const targets = getConversionTargets(rawUnit);
+    if (targets.length === 0) return;
+
+    // Close any existing picker
+    closeUnitPicker();
+
+    const menu = document.createElement("div");
+    menu.className = "dropdown-menu unit-picker";
+    menu.setAttribute("role", "menu");
+
+    // "Original" reset option
+    const origBtn = document.createElement("button");
+    origBtn.className = "dropdown-item" + (!unitOverrides.has(idx) && unitSystem === "original" ? " unit-active" : "");
+    origBtn.textContent = rawUnit + " (original)";
+    origBtn.setAttribute("role", "menuitem");
+    origBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      unitOverrides.delete(idx);
+      closeUnitPicker();
+      if (store) renderIngredients(store.getDoc());
+    });
+    menu.appendChild(origBtn);
+
+    const sep = document.createElement("div");
+    sep.className = "dropdown-sep";
+    menu.appendChild(sep);
+
+    // Scaled quantity for preview
+    const doc = store?.getDoc();
+    const rawQty = doc?.ingredients?.[idx]?.quantity ?? "";
+    const scaledNum = parseQty(scaleQty(rawQty, scaleFactor));
+
+    for (const t of targets) {
+      const converted = scaledNum !== null ? convertToUnit(scaledNum, rawUnit, t.unit) : null;
+      // Only show units that produce a readable quantity (0.25 to 999)
+      if (!converted || converted.qty < 0.1 || converted.qty > 999) continue;
+      const btn = document.createElement("button");
+      btn.className = "dropdown-item" + (unitOverrides.get(idx) === t.unit ? " unit-active" : "");
+      const label = `${formatQty(converted.qty)} ${t.label}`;
+      btn.textContent = label;
+      btn.setAttribute("role", "menuitem");
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        unitOverrides.set(idx, t.unit);
+        closeUnitPicker();
+        if (store) renderIngredients(store.getDoc());
+      });
+      menu.appendChild(btn);
+    }
+
+    document.body.appendChild(menu);
+    menu.style.position = "fixed";
+    menu.style.zIndex = "300";
+
+    // Position: try to keep on screen
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    menu.style.left = `${Math.min(x, window.innerWidth - mw - 8)}px`;
+    menu.style.top = `${Math.min(y, window.innerHeight - mh - 8)}px`;
+
+    activeUnitPicker = menu;
+
+    requestAnimationFrame(() => {
+      const first = menu.querySelector(".dropdown-item") as HTMLButtonElement;
+      first?.focus();
+    });
+  }
+
+  let activeUnitPicker: HTMLElement | null = null;
+
+  function closeUnitPicker() {
+    if (activeUnitPicker) { activeUnitPicker.remove(); activeUnitPicker = null; }
+  }
+
+  document.addEventListener("click", (e) => {
+    if (activeUnitPicker && !activeUnitPicker.contains(e.target as Node)) closeUnitPicker();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && activeUnitPicker) closeUnitPicker();
+  });
+
+  // Right-click on unit span
+  ingredientsList.addEventListener("contextmenu", (e) => {
+    if (pageEditing) return;
+    const target = e.target as HTMLElement;
+    const unitSpan = target.closest(".ing-unit") as HTMLElement;
+    if (!unitSpan) return;
+    const li = unitSpan.closest("li") as HTMLElement;
+    const rawUnit = li?.dataset.origUnit;
+    if (!rawUnit || !resolveUnit(rawUnit)) return;
+    e.preventDefault();
+    showUnitPicker(unitSpan, e.clientX, e.clientY);
+  });
+
+  // Long-press on unit span (mobile)
+  ingredientsList.addEventListener("pointerdown", (e) => {
+    if (pageEditing) return;
+    const target = e.target as HTMLElement;
+    const unitSpan = target.closest(".ing-unit") as HTMLElement;
+    if (!unitSpan) return;
+    const li = unitSpan.closest("li") as HTMLElement;
+    const rawUnit = li?.dataset.origUnit;
+    if (!rawUnit || !resolveUnit(rawUnit)) return;
+
+    longPressTarget = unitSpan;
+    longPressTimer = setTimeout(() => {
+      longPressTimer = null;
+      showUnitPicker(unitSpan, e.clientX, e.clientY);
+    }, 500);
+  });
+
+  ingredientsList.addEventListener("pointerup", () => {
+    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    longPressTarget = null;
+  });
+
+  ingredientsList.addEventListener("pointermove", (e) => {
+    if (longPressTimer && longPressTarget) {
+      // Cancel if finger moves too far
+      const t = longPressTarget.getBoundingClientRect();
+      const dx = e.clientX - (t.left + t.width / 2);
+      const dy = e.clientY - (t.top + t.height / 2);
+      if (Math.sqrt(dx * dx + dy * dy) > 20) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+        longPressTarget = null;
+      }
     }
   });
 
@@ -282,6 +440,18 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     updateScaleDisplay();
     if (store) renderIngredients(store.getDoc());
   });
+
+  // -- Unit system toggle --
+  unitToggleBtn.textContent = UNIT_LABELS[unitSystem];
+  unitToggleBtn.dataset.unitSystem = unitSystem;
+  unitToggleBtn.addEventListener("click", () => {
+    unitSystem = cycleUnitSystem(unitSystem);
+    localStorage.setItem("unit-system", unitSystem);
+    unitToggleBtn.textContent = UNIT_LABELS[unitSystem];
+    unitToggleBtn.dataset.unitSystem = unitSystem;
+    unitOverrides.clear();
+    if (store) renderIngredients(store.getDoc());
+  });
 }
 
 function timeAgo(ts: number): string {
@@ -303,6 +473,7 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
   closeRecipe();
   // Reset ingredient UI state
   checkedIngredients.clear();
+  unitOverrides.clear();
   baseServings = servings ?? 4;
   currentServings = baseServings;
   scaleFactor = 1;
@@ -486,6 +657,7 @@ export function closeRecipe() {
   instrCursors.clear();
   notesCursors.clear();
   checkedIngredients.clear();
+  unitOverrides.clear();
   scaleFactor = 1;
   scaleBar.hidden = true;
   detailView.hidden = true;
@@ -666,17 +838,40 @@ function renderIngredients(doc: RecipeContent) {
       if (el) { el.focus(); el.setSelectionRange(focusPos, focusPos); }
     }
   } else {
-    // View mode with check-off and scaling
+    // View mode with check-off, scaling, and unit conversion
     if (ingredients.length === 0) {
       ingredientsList.innerHTML = '<li class="ing-empty"><em>No ingredients.</em></li>';
     } else {
       ingredientsList.innerHTML = ingredients
         .map((ing, i) => {
           const checked = checkedIngredients.has(i);
-          return `<li data-ing-idx="${i}" class="${checked ? "ing-checked" : ""}">
+          const scaledRaw = scaleQty(ing.quantity, scaleFactor);
+          const scaledNum = parseQty(scaledRaw);
+          const overrideUnit = unitOverrides.get(i);
+          let displayQty = escapeHtml(scaledRaw);
+          let displayUnit = escapeHtml(ing.unit);
+          let converted = false;
+          if (scaledNum !== null) {
+            // Per-ingredient override takes priority, then global system
+            let result: { qty: number; unit: string } | null = null;
+            if (overrideUnit) {
+              result = convertToUnit(scaledNum, ing.unit, overrideUnit);
+            } else if (unitSystem !== "original") {
+              const sys = convertIngredient(scaledNum, ing.unit, unitSystem);
+              if (sys.unit !== ing.unit) result = sys;
+            }
+            if (result) {
+              displayQty = escapeHtml(formatQty(result.qty));
+              displayUnit = escapeHtml(result.unit);
+              converted = true;
+            }
+          }
+          const convertible = resolveUnit(ing.unit) !== null;
+          const unitClass = "ing-unit" + (converted ? " ing-converted" : "") + (convertible ? " ing-convertible" : "");
+          return `<li data-ing-idx="${i}" data-orig-unit="${escapeAttr(ing.unit)}" class="${checked ? "ing-checked" : ""}">
             <span class="ing-check"></span>
-            <span class="ing-qty">${scaleQtyHtml(ing.quantity)}</span>
-            <span class="ing-unit">${escapeHtml(ing.unit)}</span>
+            <span class="ing-qty">${displayQty}</span>
+            <span class="${unitClass}">${displayUnit}</span>
             <span class="ing-text">${escapeHtml(ing.item)}</span>
           </li>`;
         })

@@ -1202,6 +1202,27 @@ dialog label:not(.sr-only)+select {
   font-weight: 600;
 }
 
+.scale-divider {
+  width: 1px;
+  height: 1rem;
+  background: var(--border);
+  margin: 0 0.1rem;
+}
+
+.unit-toggle {
+  width: auto !important;
+  border-radius: var(--radius) !important;
+  padding: 0 0.5rem !important;
+  font-size: 0.7rem !important;
+}
+
+.unit-toggle[data-unit-system="metric"],
+.unit-toggle[data-unit-system="imperial"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* -- Ingredients -- */
 #ingredients-list {
   padding: 0;
@@ -1242,6 +1263,26 @@ dialog label:not(.sr-only)+select {
 #ingredients-list li .ing-unit {
   color: var(--subtle);
   min-width: 2.5rem;
+}
+
+#ingredients-list li .ing-unit.ing-convertible {
+  cursor: pointer;
+  border-bottom: 1px dashed var(--muted);
+}
+
+#ingredients-list li .ing-unit.ing-convertible:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+#ingredients-list li .ing-unit.ing-converted {
+  color: var(--accent);
+  font-style: italic;
+}
+
+.unit-picker .dropdown-item.unit-active {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 #ingredients-list li .ing-text {
