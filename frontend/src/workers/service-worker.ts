@@ -9,6 +9,21 @@ const STATIC_FALLBACK = ["/", "/index.html", "/index.js", "/app.css"];
 let knownVersion: string | null = null;
 const isDev = self.location.hostname === "localhost" || self.location.hostname === "127.0.0.1";
 
+/** Read the locally cached version (what we're currently serving). */
+async function getLocalVersion(): Promise<string | null> {
+  if (knownVersion) return knownVersion;
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const cached = await cache.match("/version.json");
+    if (cached) {
+      const { version } = await cached.json();
+      knownVersion = version;
+      return version;
+    }
+  } catch {}
+  return null;
+}
+
 // Install -- pre-cache shell
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -94,16 +109,17 @@ function startVersionCheck() {
 
 async function checkForUpdate() {
   try {
+    const local = await getLocalVersion();
     const res = await fetch("/version.json", { cache: "no-store" });
     if (!res.ok) return;
     const { version } = await res.json();
 
-    if (knownVersion === null) {
+    if (local === null) {
       knownVersion = version;
       return;
     }
 
-    if (version !== knownVersion) {
+    if (version !== local) {
       knownVersion = version;
       const keys = await caches.keys();
       await Promise.all(keys.filter((k) => k !== MODEL_CACHE).map((k) => caches.delete(k)));
@@ -130,17 +146,17 @@ async function checkForUpdate() {
 
 async function checkForUpdateStatus(): Promise<{ serverVersion: string; localVersion: string | null; updateAvailable: boolean }> {
   try {
+    const local = await getLocalVersion();
     const res = await fetch("/version.json", { cache: "no-store" });
-    if (!res.ok) return { serverVersion: "unknown", localVersion: knownVersion, updateAvailable: false };
+    if (!res.ok) return { serverVersion: "unknown", localVersion: local, updateAvailable: false };
     const { version } = await res.json();
-    const updateAvailable = knownVersion !== null && version !== knownVersion;
+    const updateAvailable = local !== null && version !== local;
     if (updateAvailable) {
-      // Trigger the full update flow (cache bust + notify)
       await checkForUpdate();
-    } else if (knownVersion === null) {
+    } else if (local === null) {
       knownVersion = version;
     }
-    return { serverVersion: version, localVersion: knownVersion, updateAvailable };
+    return { serverVersion: version, localVersion: local, updateAvailable };
   } catch {
     return { serverVersion: "offline", localVersion: knownVersion, updateAvailable: false };
   }

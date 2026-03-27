@@ -1549,6 +1549,16 @@ input.ing-edit.ing-text {
   }
 }
 
+.debug-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+}
+
+.debug-actions .sm {
+  width: 100%;
+}
+
 .account-page article {
   background: var(--bg-surface);
   border: 1px solid var(--border);
