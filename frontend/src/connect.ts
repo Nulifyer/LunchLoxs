@@ -351,6 +351,13 @@ export function createSyncConnection(
         warn("[ws] unverified payload for", docId, "from", senderUserId.slice(0, 8));
       }
       s.merge(plaintext); await s.setLastSeq(seq);
+      // Invalidate vector embedding for changed recipe content docs
+      const slashIdx = docId.indexOf("/");
+      if (slashIdx > 0 && !docId.endsWith("/catalog")) {
+        const vaultId = docId.slice(0, slashIdx);
+        const recipeId = docId.slice(slashIdx + 1);
+        import("./lib/vector-search").then(({ invalidateRecipe }) => invalidateRecipe(vaultId, recipeId)).catch(() => {});
+      }
     },
     onCaughtUp: (docId, latestSeq) => {
       log("[ws] caught_up:", docId, "seq:", latestSeq);

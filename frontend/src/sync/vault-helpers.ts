@@ -121,9 +121,9 @@ export function rebuildBookIndex(vaultId: string) {
     indexRecipe({ recipeId: r.id, vaultId, bookName: book.name, title: r.title, tags: r.tags });
   }
   log("[search] indexed", recipes.length, "recipes for", book.name, "total index:", getIndexSize());
-  // Invalidate vector embeddings for changed recipes (debounced per recipe)
-  import("../lib/vector-search").then(({ invalidateRecipe }) => {
-    for (const r of recipes) invalidateRecipe(vaultId, r.id);
+  // Re-enqueue for vector embedding (hash check skips unchanged ones)
+  import("../lib/vector-search").then(({ enqueueRecipe }) => {
+    for (const r of recipes) enqueueRecipe(vaultId, r.id, "normal");
   }).catch(() => {});
 }
 

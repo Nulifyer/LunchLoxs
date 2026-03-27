@@ -97,7 +97,7 @@ export function enqueueRecipe(vaultId: string, recipeId: string, priority: "high
   const key = `${vaultId}/${recipeId}`;
   if (queueSet.has(key)) return;
   queueSet.add(key);
-  totalQueued++;
+  if (!indexingComplete) totalQueued++;
   if (priority === "high") {
     queue.unshift({ vaultId, recipeId, priority });
   } else {
@@ -182,7 +182,7 @@ async function processQueue(): Promise<void> {
     const batch = queue.splice(0, BATCH_SIZE);
     for (const item of batch) {
       queueSet.delete(`${item.vaultId}/${item.recipeId}`);
-      totalProcessed++;
+      if (!indexingComplete) totalProcessed++;
     }
 
     const textsToEmbed: Array<{ key: string; text: string }> = [];
