@@ -49,7 +49,7 @@ export interface SyncClientOptions {
   onCaughtUp: (docId: string, latestSeq: number) => void;
   onStatusChange: (status: SyncStatus) => void;
   onPurged?: () => void;
-  onPresence?: (docId: string, deviceId: string, data: any) => void;
+  onPresence?: (docId: string, deviceId: string, data: any, senderUserId?: string) => void;
   onPasswordChanged?: () => void;
   onAuthError?: (message: string) => void;
   onAck?: (docId: string, seq: number) => void;
@@ -110,6 +110,8 @@ export class SyncClient {
   private onlineHandler: (() => void) | null = null;
   private offlineHandler: (() => void) | null = null;
   private visibilityHandler: (() => void) | null = null;
+  /** Cursor data staged to ride with the next push for each doc. */
+  private docPresence = new Map<string, any>();
 
   /** Pending user lookup promises keyed by target user ID */
   private lookupResolvers = new Map<string, {
@@ -196,6 +198,10 @@ export class SyncClient {
           } catch (e) {
             console.error(`sync: decryption failed for doc ${msg.doc_id}:`, e);
           }
+          // Apply bundled cursor presence (arrives with the text change)
+          if (msg.presence && msg.from_device) {
+            this.opts.onPresence?.(msg.doc_id, msg.from_device, msg.presence, msg.sender_user_id);
+          }
         }
         break;
 
@@ -224,7 +230,7 @@ export class SyncClient {
 
       case "presence":
         if (msg.from_device && msg.presence) {
-          this.opts.onPresence?.(msg.doc_id ?? "", msg.from_device, msg.presence);
+          this.opts.onPresence?.(msg.doc_id ?? "", msg.from_device, msg.presence, msg.sender_user_id);
         }
         break;
 
@@ -389,11 +395,17 @@ export class SyncClient {
       return "not_connected";
     }
     const encrypted = await encrypt(snapshot, key);
-    this.ws.send(JSON.stringify({
+    const msg: any = {
       type: "push",
       doc_id: docId,
       payload: toBase64(encrypted),
-    }));
+    };
+    const presence = this.docPresence.get(docId);
+    if (presence) {
+      msg.presence = presence;
+      this.docPresence.delete(docId);
+    }
+    this.ws.send(JSON.stringify(msg));
     return "sent";
   }
 
@@ -510,6 +522,12 @@ export class SyncClient {
     });
   }
 
+  /** Stage cursor data to be bundled with the next push for this doc. */
+  stagePresence(docId: string, data: any): void {
+    this.docPresence.set(docId, data);
+  }
+
+  /** Send standalone presence immediately (focus/blur/selection-only). */
   sendPresence(docId: string, data: any): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: "presence", doc_id: docId, presence: data }));

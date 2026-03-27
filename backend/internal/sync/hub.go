@@ -105,9 +105,11 @@ func (h *Hub) BroadcastDoc(userID, docID, senderDeviceID string, msg []byte) {
 func (h *Hub) BroadcastVaultDoc(memberUserIDs []string, docID, senderDeviceID string, msg []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	sent := 0
 	for _, uid := range memberUserIDs {
 		clients, ok := h.docs[uid][docID]
 		if !ok {
+			slog.Info("broadcastVaultDoc: no subscription", "uid", uid[:12], "doc", docID[:20])
 			continue
 		}
 		for c := range clients {
@@ -115,7 +117,11 @@ func (h *Hub) BroadcastVaultDoc(memberUserIDs []string, docID, senderDeviceID st
 				continue
 			}
 			c.Enqueue(msg)
+			sent++
 		}
+	}
+	if sent == 0 {
+		slog.Info("broadcastVaultDoc: no recipients", "doc", docID[:20], "sender", senderDeviceID[:8], "members", len(memberUserIDs))
 	}
 }
 

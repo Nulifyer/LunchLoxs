@@ -1,59 +1,53 @@
 /**
- * Remote cursor decorations for CodeMirror — reusable across projects.
+ * Remote cursor decorations for CodeMirror.
  *
  * Shows colored cursors and selection highlights for other users
- * editing the same document.
+ * editing the same document. Colors come from the active theme.
  */
 
 import { EditorView, Decoration, type DecorationSet, WidgetType } from "@codemirror/view";
 import { StateField, StateEffect } from "@codemirror/state";
 
-// ── Types ──
+// -- Types --
 
 export interface RemoteCursor {
   deviceId: string;
   /** Display name or short label */
   name: string;
-  /** CSS color for this cursor */
-  color: string;
   /** Cursor position (character offset) */
   head: number;
   /** Selection anchor (same as head if no selection) */
   anchor: number;
-  /** Which todo's notes this cursor is in */
+  /** Which field this cursor is in */
   todoId: string;
 }
 
-// ── Colors for up to 8 remote users ──
-const CURSOR_COLORS = [
-  "#e94560", "#f0a500", "#4ecca3", "#7b68ee",
-  "#ff6b6b", "#48dbfb", "#ff9ff3", "#feca57",
-];
+// -- Color slots mapped to theme CSS vars --
 
-let colorIndex = 0;
-const deviceColors = new Map<string, string>();
+const COLOR_VARS = ["--red", "--green", "--purple", "--cyan", "--yellow", "--accent"];
 
-function getColor(deviceId: string): string {
-  if (!deviceColors.has(deviceId)) {
-    deviceColors.set(deviceId, CURSOR_COLORS[colorIndex % CURSOR_COLORS.length]!);
-    colorIndex++;
+let nextColorIdx = 0;
+const deviceColorIdx = new Map<string, number>();
+
+function getColorIndex(deviceId: string): number {
+  if (!deviceColorIdx.has(deviceId)) {
+    deviceColorIdx.set(deviceId, nextColorIdx % COLOR_VARS.length);
+    nextColorIdx++;
   }
-  return deviceColors.get(deviceId)!;
+  return deviceColorIdx.get(deviceId)!;
 }
 
-// ── Cursor widget ──
+// -- Cursor widget --
 
 class CursorWidget extends WidgetType {
-  constructor(readonly color: string, readonly name: string) { super(); }
+  constructor(readonly name: string, readonly colorIdx: number) { super(); }
 
   toDOM(): HTMLElement {
     const cursor = document.createElement("span");
-    cursor.className = "cm-remote-cursor";
-    cursor.style.borderLeftColor = this.color;
+    cursor.className = `cm-remote-cursor cm-remote-c${this.colorIdx}`;
 
     const label = document.createElement("span");
     label.className = "cm-remote-cursor-label";
-    label.style.backgroundColor = this.color;
     label.textContent = this.name;
     cursor.appendChild(label);
 
@@ -61,15 +55,15 @@ class CursorWidget extends WidgetType {
   }
 
   override eq(other: CursorWidget): boolean {
-    return this.color === other.color && this.name === other.name;
+    return this.name === other.name && this.colorIdx === other.colorIdx;
   }
 }
 
-// ── State effect to update remote cursors ──
+// -- State effect to update remote cursors --
 
 const setCursors = StateEffect.define<RemoteCursor[]>();
 
-// ── State field holding cursor decorations ──
+// -- State field holding cursor decorations --
 
 const remoteCursorField = StateField.define<DecorationSet>({
   create() {
@@ -92,12 +86,13 @@ function buildDecorations(cursors: RemoteCursor[], docLength: number): Decoratio
   for (const cursor of cursors) {
     const head = Math.min(cursor.head, docLength);
     const anchor = Math.min(cursor.anchor, docLength);
+    const ci = getColorIndex(cursor.deviceId);
 
     // Cursor line
     decorations.push({
       from: head,
       decoration: Decoration.widget({
-        widget: new CursorWidget(cursor.color, cursor.name),
+        widget: new CursorWidget(cursor.name, ci),
         side: 1,
       }),
     });
@@ -110,12 +105,7 @@ function buildDecorations(cursors: RemoteCursor[], docLength: number): Decoratio
         decorations.push({
           from,
           to,
-          decoration: Decoration.mark({
-            class: "cm-remote-selection",
-            attributes: {
-              style: `background-color: ${cursor.color}33`,
-            },
-          }),
+          decoration: Decoration.mark({ class: `cm-remote-selection cm-remote-c${ci}` }),
         });
       }
     }
@@ -133,32 +123,45 @@ function buildDecorations(cursors: RemoteCursor[], docLength: number): Decoratio
   return Decoration.set(builder, true);
 }
 
-// ── CSS for remote cursors (injected once) ──
+// -- CSS for remote cursors (per-slot colors from theme vars) --
 
-const cursorStyles = EditorView.baseTheme({
-  ".cm-remote-cursor": {
-    position: "relative",
-    borderLeft: "2px solid",
-    marginLeft: "-1px",
-    marginRight: "-1px",
-  },
-  ".cm-remote-cursor-label": {
-    position: "absolute",
-    top: "-1.4em",
-    left: "-1px",
-    fontSize: "0.7em",
-    padding: "0 4px",
-    borderRadius: "3px",
-    color: "white",
-    whiteSpace: "nowrap",
-    pointerEvents: "none",
-    lineHeight: "1.6",
-  },
-});
+function colorSlotStyles(): Record<string, any> {
+  const styles: Record<string, any> = {
+    ".cm-remote-cursor": {
+      position: "relative",
+      borderLeft: "2px solid",
+      marginLeft: "-1px",
+      marginRight: "-1px",
+    },
+    ".cm-remote-cursor-label": {
+      position: "absolute",
+      top: "-1.4em",
+      left: "-1px",
+      fontSize: "0.7em",
+      padding: "0 4px",
+      borderRadius: "3px",
+      color: "white",
+      whiteSpace: "nowrap",
+      pointerEvents: "none",
+      lineHeight: "1.6",
+    },
+  };
+  for (let i = 0; i < COLOR_VARS.length; i++) {
+    const v = `var(${COLOR_VARS[i]})`;
+    styles[`.cm-remote-cursor.cm-remote-c${i}`] = { borderLeftColor: v };
+    styles[`.cm-remote-cursor.cm-remote-c${i} .cm-remote-cursor-label`] = { backgroundColor: v };
+    styles[`.cm-remote-selection.cm-remote-c${i}`] = {
+      backgroundColor: `color-mix(in srgb, ${v} 20%, transparent)`,
+    };
+  }
+  return styles;
+}
 
-// ── Public API ──
+const cursorStyles = EditorView.baseTheme(colorSlotStyles());
 
-/** CodeMirror extension — include this in your editor extensions. */
+// -- Public API --
+
+/** CodeMirror extension -- include this in your editor extensions. */
 export const remoteCursorsExtension = [remoteCursorField, cursorStyles];
 
 /**
@@ -166,10 +169,6 @@ export const remoteCursorsExtension = [remoteCursorField, cursorStyles];
  * Call this when presence data arrives from other devices.
  */
 export function updateRemoteCursors(view: EditorView, cursors: RemoteCursor[]): void {
-  // Assign colors
-  for (const c of cursors) {
-    c.color = getColor(c.deviceId);
-  }
   view.dispatch({ effects: setCursors.of(cursors) });
 }
 

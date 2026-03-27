@@ -590,7 +590,7 @@ func (c *Client) handlePush(ctx context.Context, msg ClientMessage) {
 	// Acknowledge to sender
 	c.sendJSON(ServerMessage{Type: "ack", DocID: docID, Seq: seq})
 
-	// Relay to subscribers
+	// Relay to subscribers (include bundled presence if provided)
 	relay, _ := json.Marshal(ServerMessage{
 		Type:         "sync",
 		DocID:        docID,
@@ -598,6 +598,7 @@ func (c *Client) handlePush(ctx context.Context, msg ClientMessage) {
 		Payload:      msg.Payload,
 		FromDevice:   c.DeviceID,
 		SenderUserID: c.UserID,
+		Presence:     msg.Presence,
 	})
 	if vaultID != "" {
 		// Broadcast to all vault members subscribed to this doc
@@ -713,14 +714,28 @@ func (c *Client) handlePresence(msg ClientMessage) {
 		c.Hub.Broadcast(c.UserID, c.DeviceID, relay)
 		return
 	}
-	// Scope presence to document subscribers
+	// Include sender_user_id so receivers can identify the user
 	relay, _ := json.Marshal(ServerMessage{
-		Type:       "presence",
-		DocID:      docID,
-		FromDevice: c.DeviceID,
-		Presence:   msg.Presence,
+		Type:         "presence",
+		DocID:        docID,
+		FromDevice:   c.DeviceID,
+		SenderUserID: c.UserID,
+		Presence:     msg.Presence,
 	})
-	c.Hub.BroadcastDoc(c.UserID, docID, c.DeviceID, relay)
+	vaultID := extractVaultID(docID)
+	if vaultID != "" {
+		// Vault-scoped: broadcast to all vault members subscribed to this doc
+		memberIDs, err := c.Queries.GetVaultMemberIDs(context.Background(), vaultID)
+		if err != nil {
+			slog.Warn("presence: failed to get member IDs", "vault", vaultID, "error", err)
+			c.Hub.BroadcastDoc(c.UserID, docID, c.DeviceID, relay)
+			return
+		}
+		slog.Info("presence: broadcasting", "from", c.UserID[:12], "device", c.DeviceID[:8], "vault", vaultID[:8], "members", len(memberIDs), "doc", docID[:20])
+		c.Hub.BroadcastVaultDoc(memberIDs, docID, c.DeviceID, relay)
+	} else {
+		c.Hub.BroadcastDoc(c.UserID, docID, c.DeviceID, relay)
+	}
 }
 
 // -- Identity key handlers --

@@ -12,7 +12,7 @@ import {
 import { toBase64 } from "../lib/encoding";
 import { themes, applyTheme, getStoredTheme } from "../lib/themes";
 import { showConfirm } from "../lib/dialogs";
-import { toastSuccess, toastError } from "../lib/toast";
+import { toastSuccess, toastWarning, toastError } from "../lib/toast";
 import { isOpen as isDetailOpen } from "../views/recipe-detail";
 import { getSyncClient, getPushQueue } from "../state";
 import { purgeLocalData, logout } from "../ui/auth";

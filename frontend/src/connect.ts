@@ -381,10 +381,11 @@ export function createSyncConnection(
       // Only push if we actually initialized (new doc) to avoid push loops
       if (didInit) pushSnapshot(docId);
     },
-    onPresence: (docId, deviceId, data) => {
+    onPresence: (docId, deviceId, data, senderUserId) => {
       const activeBook = getActiveBook();
       const selectedRecipeId = getSelectedRecipeId();
-      if (activeBook && selectedRecipeId && docId === `${activeBook.vaultId}/${selectedRecipeId}`) handlePresence(deviceId, data);
+      log("[ws] presence received:", docId?.slice(0, 20), "from:", deviceId?.slice(0, 8), "user:", senderUserId?.slice(0, 8), "match:", activeBook && selectedRecipeId && docId === `${activeBook.vaultId}/${selectedRecipeId}`);
+      if (activeBook && selectedRecipeId && docId === `${activeBook.vaultId}/${selectedRecipeId}`) handlePresence(deviceId, data, senderUserId);
     },
     onPurged: async () => { log("[ws] purged"); await purgeLocalData(); location.reload(); },
     onPasswordChanged: () => { clearWrappedKey(userId); showAlert("Password was changed on another device. Please log in with the new password.", "Password Changed").then(() => logout()); },

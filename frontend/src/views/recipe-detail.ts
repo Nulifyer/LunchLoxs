@@ -50,10 +50,35 @@ let instrBridge: ReturnType<typeof createAutomergeMirror> | null = null;
 let notesEditorView: EditorView | null = null;
 let notesBridge: ReturnType<typeof createAutomergeMirror> | null = null;
 let pageEditing = false;
-let remoteCursors = new Map<string, RemoteCursor>();
+let instrCursors = new Map<string, RemoteCursor>();
+let notesCursors = new Map<string, RemoteCursor>();
 let onPushSnapshot: (() => void) | null = null;
 let onSendPresence: ((data: any) => void) | null = null;
 let canEdit = true;
+let presenceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Stage cursor data to ride with the next text push.
+ * Starts a fallback timer so selection-only moves (no text change)
+ * still send a standalone presence after 500ms.
+ */
+function queuePresence(data: any) {
+  // _stage tells the callback to stage on the SyncClient (bundled with push)
+  onSendPresence?.({ ...data, _stage: true });
+  // Fallback: if no push happens within 500ms (selection-only move),
+  // send a standalone presence so the cursor still updates for others.
+  if (presenceFallbackTimer) clearTimeout(presenceFallbackTimer);
+  presenceFallbackTimer = setTimeout(() => {
+    presenceFallbackTimer = null;
+    onSendPresence?.(data);
+  }, 500);
+}
+
+/** Send presence immediately (focus/blur events). */
+function sendPresenceNow(data: any) {
+  if (presenceFallbackTimer) { clearTimeout(presenceFallbackTimer); presenceFallbackTimer = null; }
+  onSendPresence?.(data);
+}
 
 export interface DetailCallbacks {
   onBack: () => void;
@@ -216,8 +241,22 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
       EditorView.updateListener.of((update) => {
         if (update.selectionSet || update.docChanged) {
           const sel = update.state.selection.main;
-          onSendPresence?.({ field: "instructions", head: sel.head, anchor: sel.anchor });
+          queuePresence({ field: "instructions", head: sel.head, anchor: sel.anchor });
+          // Doc change means a push is coming -- it will carry the cursor, so kill the fallback
+          if (update.docChanged && presenceFallbackTimer) {
+            clearTimeout(presenceFallbackTimer);
+            presenceFallbackTimer = null;
+          }
         }
+      }),
+      EditorView.domEventHandlers({
+        focus: () => {
+          const sel = instrEditorView!.state.selection.main;
+          sendPresenceNow({ field: "instructions", head: sel.head, anchor: sel.anchor });
+        },
+        blur: () => {
+          sendPresenceNow({ field: "instructions", active: false });
+        },
       }),
     ],
     parent: instrEditorContainer,
@@ -241,7 +280,26 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
     extensions: [
       keymap.of([...defaultKeymap, ...historyKeymap]), history(),
       markdown(), appTheme, appSyntaxHighlighting, drawSelection(), highlightActiveLine(),
-      EditorView.lineWrapping, nBridge.extension,
+      EditorView.lineWrapping, nBridge.extension, remoteCursorsExtension,
+      EditorView.updateListener.of((update) => {
+        if (update.selectionSet || update.docChanged) {
+          const sel = update.state.selection.main;
+          queuePresence({ field: "notes", head: sel.head, anchor: sel.anchor });
+          if (update.docChanged && presenceFallbackTimer) {
+            clearTimeout(presenceFallbackTimer);
+            presenceFallbackTimer = null;
+          }
+        }
+      }),
+      EditorView.domEventHandlers({
+        focus: () => {
+          const sel = notesEditorView!.state.selection.main;
+          sendPresenceNow({ field: "notes", head: sel.head, anchor: sel.anchor });
+        },
+        blur: () => {
+          sendPresenceNow({ field: "notes", active: false });
+        },
+      }),
     ],
     parent: notesEditorContainer,
   });
@@ -254,16 +312,28 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
     if (pageEditing) {
       instrBridge?.applyRemoteText();
       notesBridge?.applyRemoteText();
-      if (instrEditorView) {
+      // Re-stage local cursor position after remote text change (will ride with next push if any)
+      if (instrEditorView && instrEditorView.hasFocus) {
         const sel = instrEditorView.state.selection.main;
-        onSendPresence?.({ field: "instructions", head: sel.head, anchor: sel.anchor });
+        onSendPresence?.({ field: "instructions", head: sel.head, anchor: sel.anchor, _stage: true });
       }
-      for (const [, cursor] of remoteCursors) {
+      if (notesEditorView && notesEditorView.hasFocus) {
+        const sel = notesEditorView.state.selection.main;
+        onSendPresence?.({ field: "notes", head: sel.head, anchor: sel.anchor, _stage: true });
+      }
+      for (const [, cursor] of instrCursors) {
         cursor.head = instrBridge!.mapPosition(cursor.head);
         cursor.anchor = instrBridge!.mapPosition(cursor.anchor);
       }
-      if (remoteCursors.size > 0 && instrEditorView) {
-        updateRemoteCursors(instrEditorView, Array.from(remoteCursors.values()));
+      for (const [, cursor] of notesCursors) {
+        cursor.head = notesBridge!.mapPosition(cursor.head);
+        cursor.anchor = notesBridge!.mapPosition(cursor.anchor);
+      }
+      if (instrCursors.size > 0 && instrEditorView) {
+        updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
+      }
+      if (notesCursors.size > 0 && notesEditorView) {
+        updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
       }
     } else {
       renderPreviews();
@@ -272,6 +342,9 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
 }
 
 export function closeRecipe() {
+  // Notify remote users our cursors are gone
+  sendPresenceNow({ field: "instructions", active: false });
+  sendPresenceNow({ field: "notes", active: false });
   instrEditorView?.destroy();
   instrEditorView = null;
   instrBridge = null;
@@ -280,21 +353,54 @@ export function closeRecipe() {
   notesBridge = null;
   store = null;
   pageEditing = false;
-  remoteCursors.clear();
+  instrCursors.clear();
+  notesCursors.clear();
   detailView.hidden = true;
   emptyState.hidden = false;
 }
 
-export function handlePresence(deviceId: string, data: any) {
-  if (!instrEditorView || !data.field) return;
-  if (data.field === "instructions") {
-    const head = instrBridge ? instrBridge.mapPosition(data.head ?? 0) : (data.head ?? 0);
-    const anchor = instrBridge ? instrBridge.mapPosition(data.anchor ?? 0) : (data.anchor ?? 0);
-    remoteCursors.set(deviceId, {
-      deviceId, name: shortDeviceName(deviceId), color: "",
-      head, anchor, todoId: "",
+export function handlePresence(deviceId: string, data: any, senderUserId?: string) {
+  if (!data.field) return;
+  const cursorKey = senderUserId ? `${senderUserId}:${deviceId}` : deviceId;
+
+  // User blurred this editor -- remove their cursor
+  if (data.active === false) {
+    if (data.field === "instructions") {
+      instrCursors.delete(cursorKey);
+      if (instrEditorView) updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
+    } else if (data.field === "notes") {
+      notesCursors.delete(cursorKey);
+      if (notesEditorView) updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
+    }
+    return;
+  }
+
+  const name = data.username || shortDeviceName(deviceId);
+  const head = data.head ?? 0;
+  const anchor = data.anchor ?? 0;
+
+  if (data.field === "instructions" && instrEditorView) {
+    const mappedHead = instrBridge ? instrBridge.mapPosition(head) : head;
+    const mappedAnchor = instrBridge ? instrBridge.mapPosition(anchor) : anchor;
+    // Remove from notes if they moved to instructions
+    notesCursors.delete(cursorKey);
+    if (notesEditorView) updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
+    instrCursors.set(cursorKey, {
+      deviceId: cursorKey, name,
+      head: mappedHead, anchor: mappedAnchor, todoId: "instructions",
     });
-    updateRemoteCursors(instrEditorView, Array.from(remoteCursors.values()));
+    updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
+  } else if (data.field === "notes" && notesEditorView) {
+    const mappedHead = notesBridge ? notesBridge.mapPosition(head) : head;
+    const mappedAnchor = notesBridge ? notesBridge.mapPosition(anchor) : anchor;
+    // Remove from instructions if they moved to notes
+    instrCursors.delete(cursorKey);
+    if (instrEditorView) updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
+    notesCursors.set(cursorKey, {
+      deviceId: cursorKey, name,
+      head: mappedHead, anchor: mappedAnchor, todoId: "notes",
+    });
+    updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
   }
 }
 
@@ -323,6 +429,9 @@ function setPageEditing(editing: boolean) {
   addIngredientBtn.hidden = !editing;
   if (!editing) {
     ingredientForm.classList.remove("open");
+    // Tell remote users our cursors are gone
+    sendPresenceNow({ field: "instructions", active: false });
+    sendPresenceNow({ field: "notes", active: false });
   }
 
   instrEditorContainer.hidden = !editing;

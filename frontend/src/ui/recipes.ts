@@ -11,7 +11,7 @@ import { openModal, closeModal } from "../lib/modal";
 import { toastSuccess, toastWarning, toastError } from "../lib/toast";
 import {
   getDocMgr, getSyncClient, getActiveBook, getBooks,
-  getSelectedRecipeId, setSelectedRecipeId,
+  getSelectedRecipeId, setSelectedRecipeId, getCurrentUsername,
 } from "../state";
 import { pushSnapshot, renderCatalog, catalogDocId } from "../sync/push";
 import { canEditActiveBook } from "../sync/vault-helpers";
@@ -147,7 +147,16 @@ export function initRecipes() {
       const selectedRecipeId = getSelectedRecipeId();
       const syncClient = getSyncClient();
       const activeBook = getActiveBook();
-      if (selectedRecipeId && syncClient && activeBook) syncClient.sendPresence(`${activeBook.vaultId}/${selectedRecipeId}`, data);
+      if (selectedRecipeId && syncClient && activeBook) {
+        const docId = `${activeBook.vaultId}/${selectedRecipeId}`;
+        data.username = getCurrentUsername();
+        if (data._stage) {
+          delete data._stage;
+          syncClient.stagePresence(docId, data);
+        } else {
+          syncClient.sendPresence(docId, data);
+        }
+      }
     },
     onEditRecipe: () => {
       const selectedRecipeId = getSelectedRecipeId();
