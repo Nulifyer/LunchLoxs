@@ -130,7 +130,8 @@ export function initAccount() {
   // Check for update
   (document.getElementById("check-update-btn") as HTMLButtonElement).addEventListener("click", async () => {
     try {
-      const sw = navigator.serviceWorker?.controller;
+      const reg = await navigator.serviceWorker?.ready;
+      const sw = reg?.active;
       if (!sw) { toastError("Service worker not active"); return; }
       const result = await new Promise<any>((resolve) => {
         const handler = (event: MessageEvent) => {
