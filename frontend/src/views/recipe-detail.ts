@@ -260,7 +260,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
       menu.appendChild(groupSep);
       const groupLabel = document.createElement("div");
       groupLabel.className = "dropdown-group-label";
-      groupLabel.textContent = GROUP_LABELS[group];
+      groupLabel.textContent = GROUP_LABELS[group] ?? group;
       menu.appendChild(groupLabel);
 
       for (const entry of groupEntries) {
