@@ -496,6 +496,8 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     const action = btn.dataset.scale;
     if (action === "increase") currentServings++;
     else if (action === "decrease" && currentServings > 1) currentServings--;
+    else if (action === "double") currentServings *= 2;
+    else if (action === "half" && currentServings > 1) currentServings = Math.max(1, Math.round(currentServings / 2));
     else if (action === "reset") { currentServings = baseServings; checkedIngredients.clear(); }
     scaleFactor = currentServings / baseServings;
     updateScaleDisplay();
