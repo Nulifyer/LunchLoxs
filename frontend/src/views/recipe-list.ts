@@ -51,7 +51,8 @@ export function initRecipeList(cb: RecipeListCallbacks) {
       e.preventDefault();
       activeIdx = Math.max(activeIdx - 1, 0);
       updateActiveItem(items);
-    } else if (e.key === "Enter" && activeIdx >= 0) {
+    } else if (e.key === "Enter" && items.length > 0) {
+      if (activeIdx < 0) activeIdx = 0;
       e.preventDefault();
       const el = items[activeIdx] as HTMLElement;
       callbacks.onSelect(el.dataset.recipeId!, el.dataset.vaultId);
@@ -145,6 +146,9 @@ function renderSearchDropdown() {
   }
 
   searchResults.classList.add("open");
+  activeIdx = 0;
+  const items = searchResults.querySelectorAll("[data-recipe-id]");
+  updateActiveItem(items);
 }
 
 /** Build a snippet showing why this result matched */

@@ -34,6 +34,16 @@ initShare();
 initRecipes();
 initSyncStatus();
 
+// -- Keyboard shortcuts --
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+    e.preventDefault();
+    const search = document.getElementById("search-input") as HTMLInputElement;
+    search.focus();
+    search.select();
+  }
+});
+
 // -- Service worker --
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/service-worker.js").catch(console.error);

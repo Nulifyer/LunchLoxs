@@ -605,6 +605,7 @@ dialog label:not(.sr-only)+select {
 .app-shell {
   display: grid;
   grid-template-columns: 260px 1fr;
+  grid-template-rows: 1fr auto;
   height: calc(100dvh - var(--topbar-h));
   margin-top: var(--topbar-h);
 }
@@ -627,6 +628,7 @@ dialog label:not(.sr-only)+select {
   gap: 0.4rem;
   border-bottom: 1px solid var(--border);
   position: relative;
+  background-color: var(--bg);
 }
 
 .sidebar-header-actions {
@@ -839,17 +841,14 @@ dialog label:not(.sr-only)+select {
   color: var(--text);
 }
 
-.sidebar-footer {
+.app-footer {
+  grid-column: 1 / -1;
   padding: 0.5rem 0.75rem;
   border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-
-.sidebar-footer small {
-  font-size: 0.75rem;
-  color: var(--subtle);
+  background: var(--bg-surface);
 }
 
 /* -- Main content -- */
@@ -1282,7 +1281,32 @@ input.ing-edit.ing-text {
 
 /* -- Account page -- */
 .account-page {
-  max-width: 480px;
+  max-width: 800px;
+}
+
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.account-section-title {
+  grid-column: 1 / -1;
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--subtle);
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+@media (max-width: 768px) {
+  .account-grid {
+    grid-template-columns: 1fr;
+  }
+  #card-debug { order: 1; }
+  #card-local-data { order: 2; }
+  #card-danger { order: 3; }
 }
 
 .account-page article {
@@ -1290,7 +1314,6 @@ input.ing-edit.ing-text {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1rem;
-  margin-bottom: 1rem;
 }
 
 .account-page article>header {
@@ -1603,7 +1626,8 @@ button.icon-btn svg {
   }
 
   .app-shell.detail-open .main-content {
-    display: block;
+    display: flex;
+    flex-direction: column;
   }
 
   .topbar-search {

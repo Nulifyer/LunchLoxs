@@ -106,13 +106,6 @@
           <ul id="recipe-list" class="sidebar-list" role="listbox" aria-label="Recipe list"></ul>
         </div>
 
-        <div class="sidebar-footer">
-          <div id="sync-badge" class="sync-status-bar" hidden role="status">
-            <span id="conn-status" class="conn-status"></span>
-            <span class="sync-sep"></span>
-            <span id="sync-progress" class="sync-progress"></span>
-          </div>
-        </div>
       </aside>
 
       <main class="main-content" role="main">
@@ -120,62 +113,66 @@
 
         <!-- Account -->
         <div id="account-page" class="account-page" hidden>
-          <header>
-            <button id="account-back-btn" class="ghost mobile-only sm" aria-label="Back">&larr; Back</button>
-            <h2>Account</h2>
-          </header>
+          <button id="account-back-btn" class="ghost mobile-only sm" aria-label="Back">&larr; Back</button>
 
-          <article>
-            <header>Profile</header>
-            <p>Logged in as <strong id="account-username"></strong></p>
-            <p><small>Device: <code id="account-device-id"></code></small></p>
-            <button id="logout-btn">Logout</button>
-          </article>
+          <section class="account-grid">
+            <h3 class="account-section-title">Account</h3>
+            <article>
+              <header>Profile</header>
+              <p>Logged in as <strong id="account-username"></strong></p>
+              <p><small>Device: <code id="account-device-id"></code></small></p>
+              <button id="logout-btn">Logout</button>
+            </article>
 
-          <article>
-            <header>Theme</header>
-            <div id="theme-grid" class="theme-grid"></div>
-          </article>
+            <article>
+              <header>Theme</header>
+              <div id="theme-grid" class="theme-grid"></div>
+            </article>
 
-          <article>
-            <header>Change Password</header>
-            <form id="change-pw-form">
-              <label for="new-pw">New password</label>
-              <input type="password" id="new-pw" required />
-              <label for="confirm-pw">Confirm password</label>
-              <input type="password" id="confirm-pw" required />
-              <button type="submit">Change Password</button>
-            </form>
-            <p id="pw-change-error" class="alert-error" role="alert" hidden></p>
-            <p id="pw-change-success" class="alert-success" role="alert" hidden></p>
-          </article>
+            <article>
+              <header>Change Password</header>
+              <form id="change-pw-form">
+                <label for="new-pw">New password</label>
+                <input type="password" id="new-pw" required />
+                <label for="confirm-pw">Confirm password</label>
+                <input type="password" id="confirm-pw" required />
+                <button type="submit">Change Password</button>
+              </form>
+              <p id="pw-change-error" class="alert-error" role="alert" hidden></p>
+              <p id="pw-change-success" class="alert-success" role="alert" hidden></p>
+            </article>
+          </section>
 
-          <article>
-            <header>Local Data</header>
-            <p style="font-size:0.8rem">Clear cached data on this device only. Your account and server data are not affected.</p>
-            <button id="purge-local-btn" class="danger">Clear Local Data</button>
-          </article>
+          <section class="account-grid">
+            <h3 class="account-section-title">Data & Debug</h3>
 
-          <article>
-            <header>Debug</header>
-            <p style="font-size:0.8rem">Export application logs for troubleshooting.</p>
-            <div style="display:flex;gap:0.4rem;flex-wrap:wrap">
-              <button id="export-logs-btn" class="sm">Download Logs</button>
-              <button id="copy-logs-btn" class="sm">Copy to Clipboard</button>
-              <button id="generate-data-btn" class="sm" hidden>Generate Test Data</button>
-            </div>
-          </article>
+            <article id="card-local-data">
+              <header>Local Data</header>
+              <p style="font-size:0.8rem">Clear cached data on this device only. Your account and server data are not affected.</p>
+              <button id="purge-local-btn" class="danger">Clear Local Data</button>
+            </article>
 
-          <article>
-            <header><span class="danger-text">Danger Zone</span></header>
-            <p style="font-size:0.8rem">Permanently delete <strong>all your data</strong> from the server and every device. This cannot be undone.</p>
-            <form id="purge-form">
-              <label for="purge-confirm">Type your username to confirm</label>
-              <input type="text" id="purge-confirm" required placeholder="username" autocomplete="off" />
-              <button type="submit" class="danger-fill">Purge All Data</button>
-            </form>
-            <p id="purge-error" class="alert-error" role="alert" hidden></p>
-          </article>
+            <article id="card-debug">
+              <header>Debug</header>
+              <p style="font-size:0.8rem">Export application logs for troubleshooting.</p>
+              <div style="display:flex;gap:0.4rem;flex-wrap:wrap">
+                <button id="export-logs-btn" class="sm">Download Logs</button>
+                <button id="copy-logs-btn" class="sm">Copy to Clipboard</button>
+                <button id="generate-data-btn" class="sm" hidden>Generate Test Data</button>
+              </div>
+            </article>
+
+            <article id="card-danger">
+              <header><span class="danger-text">Danger Zone</span></header>
+              <p style="font-size:0.8rem">Permanently delete <strong>all your data</strong> from the server and every device. This cannot be undone.</p>
+              <form id="purge-form">
+                <label for="purge-confirm">Type your username to confirm</label>
+                <input type="text" id="purge-confirm" required placeholder="username" autocomplete="off" />
+                <button type="submit" class="danger-fill">Purge All Data</button>
+              </form>
+              <p id="purge-error" class="alert-error" role="alert" hidden></p>
+            </article>
+          </section>
         </div>
 
         <!-- Recipe detail -->
@@ -218,6 +215,14 @@
           <div id="notes-preview-container" class="preview-wrap preview-clickable"></div>
         </div>
       </main>
+
+      <div class="app-footer">
+        <div id="sync-badge" class="sync-status-bar" hidden role="status">
+          <span id="conn-status" class="conn-status"></span>
+          <span class="sync-sep"></span>
+          <span id="sync-progress" class="sync-progress"></span>
+        </div>
+      </div>
     </div>
   </div>
 
