@@ -15,7 +15,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { createDropdown } from "../lib/dropdown";
 import { parseQty, formatQty, scaleQty } from "../lib/quantity";
-import { convertIngredient, convertToUnit, resolveUnit, getConversionTargets, type UnitSystem } from "../lib/units";
+import { convertIngredient, convertToUnit, resolveUnit, getConversionTargets, isDecimalUnit, type UnitSystem } from "../lib/units";
 import { findDensity, convertViaDensity, WEIGHT_UNITS, VOLUME_UNITS } from "../lib/densities";
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
@@ -156,13 +156,17 @@ export function initRecipeDetail(cb: DetailCallbacks) {
       return;
     }
 
+    // Unit conversion picker (click on unit span in view mode)
+    const unitSpan = target.closest(".ing-unit") as HTMLElement;
+    if (unitSpan && !pageEditing) {
+      e.stopPropagation(); // prevent document click listener from immediately closing the picker
+      const rect = unitSpan.getBoundingClientRect();
+      showUnitPicker(unitSpan, rect.left, rect.bottom + 4);
+      return;
+    }
   });
 
-  // -- Per-ingredient unit picker (right-click / long-press) --
-  let longPressTimer: ReturnType<typeof setTimeout> | null = null;
-  let longPressTarget: HTMLElement | null = null;
-  let longPressOriginX = 0;
-  let longPressOriginY = 0;
+  // -- Per-ingredient unit picker --
 
   function showUnitPicker(unitSpan: HTMLElement, x: number, y: number) {
     const li = unitSpan.closest("li") as HTMLElement;
@@ -213,7 +217,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     for (const t of targets) {
       const converted = scaledNum !== null ? convertToUnit(scaledNum, rawUnit, t.unit) : null;
       if (!converted || converted.qty < 0.1 || converted.qty > 999) continue;
-      entries.push({ qty: converted.qty, label: `${formatQty(converted.qty)} ${t.label}`, overrideKey: t.unit, group: t.system });
+      entries.push({ qty: converted.qty, label: `${formatQty(converted.qty, isDecimalUnit(t.unit))} ${t.label}`, overrideKey: t.unit, group: t.system });
     }
 
     // Density-based cross-dimension conversions (volume <-> weight)
@@ -224,7 +228,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
       for (const [unit] of targetUnits) {
         const result = convertViaDensity(scaledNum, unitDef.toBase, unitDef.dimension, unit, density);
         if (!result || result.qty < 0.1 || result.qty > 999) continue;
-        entries.push({ qty: result.qty, label: `~${formatQty(result.qty)} ${unit}`, overrideKey: `~${unit}`, group: "density" });
+        entries.push({ qty: result.qty, label: `~${formatQty(result.qty, true)} ${unit}`, overrideKey: `~${unit}`, group: "density" });
       }
     }
 
@@ -298,56 +302,6 @@ export function initRecipeDetail(cb: DetailCallbacks) {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && activeUnitPicker) closeUnitPicker();
-  });
-
-  // Right-click on unit span
-  ingredientsList.addEventListener("contextmenu", (e) => {
-    if (pageEditing) return;
-    const target = e.target as HTMLElement;
-    const unitSpan = target.closest(".ing-unit") as HTMLElement;
-    if (!unitSpan) return;
-    const li = unitSpan.closest("li") as HTMLElement;
-    const rawUnit = li?.dataset.origUnit;
-    if (!rawUnit || !resolveUnit(rawUnit)) return;
-    e.preventDefault();
-    showUnitPicker(unitSpan, e.clientX, e.clientY);
-  });
-
-  // Long-press on unit span (mobile)
-  ingredientsList.addEventListener("pointerdown", (e) => {
-    if (pageEditing) return;
-    const target = e.target as HTMLElement;
-    const unitSpan = target.closest(".ing-unit") as HTMLElement;
-    if (!unitSpan) return;
-    const li = unitSpan.closest("li") as HTMLElement;
-    const rawUnit = li?.dataset.origUnit;
-    if (!rawUnit || !resolveUnit(rawUnit)) return;
-
-    longPressTarget = unitSpan;
-    longPressOriginX = e.clientX;
-    longPressOriginY = e.clientY;
-    longPressTimer = setTimeout(() => {
-      longPressTimer = null;
-      showUnitPicker(unitSpan, e.clientX, e.clientY);
-    }, 500);
-  });
-
-  ingredientsList.addEventListener("pointerup", () => {
-    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-    longPressTarget = null;
-  });
-
-  ingredientsList.addEventListener("pointermove", (e) => {
-    if (longPressTimer && longPressTarget) {
-      // Cancel if finger moves too far from initial press point
-      const dx = e.clientX - longPressOriginX;
-      const dy = e.clientY - longPressOriginY;
-      if (dx * dx + dy * dy > 400) { // 20px radius
-        clearTimeout(longPressTimer);
-        longPressTimer = null;
-        longPressTarget = null;
-      }
-    }
   });
 
   ingredientsList.addEventListener("input", (e) => {
@@ -928,7 +882,7 @@ function renderIngredients(doc: RecipeContent) {
               if (sys.unit !== ing.unit) result = sys;
             }
             if (result) {
-              displayQty = escapeHtml(formatQty(result.qty));
+              displayQty = escapeHtml(formatQty(result.qty, isDecimalUnit(result.unit)));
               displayUnit = escapeHtml(result.unit);
               converted = true;
             }

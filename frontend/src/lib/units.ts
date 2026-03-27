@@ -88,6 +88,16 @@ const ALIASES: Record<string, string> = {
 const defByCanonical = new Map<string, UnitDef>();
 for (const d of UNIT_DEFS) defByCanonical.set(d.canonical, d);
 
+/** Units that should display as decimals rather than fractions. */
+const DECIMAL_UNITS = new Set(["ml", "dl", "l", "g", "kg"]);
+
+/** Whether a unit should be formatted as decimal (e.g. 0.5 not 1/2). */
+export function isDecimalUnit(unit: string): boolean {
+  // Density-based units are prefixed with ~
+  const canonical = unit.startsWith("~") ? unit.slice(1) : unit;
+  return DECIMAL_UNITS.has(canonical);
+}
+
 /** Resolve a user-typed unit string to its canonical UnitDef, or null. */
 export function resolveUnit(raw: string): UnitDef | null {
   const key = raw.trim().toLowerCase();

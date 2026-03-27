@@ -44,8 +44,12 @@ const FRACTIONS: [number, string][] = [
   [0.5, "1/2"], [0.625, "5/8"], [0.667, "2/3"], [0.75, "3/4"], [0.875, "7/8"],
 ];
 
-export function formatQty(value: number): string {
+export function formatQty(value: number, decimal?: boolean): string {
   if (value <= 0) return "";
+  if (decimal) {
+    if (value % 1 === 0) return String(value);
+    return value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  }
   const whole = Math.floor(value);
   const rem = value - whole;
   if (rem < 0.05) return String(whole || "");
