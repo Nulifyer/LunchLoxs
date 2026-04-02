@@ -2,8 +2,6 @@
   "version": "0.2.0",
   "configurations": [
     {
-      // Same-origin dev: frontend on :5000 auto-discovers backend on :8000
-      // Cross-origin: set FRONTEND_URL to your frontend origin
       "name": "Debug Backend",
       "type": "go",
       "request": "launch",
@@ -12,13 +10,11 @@
       "env": {
         "DATABASE_URL": "postgres://postgres:postgres@localhost:5432/localdb?sslmode=disable",
         "PORT": "8000",
-        "FRONTEND_URL": "http://localhost:5000",
+        "FRONTEND_HOST": "localhost:5000",
         "BIND_HOST": "127.0.0.1"
       }
     },
     {
-      // Same-origin dev: no backend-url meta tag needed (auto-detected)
-      // Cross-origin: add <meta name="backend-url" content="..."> to index.html
       "name": "Debug Frontend (Brave)",
       "type": "chrome",
       "request": "launch",

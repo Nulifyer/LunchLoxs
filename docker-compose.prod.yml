@@ -3,13 +3,12 @@
 # Two deployment modes:
 #
 #   Same-origin (default):
-#     Frontend and backend share DOMAIN. Traefik routes /api and /ws to backend.
-#     Set DOMAIN in .env. Leave BACKEND_URL empty.
+#     Frontend and backend share a domain. Traefik routes /api and /ws to backend.
+#     Set FRONTEND_HOST + FRONTEND_HTTPS in .env.
 #
 #   Cross-origin:
 #     Frontend and backend on separate domains.
-#     Set DOMAIN (frontend) and BACKEND_URL (e.g. https://api.example.com) in .env.
-#     Add a second Traefik router for the backend domain, or host backend separately.
+#     Also set BACKEND_HOST + BACKEND_HTTPS in .env.
 #
 # Usage:
 #   1. Copy .env.example to .env and fill in your values
@@ -80,11 +79,12 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lunchloxs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lunchloxs}?sslmode=disable
       PORT: "8000"
-      FRONTEND_URL: https://${DOMAIN:?Set DOMAIN in .env}
+      FRONTEND_HOST: ${FRONTEND_HOST:?Set FRONTEND_HOST in .env}
+      FRONTEND_HTTPS: ${FRONTEND_HTTPS:-}
       BIND_HOST: "0.0.0.0"
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`${DOMAIN}`) && (PathPrefix(`/api`) || PathPrefix(`/ws`))"
+      - "traefik.http.routers.backend.rule=Host(`${FRONTEND_HOST}`) && (PathPrefix(`/api`) || PathPrefix(`/ws`))"
       - "traefik.http.routers.backend.entrypoints=web"
       - "traefik.http.routers.backend.tls=true"
       - "traefik.http.services.backend.loadbalancer.server.port=8000"
@@ -97,10 +97,11 @@ services:
     depends_on:
       - backend
     environment:
-      BACKEND_URL: ${BACKEND_URL:-}
+      BACKEND_HOST: ${BACKEND_HOST:-}
+      BACKEND_HTTPS: ${BACKEND_HTTPS:-}
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.frontend.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.frontend.rule=Host(`${FRONTEND_HOST}`)"
       - "traefik.http.routers.frontend.entrypoints=web"
       - "traefik.http.routers.frontend.tls=true"
       - "traefik.http.routers.frontend.priority=1"

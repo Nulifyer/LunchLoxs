@@ -62,7 +62,8 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/localdb?sslmode=disable
       PORT: "8000"
-      FRONTEND_URL: https://localhost:5000
+      FRONTEND_HOST: localhost:5000
+      FRONTEND_HTTPS: "true"
       BIND_HOST: "0.0.0.0"
     labels:
       - "traefik.enable=true"
@@ -80,7 +81,8 @@ services:
     depends_on:
       - backend
     environment:
-      BACKEND_URL: ${BACKEND_URL:-}
+      BACKEND_HOST: ${BACKEND_HOST:-}
+      BACKEND_HTTPS: ${BACKEND_HTTPS:-}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=Host(`localhost`)"

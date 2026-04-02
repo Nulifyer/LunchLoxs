@@ -45,7 +45,13 @@ func main() {
 	databaseURL := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/localdb?sslmode=disable")
 	port := getEnv("PORT", "8000")
 	bindHost := getEnv("BIND_HOST", "127.0.0.1")
-	frontendURL := getEnv("FRONTEND_URL", "http://localhost:5000")
+	frontendHost := getEnv("FRONTEND_HOST", "localhost:5000")
+	frontendHTTPS := getEnv("FRONTEND_HTTPS", "")
+	frontendScheme := "http"
+	if frontendHTTPS == "true" {
+		frontendScheme = "https"
+	}
+	frontendURL := frontendScheme + "://" + frontendHost
 
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {

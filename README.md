@@ -4,6 +4,8 @@ A privacy-first recipe manager with end-to-end encryption. Organize, scale, conv
 
 Built as an offline-first PWA with real-time collaboration, so you can cook from your phone even without signal, and edit together with family in real time.
 
+![Screenshot](screenshot.png)
+
 ## Features
 
 ### 🔒 Privacy & Security
@@ -37,16 +39,19 @@ Built as an offline-first PWA with real-time collaboration, so you can cook from
 ```
 frontend/          TypeScript PWA (Bun build)
   src/
-    ui/            Auth, books, recipes, sharing, account
-    views/         Recipe list, recipe detail
-    sync/          Push, vault helpers
-    lib/           Crypto, sync client, search, Automerge, CodeMirror, themes
-  public/          Static assets, CSS, HTML
+    components/    Web Components (Shadow DOM) -- tag-input, autocomplete, recipe-preview, book-list, recipe-list-view
+    ui/            UI controllers -- auth, books, recipes, sharing, account, sync-status
+    views/         Recipe list, recipe detail (split into sub-modules: state, ingredients, presence, assets, recipe-links, meta)
+    sync/          Push queue, sync events, vault helpers
+    lib/           Crypto, automerge-store, sync-client, blob-client, config, search, vector-search, CodeMirror, themes
+    workers/       Service worker (asset + blob caching), embedding worker (local vector search)
+  public/          Static assets, CSS, HTML shell
 
 backend/           Go HTTP + WebSocket server
-  cmd/server/      Entrypoint
+  cmd/server/      Production entrypoint
+  cmd/testserver/  Integration test server
   internal/
-    server/        HTTP routes, CORS
+    server/        HTTP routes, CORS, security headers (HSTS, CSP)
     sync/          WebSocket hub, client handling, rate limiting
     db/            PostgreSQL queries (pgx)
   migrations/      SQL migrations (golang-migrate)
@@ -90,6 +95,10 @@ Traefik handles TLS termination with a self-signed certificate on localhost.
 
 Pull pre-built images from GHCR and run with your own domain and TLS certificate.
 
+#### Same-origin (recommended)
+
+Frontend and backend share one domain. Traefik routes `/api` and `/ws` to the backend.
+
 ```sh
 # 1. Download the prod compose files
 curl -LO https://raw.githubusercontent.com/Nulifyer/LunchLoxs/main/docker-compose.prod.yml
@@ -97,7 +106,10 @@ curl -LO https://raw.githubusercontent.com/Nulifyer/LunchLoxs/main/.env.example
 
 # 2. Configure environment
 cp .env.example .env
-# Edit .env: set DOMAIN and POSTGRES_PASSWORD
+# Edit .env:
+#   FRONTEND_HOST=lunchloxs.example.com
+#   FRONTEND_HTTPS=true
+#   POSTGRES_PASSWORD=...
 
 # 3. Add TLS certificate and Traefik config
 mkdir -p certs traefik
@@ -109,46 +121,38 @@ curl -o traefik/dynamic.yml https://raw.githubusercontent.com/Nulifyer/LunchLoxs
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-All three images (frontend, backend, migrate) are pulled from GHCR -- no need to clone the repo. This gives you:
-- Traefik reverse proxy with HTTPS (port 443) and HTTP->HTTPS redirect (port 80)
-- Frontend and backend on a single domain (backend at `/api` and `/ws`)
-- PostgreSQL with persistent volume
-- Migrations bundled in the migrate image, auto-run on startup
+#### Cross-origin
 
-To pin a specific version instead of `latest`:
-```sh
-# In docker-compose.prod.yml, replace :latest with a tag
-image: ghcr.io/nulifyer/lunchloxs-backend:v1.1.0
-image: ghcr.io/nulifyer/lunchloxs-frontend:v1.1.0
-```
-
-### Generate test data
+Frontend and backend on separate domains (e.g. `app.example.com` + `api.example.com`).
 
 ```sh
-cd frontend
-bun run dev-data/generate-large.ts [books] [recipes-per-book]
+cp .env.example .env
+# Edit .env:
+#   FRONTEND_HOST=app.example.com
+#   FRONTEND_HTTPS=true
+#   BACKEND_HOST=api.example.com
+#   BACKEND_HTTPS=true
+#   POSTGRES_PASSWORD=...
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-### Regenerate icons
-
-```sh
-cd frontend
-bun add -d @resvg/resvg-js && bun run scripts/gen-icons.ts && bun remove @resvg/resvg-js
-```
+The frontend container constructs the backend URL from `BACKEND_HOST` + `BACKEND_HTTPS` at runtime and injects a `<meta>` tag into the HTML -- no rebuild needed. The backend constructs the frontend origin from `FRONTEND_HOST` + `FRONTEND_HTTPS` for CORS.
 
 ## Security Model
 
 | Layer | Mechanism |
 |---|---|
-| Authentication | Argon2id hash (server never sees passphrase) |
-| Master key | AES-256-GCM wrapped with Argon2id-derived wrapping key |
+| Authentication | Argon2id (iterations=3, 19 MB) hash -- server never sees passphrase |
+| Master key | AES-256-GCM, wrapped with Argon2id-derived wrapping key. Full rotation on password change (re-encrypts all local data). |
 | Vault keys | AES-256-GCM, exchanged via ECDH P-256 + HKDF |
 | Data at rest | AES-256-GCM per document in IndexedDB |
-| Data in transit | AES-256-GCM encrypted payloads over WebSocket |
+| Data in transit | AES-256-GCM encrypted payloads over WebSocket. Unverified payloads are rejected when signing keys are available. |
+| Blob metadata | Filenames and MIME types encrypted inside the blob body -- server sees only opaque bytes |
 | Payload signing | ECDSA P-256 on all sync messages |
-| Key rotation | New vault key generated on member removal |
+| Key rotation | Vault keys rotated on member removal. Master key rotated on password change. |
+| Transport | HTTPS enforced outside localhost. HSTS, CSP, X-Frame-Options, X-Content-Type-Options headers set by backend. |
 | Timing attacks | 2-second minimum auth time, constant-time compare |
-| Rate limiting | Token bucket (30 msg/sec, burst 50) on WebSocket |
+| Rate limiting | Configurable token bucket on WebSocket pushes |
 
 ## License
 

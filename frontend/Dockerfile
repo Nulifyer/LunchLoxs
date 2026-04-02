@@ -9,7 +9,9 @@ FROM oven/bun:1-alpine
 WORKDIR /app
 COPY --from=build /app/dist ./dist
 COPY <<'EOF' serve.ts
-const backendUrl = Bun.env.BACKEND_URL ?? "";
+const backendHost = Bun.env.BACKEND_HOST ?? "";
+const backendHttps = Bun.env.BACKEND_HTTPS === "true";
+const backendUrl = backendHost ? `${backendHttps ? "https" : "http"}://${backendHost}` : "";
 const base: Record<string, string> = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "credentialless",
