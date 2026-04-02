@@ -839,6 +839,9 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
 
   const doc = store.getDoc();
 
+  // Reconcile stale recipe link names: update #[Old Name](docId) to use current catalog titles
+  reconcileRecipeLinkNames();
+
   // Shared blob resolver for CM image preview widgets
   const blobResolver = async (checksum: string): Promise<string | null> => {
     const book = getActiveBook();
@@ -1357,6 +1360,46 @@ function resolveIngredientRefs(md: string, doc: Recipe): string {
     const parts = [displayQty, displayUnit, escapeHtml(ing.item)].filter(Boolean);
     return `<span class="ing-ref">${parts.join(" ")}</span>`;
   });
+}
+
+/**
+ * Update stale recipe link display names in instructions/notes.
+ * Matches `#[Old Name](vaultId/recipeId)` and replaces with the current
+ * catalog title for that recipe, preserving the stable ID.
+ */
+function reconcileRecipeLinkNames() {
+  if (!store) return;
+  const recipes = getCatalogRecipes();
+  if (recipes.length === 0) return;
+
+  const pattern = /#\[([^\]]+)\]\(([^)]+)\)/g;
+
+  function updateField(text: string): string | null {
+    let changed = false;
+    const updated = text.replace(pattern, (match, name: string, docId: string) => {
+      const parts = docId.split("/");
+      const recipeId = parts.length > 1 ? parts[1]! : parts[0]!;
+      const entry = recipes.find((r) => r.id === recipeId);
+      if (entry && entry.title !== name) {
+        changed = true;
+        return `#[${entry.title}](${docId})`;
+      }
+      return match;
+    });
+    return changed ? updated : null;
+  }
+
+  const doc = store.getDoc();
+  const newInstructions = updateField(doc.instructions ?? "");
+  const newNotes = updateField(doc.notes ?? "");
+
+  if (newInstructions !== null || newNotes !== null) {
+    store.change((d) => {
+      if (newInstructions !== null) d.instructions = newInstructions;
+      if (newNotes !== null) d.notes = newNotes;
+    });
+    onPushSnapshot?.();
+  }
 }
 
 /** Collected linked recipe IDs from the last render pass. */

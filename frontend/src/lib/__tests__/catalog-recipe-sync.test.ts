@@ -134,7 +134,7 @@ async function addDevice(source: { key: CryptoKey; catalog: AutomergeStore<TestC
 function reconcileOnOpen(catalog: AutomergeStore<TestCatalog>, recipe: AutomergeStore<TestRecipe>) {
   const recipeDoc = recipe.getDoc();
   const catalogDoc = catalog.getDoc();
-  const entry = catalogDoc.recipes?.find((r) => r.id === RECIPE_ID);
+  const entry = catalogDoc.recipes?.find((r: TestCatalogEntry) => r.id === RECIPE_ID);
 
   if (!recipeDoc.title && entry?.title) {
     // Migration: seed recipe doc from catalog
@@ -147,7 +147,7 @@ function reconcileOnOpen(catalog: AutomergeStore<TestCatalog>, recipe: Automerge
     // Reconcile: recipe doc is source of truth
     if (entry.title !== recipeDoc.title || JSON.stringify(entry.tags ?? []) !== JSON.stringify(recipeDoc.tags ?? [])) {
       catalog.change((doc) => {
-        const e = doc.recipes?.find((r) => r.id === RECIPE_ID);
+        const e = doc.recipes?.find((r: TestCatalogEntry) => r.id === RECIPE_ID);
         if (e) {
           e.title = recipeDoc.title;
           e.tags = [...(recipeDoc.tags ?? [])] as any;
@@ -166,12 +166,12 @@ function reconcileOnOpen(catalog: AutomergeStore<TestCatalog>, recipe: Automerge
 function syncCatalogFromRecipe(catalog: AutomergeStore<TestCatalog>, recipe: AutomergeStore<TestRecipe>) {
   const recipeDoc = recipe.getDoc();
   const catalogDoc = catalog.getDoc();
-  const entry = catalogDoc.recipes?.find((r) => r.id === RECIPE_ID);
+  const entry = catalogDoc.recipes?.find((r: TestCatalogEntry) => r.id === RECIPE_ID);
   if (!entry) return false;
   if (entry.title === recipeDoc.title && JSON.stringify(entry.tags) === JSON.stringify(recipeDoc.tags)) return false;
 
   catalog.change((doc) => {
-    const e = doc.recipes?.find((r) => r.id === RECIPE_ID);
+    const e = doc.recipes?.find((r: TestCatalogEntry) => r.id === RECIPE_ID);
     if (e) {
       e.title = recipeDoc.title;
       e.tags = [...(recipeDoc.tags ?? [])] as any;
@@ -198,7 +198,7 @@ function userEditMeta(
   });
   // onMetaChanged mirrors to catalog
   catalog.change((doc) => {
-    const entry = doc.recipes?.find((r) => r.id === RECIPE_ID);
+    const entry = doc.recipes?.find((r: TestCatalogEntry) => r.id === RECIPE_ID);
     if (entry) {
       entry.title = title;
       entry.tags = [...tags] as any;
@@ -211,7 +211,7 @@ function userEditMeta(
 describe("Catalog ↔ Recipe doc: initial consistency", () => {
   test("new recipe has matching title/tags in catalog and doc", async () => {
     const { db, catalog, recipe } = await setupDevice({ title: "Pasta", tags: ["italian", "quick"] });
-    const entry = catalog.getDoc().recipes.find((r) => r.id === RECIPE_ID)!;
+    const entry = catalog.getDoc().recipes.find((r: TestCatalogEntry) => r.id === RECIPE_ID)!;
 
     expect(entry.title).toBe("Pasta");
     expect(entry.tags).toEqual(["italian", "quick"]);
@@ -240,7 +240,7 @@ describe("Catalog ↔ Recipe doc: local edits", () => {
     const { db, catalog, recipe } = await setupDevice({ title: "Old Name" });
     userEditMeta(catalog, recipe, "New Name", ["updated"]);
 
-    const entry = catalog.getDoc().recipes.find((r) => r.id === RECIPE_ID)!;
+    const entry = catalog.getDoc().recipes.find((r: TestCatalogEntry) => r.id === RECIPE_ID)!;
     expect(entry.title).toBe("New Name");
     expect(entry.tags).toEqual(["updated"]);
     expect(recipe.getDoc().title).toBe("New Name");
@@ -258,7 +258,7 @@ describe("Catalog ↔ Recipe doc: local edits", () => {
     userEditMeta(catalog, recipe, "v3", ["a", "b"]);
     userEditMeta(catalog, recipe, "v4 Final", ["a", "b", "c"]);
 
-    const entry = catalog.getDoc().recipes.find((r) => r.id === RECIPE_ID)!;
+    const entry = catalog.getDoc().recipes.find((r: TestCatalogEntry) => r.id === RECIPE_ID)!;
     expect(entry.title).toBe("v4 Final");
     expect(entry.tags).toEqual(["a", "b", "c"]);
     expect(recipe.getDoc().title).toBe("v4 Final");
@@ -286,7 +286,7 @@ describe("Catalog ↔ Recipe doc: remote recipe doc sync", () => {
     expect(didSync).toBe(true);
 
     // Catalog on device B is now in sync
-    const entry = devB.catalog.getDoc().recipes.find((r) => r.id === RECIPE_ID)!;
+    const entry = devB.catalog.getDoc().recipes.find((r: TestCatalogEntry) => r.id === RECIPE_ID)!;
     expect(entry.title).toBe("Soup v2");
     expect(entry.tags).toEqual(["hot"]);
 
@@ -307,7 +307,7 @@ describe("Catalog ↔ Recipe doc: remote recipe doc sync", () => {
     expect(devB.recipe.getDoc().title).toBe("Sourdough");
 
     // WITHOUT calling syncCatalogFromRecipe, catalog is stale
-    const entry = devB.catalog.getDoc().recipes.find((r) => r.id === RECIPE_ID)!;
+    const entry = devB.catalog.getDoc().recipes.find((r: TestCatalogEntry) => r.id === RECIPE_ID)!;
     expect(entry.title).toBe("Bread"); // still old!
     expect(entry.tags).toEqual(["dinner"]); // still old!
 
@@ -334,7 +334,7 @@ describe("Catalog ↔ Recipe doc: remote recipe doc sync", () => {
     expect(result).toBe("reconciled");
 
     // Now catalog matches
-    const entry = devB.catalog.getDoc().recipes.find((r) => r.id === RECIPE_ID)!;
+    const entry = devB.catalog.getDoc().recipes.find((r: TestCatalogEntry) => r.id === RECIPE_ID)!;
     expect(entry.title).toBe("Chocolate Cake");
     expect(entry.tags).toEqual(["dessert"]);
 
@@ -377,7 +377,7 @@ describe("Catalog ↔ Recipe doc: remote catalog sync", () => {
     devB.recipe.merge(devA.recipe.save());
     syncCatalogFromRecipe(devB.catalog, devB.recipe);
 
-    const entry = devB.catalog.getDoc().recipes.find((r) => r.id === RECIPE_ID)!;
+    const entry = devB.catalog.getDoc().recipes.find((r: TestCatalogEntry) => r.id === RECIPE_ID)!;
     expect(entry.title).toBe("Fish Tacos");
     expect(entry.tags).toEqual(["mexican", "seafood"]);
     expect(devB.recipe.getDoc().title).toBe("Fish Tacos");
@@ -420,7 +420,7 @@ describe("Catalog ↔ Recipe doc: migration (empty doc)", () => {
 
     // Even if catalog says something different, recipe doc wins
     catalog.change((doc) => {
-      const entry = doc.recipes.find((r) => r.id === RECIPE_ID);
+      const entry = doc.recipes.find((r: TestCatalogEntry) => r.id === RECIPE_ID);
       if (entry) entry.title = "Catalog Override Attempt";
     });
 
