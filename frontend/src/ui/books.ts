@@ -9,7 +9,7 @@ import { createDropdown } from "../lib/dropdown";
 import { removeBookFromIndex } from "../lib/search";
 import { onCatalogChanged } from "../views/recipe-detail";
 import { toastSuccess, toastWarning, toastError } from "../lib/toast";
-import { parseRecipeMarkdown, recipeToMarkdown } from "../lib/export";
+import { parseRecipeMarkdown } from "../lib/export";
 import {
   getDocMgr, getSyncClient, getBooks, setBooks, getActiveBook, setActiveBook,
   getSelectedRecipeId, getCurrentUsername, getCurrentUserId, getPushQueue,
@@ -20,7 +20,7 @@ import { toBase64 } from "../lib/encoding";
 import { pushSnapshot, renderCatalog, catalogDocId } from "../sync/push";
 import { refreshBookNameFromCatalog, rebuildBookIndex, canEditActiveBook, setRenderBookSelect } from "../sync/vault-helpers";
 import { openShareDialog } from "../ui/share";
-import { handleExportBook, handleImportToBook, handleZipImport, importRecipesIntoBook } from "../import-export";
+import { handleExportBook, handleExportBooks, handleImportToBook, handleZipImport, importRecipesIntoBook } from "../import-export";
 import { deselectRecipe } from "../ui/recipes";
 import { on as onSyncEvent } from "../sync/sync-events";
 import type { Book, BookCatalog, Recipe } from "../types";
@@ -353,59 +353,8 @@ export function initBooks() {
   // Bulk actions
   (document.getElementById("book-bulk-export") as HTMLButtonElement).addEventListener("click", async () => {
     if (selectedBookIds.size === 0) return;
-    const ok = await showConfirm(`Export ${selectedBookIds.size} book${selectedBookIds.size !== 1 ? "s" : ""}? Exported files are not encrypted.`, { title: "Export Warning", confirmText: "Export" });
-    if (!ok) return;
-    try {
-      const JSZip = (await import("jszip")).default;
-      const { recipeToMarkdown } = await import("../lib/export");
-      const zip = new JSZip();
-      const books = getBooks();
-      const docMgr = getDocMgr();
-      let totalRecipes = 0;
-      for (const vid of selectedBookIds) {
-        const book = books.find((b) => b.vaultId === vid);
-        if (!book || !docMgr) continue;
-        const catalog = docMgr.get<BookCatalog>(`${book.vaultId}/catalog`);
-        if (!catalog) continue;
-        const recipes = catalog.getDoc().recipes ?? [];
-        const folder = zip.folder(book.name)!;
-
-        // Write _book.yaml (matches single-book export format)
-        folder.file("_book.yaml", [
-          `name: "${book.name.replace(/"/g, '\\"')}"`,
-          `exportedAt: "${new Date().toISOString()}"`,
-          `format: "recipepwa-v1"`,
-          `recipeCount: ${recipes.length}`,
-        ].join("\n"));
-
-        // Write recipes with deduped slugs
-        const usedNames = new Set<string>();
-        for (const meta of recipes) {
-          const base = meta.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "untitled";
-          let slug = base; let counter = 1;
-          while (usedNames.has(slug)) slug = `${base}-${counter++}`;
-          usedNames.add(slug);
-
-          const recipeDocId = `${book.vaultId}/${meta.id}`;
-          let rs = docMgr.get<Recipe>(recipeDocId);
-          let needsClose = false;
-          if (!rs) { try { rs = await docMgr.open<Recipe>(recipeDocId, (d) => { d.title = meta.title; d.tags = [] as any; d.servings = 4; d.prepMinutes = 0; d.cookMinutes = 0; d.createdAt = 0; d.updatedAt = 0; d.description = ""; d.ingredients = []; d.instructions = ""; d.imageUrls = []; d.notes = ""; }); needsClose = true; } catch { rs = null; } }
-          if (rs) {
-            const recipe = rs.getDoc();
-            folder.file(`${slug}.md`, recipeToMarkdown(recipe));
-          }
-          if (needsClose) docMgr.close(recipeDocId);
-          totalRecipes++;
-        }
-      }
-      const blob = await zip.generateAsync({ type: "blob" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `recipes-export.zip`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-      toastSuccess(`Exported ${totalRecipes} recipes from ${selectedBookIds.size} books`);
-    } catch (e: any) { toastError("Export failed: " + (e.message ?? e)); }
+    const books = getBooks().filter((b) => selectedBookIds.has(b.vaultId));
+    await handleExportBooks(books);
   });
 
   (document.getElementById("book-bulk-delete") as HTMLButtonElement).addEventListener("click", async () => {

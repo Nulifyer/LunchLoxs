@@ -1,17 +1,24 @@
 /**
- * Export a recipe book as a ZIP of markdown files.
+ * Export a recipe book as a ZIP of markdown files with assets.
  * Import from a ZIP back into a book.
  *
  * Ingredients use a pipe-delimited markdown table for lossless round-trip:
  *   | Qty   | Unit  | Ingredient       |
  *   |-------|-------|------------------|
  *   | 2 1/4 | cups  | all-purpose flour|
+ *
+ * ZIP structure:
+ *   BookName/
+ *     BookName.yaml        (book metadata)
+ *     Recipe Title.md      (YAML frontmatter + markdown body)
+ *     assets/
+ *       <sha256hex>.webp   (decrypted blob files)
  */
 
 import JSZip from "jszip";
-import type { CatalogEntry, Recipe, RecipeMeta, RecipeContent } from "../types";
-import type { AutomergeStore } from "./automerge-store";
+import type { CatalogEntry, BookCatalog, Recipe, RecipeMeta, RecipeContent } from "../types";
 import type { DocumentManager } from "./document-manager";
+import { loadBlobDecrypted, type BlobMeta } from "./blob-client";
 
 /** Parse a simple YAML key: "value" or key: value from a string. Handles escaped quotes. */
 function parseYamlString(yaml: string, key: string): string | null {
@@ -28,12 +35,8 @@ function parseYamlString(yaml: string, key: string): string | null {
   return null;
 }
 
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    || "untitled";
+function sanitizeFilename(title: string): string {
+  return title.replace(/[<>:"/\\|?*]/g, "").trim() || "untitled";
 }
 
 type Ingredient = { quantity: string; unit: string; item: string };
@@ -80,6 +83,37 @@ function parseIngredientTable(text: string): Ingredient[] {
   return ingredients;
 }
 
+const MIME_TO_EXT: Record<string, string> = {
+  "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png",
+  "image/gif": "gif", "image/svg+xml": "svg", "application/pdf": "pdf",
+};
+
+const EXT_TO_MIME: Record<string, string> = {
+  webp: "image/webp", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+  gif: "image/gif", svg: "image/svg+xml", pdf: "application/pdf",
+};
+
+export function mimeToExt(mime: string): string {
+  return MIME_TO_EXT[mime] ?? "bin";
+}
+
+function extToMime(ext: string): string {
+  return EXT_TO_MIME[ext.toLowerCase()] ?? "application/octet-stream";
+}
+
+/** Extract all unique blob checksums referenced in recipe text fields. */
+export function extractBlobChecksums(recipe: Recipe): Set<string> {
+  const checksums = new Set<string>();
+  const re = /\(blob:([a-f0-9]{64})\)/g;
+  for (const field of [recipe.instructions, recipe.notes]) {
+    let m;
+    while ((m = re.exec(field ?? "")) !== null) {
+      checksums.add(m[1]!);
+    }
+  }
+  return checksums;
+}
+
 export function recipeToMarkdown(recipe: Recipe): string {
   const frontmatter = [
     "---",
@@ -123,28 +157,40 @@ export async function exportBook(
   vaultId: string,
   entries: CatalogEntry[],
   docMgr: DocumentManager,
-): Promise<Blob> {
+  catalog?: BookCatalog,
+  encKey?: CryptoKey,
+): Promise<{ blob: Blob; missingAssets: number }> {
   const zip = new JSZip();
   const folder = zip.folder(bookName)!;
 
-  const bookMeta = [
+  const bookMeta: string[] = [
     `name: "${bookName.replace(/"/g, '\\"')}"`,
     `exportedAt: "${new Date().toISOString()}"`,
-    `format: "recipepwa-v1"`,
+    `format: "recipepwa-v2"`,
     `recipeCount: ${entries.length}`,
-  ].join("\n");
-  folder.file("_book.yaml", bookMeta);
+  ];
+  if (catalog?.members) {
+    const memberEntries = Object.entries(catalog.members);
+    if (memberEntries.length > 0) {
+      bookMeta.push("members:");
+      for (const [userId, displayName] of memberEntries) {
+        bookMeta.push(`  ${userId}: "${String(displayName).replace(/"/g, '\\"')}"`);
+      }
+    }
+  }
+  folder.file(`${sanitizeFilename(bookName)}.yaml`, bookMeta.join("\n"));
 
   const usedNames = new Set<string>();
+  const allChecksums = new Set<string>();
 
   for (const entry of entries) {
-    let baseName = slugify(entry.title);
+    let baseName = sanitizeFilename(entry.title);
     let fileName = baseName;
     let counter = 1;
-    while (usedNames.has(fileName)) {
-      fileName = `${baseName}-${counter++}`;
+    while (usedNames.has(fileName.toLowerCase())) {
+      fileName = `${baseName} ${counter++}`;
     }
-    usedNames.add(fileName);
+    usedNames.add(fileName.toLowerCase());
 
     const recipeDocId = `${vaultId}/${entry.id}`;
     let recipeStore = docMgr.get<Recipe>(recipeDocId);
@@ -166,11 +212,28 @@ export async function exportBook(
     if (recipeStore) {
       const recipe = recipeStore.getDoc();
       folder.file(`${fileName}.md`, recipeToMarkdown(recipe));
-      if (needsClose) docMgr.close(recipeDocId);
+      for (const cs of extractBlobChecksums(recipe)) allChecksums.add(cs);
+      if (needsClose) await docMgr.close(recipeDocId);
     }
   }
 
-  return zip.generateAsync({ type: "blob" });
+  // Export assets
+  let missingAssets = 0;
+  if (allChecksums.size > 0 && encKey) {
+    const db = docMgr.getDb();
+    const assetsFolder = folder.folder("assets")!;
+    for (const checksum of allChecksums) {
+      const result = await loadBlobDecrypted(db, vaultId, checksum, encKey);
+      if (result) {
+        assetsFolder.file(`${checksum}.${mimeToExt(result.meta.mimeType)}`, result.plaintext);
+      } else {
+        missingAssets++;
+      }
+    }
+  }
+
+  const blob = await zip.generateAsync({ type: "blob" });
+  return { blob, missingAssets };
 }
 
 /**
@@ -250,9 +313,17 @@ export function parseRecipeMarkdown(md: string): { meta: Partial<RecipeMeta>; co
   return { meta, content };
 }
 
+export interface ImportedAsset {
+  checksum: string;
+  data: Uint8Array;
+  mimeType: string;
+  filename: string;
+}
+
 export interface ImportedBook {
   name: string;
   recipes: Array<{ meta: Partial<RecipeMeta>; content: Partial<RecipeContent> }>;
+  assets: ImportedAsset[];
 }
 
 /**
@@ -264,12 +335,19 @@ export async function importFromZip(file: File): Promise<ImportedBook[]> {
   const zip = await JSZip.loadAsync(file);
   const bookMap = new Map<string, ImportedBook>();
 
-  // First pass: read _book.yaml files for book names
+  const ensureBook = (folder: string, name = ""): ImportedBook => {
+    if (!bookMap.has(folder)) bookMap.set(folder, { name, recipes: [], assets: [] });
+    return bookMap.get(folder)!;
+  };
+
+  // First pass: read book YAML files for names
   const folderNames = new Map<string, string>();
   for (const [path, entry] of Object.entries(zip.files)) {
     if (entry.dir) continue;
     const parts = path.split("/");
-    if (parts[parts.length - 1] === "_book.yaml" && parts.length >= 2) {
+    const fileName = parts[parts.length - 1]!;
+    // Accept both _book.yaml (v1) and BookName.yaml (v2) at the book folder level
+    if (fileName.endsWith(".yaml") && parts.length >= 2) {
       const folder = parts.slice(0, -1).join("/");
       const yaml = await entry.async("string");
       const name = parseYamlString(yaml, "name");
@@ -288,10 +366,29 @@ export async function importFromZip(file: File): Promise<ImportedBook[]> {
     const folder = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
     const bookName = folderNames.get(folder) || (parts.length > 1 ? parts[0]! : "");
 
-    if (!bookMap.has(folder)) {
-      bookMap.set(folder, { name: bookName, recipes: [] });
-    }
-    bookMap.get(folder)!.recipes.push(parsed);
+    ensureBook(folder, bookName).recipes.push(parsed);
+  }
+
+  // Third pass: read assets
+  for (const [path, entry] of Object.entries(zip.files)) {
+    if (entry.dir) continue;
+    const parts = path.split("/");
+    const assetsIdx = parts.indexOf("assets");
+    if (assetsIdx < 0 || assetsIdx !== parts.length - 2) continue;
+
+    const folder = parts.slice(0, assetsIdx).join("/");
+    const assetFilename = parts[parts.length - 1]!;
+    const dotIdx = assetFilename.lastIndexOf(".");
+    const checksum = dotIdx > 0 ? assetFilename.slice(0, dotIdx) : assetFilename;
+    const ext = dotIdx > 0 ? assetFilename.slice(dotIdx + 1) : "";
+
+    const data = await entry.async("uint8array");
+    ensureBook(folder).assets.push({
+      checksum,
+      data,
+      mimeType: extToMime(ext),
+      filename: assetFilename,
+    });
   }
 
   return [...bookMap.values()];

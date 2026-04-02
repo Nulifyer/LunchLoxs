@@ -880,6 +880,7 @@ dialog label+tag-input {
   overflow-y: auto;
   height: 100%;
   padding: 1.25rem 1.5rem;
+  min-width: 0;
 }
 
 #empty-state {
@@ -1205,6 +1206,8 @@ dialog label+tag-input {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .editor-wrap .cm-editor {

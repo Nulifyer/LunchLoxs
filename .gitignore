@@ -39,3 +39,5 @@ pgdata/
 
 # Dev Data
 dev-data/*.zip
+dev-data/*.jpg
+dev-data/*.png

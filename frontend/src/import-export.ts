@@ -2,7 +2,8 @@
  * Import/export UI handlers.
  */
 
-import { exportBook, importFromZip, parseRecipeMarkdown } from "./lib/export";
+import { exportBook, importFromZip, parseRecipeMarkdown, type ImportedAsset } from "./lib/export";
+import { storeBlob } from "./lib/blob-client";
 import { showConfirm } from "./lib/dialogs";
 import { showLoading } from "./lib/spinner";
 import { toastSuccess, toastWarning, toastError } from "./lib/toast";
@@ -11,32 +12,81 @@ import { renderCatalog } from "./sync/push";
 import { createBook, renderBookManageList } from "./ui/books";
 import type { Book, BookCatalog, Recipe, RecipeMeta } from "./types";
 
-export async function handleExportBook(book: Book) {
+export async function handleExportBooks(books: Book[]) {
   const docMgr = getDocMgr();
   if (!docMgr) return;
-  const catalog = docMgr.get<BookCatalog>(`${book.vaultId}/catalog`);
-  if (!catalog) { toastWarning("Open this book first."); return; }
-  const recipes = catalog.getDoc().recipes ?? [];
-  if (recipes.length === 0) { toastWarning("No recipes to export."); return; }
-  const ok = await showConfirm("Exported files are not encrypted. Anyone with the file can read your recipes.", { title: "Export Warning", confirmText: "Export" });
+
+  // Validate all books have open catalogs with recipes
+  const validBooks: Array<{ book: Book; catDoc: BookCatalog; recipeCount: number }> = [];
+  for (const book of books) {
+    const catalog = docMgr.get<BookCatalog>(`${book.vaultId}/catalog`);
+    if (!catalog) continue;
+    const catDoc = catalog.getDoc();
+    const count = catDoc.recipes?.length ?? 0;
+    if (count > 0) validBooks.push({ book, catDoc, recipeCount: count });
+  }
+  if (validBooks.length === 0) { toastWarning("No recipes to export."); return; }
+
+  const totalRecipes = validBooks.reduce((sum, v) => sum + v.recipeCount, 0);
+  const label = validBooks.length === 1
+    ? `Export "${validBooks[0]!.book.name}" (${totalRecipes} recipes)?`
+    : `Export ${validBooks.length} books (${totalRecipes} recipes)?`;
+  const ok = await showConfirm("Exported files are not encrypted. Anyone with the file can read your recipes.", { title: label, confirmText: "Export" });
   if (!ok) return;
+
   try {
-    const blob = await exportBook(book.name, book.vaultId, recipes, docMgr);
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${book.name}.zip`; a.click(); URL.revokeObjectURL(a.href);
-    toastSuccess(`Exported ${recipes.length} recipes`);
+    const JSZip = (await import("jszip")).default;
+    const combined = new JSZip();
+    let totalMissing = 0;
+
+    for (const { book, catDoc } of validBooks) {
+      const recipes = catDoc.recipes ?? [];
+      const { blob: bookBlob, missingAssets } = await exportBook(book.name, book.vaultId, recipes, docMgr, catDoc, book.encKey);
+      totalMissing += missingAssets;
+      const bookZip = await JSZip.loadAsync(bookBlob);
+      for (const [path, entry] of Object.entries(bookZip.files)) {
+        if (entry.dir) continue;
+        combined.file(path, await entry.async("uint8array"));
+      }
+    }
+
+    const blob = await combined.generateAsync({ type: "blob" });
+    const filename = validBooks.length === 1 ? `${validBooks[0]!.book.name}.zip` : "recipes-export.zip";
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); URL.revokeObjectURL(a.href);
+
+    let msg = validBooks.length === 1
+      ? `Exported ${totalRecipes} recipes`
+      : `Exported ${totalRecipes} recipes from ${validBooks.length} books`;
+    if (totalMissing > 0) msg += ` (${totalMissing} asset${totalMissing !== 1 ? "s" : ""} not found)`;
+    if (totalMissing > 0) toastWarning(msg); else toastSuccess(msg);
   } catch (e: any) { toastError("Export failed: " + (e.message ?? e)); }
+}
+
+export async function handleExportBook(book: Book) {
+  return handleExportBooks([book]);
 }
 
 /** Import parsed recipes into a specific book. Returns count imported. */
 export async function importRecipesIntoBook(
   book: Book,
   recipes: Array<{ meta: Partial<RecipeMeta>; content: Partial<Recipe> }>,
+  assets?: ImportedAsset[],
   onProgress?: (current: number, total: number) => void,
 ): Promise<number> {
   const docMgr = getDocMgr();
   if (!docMgr) return 0;
   const catalog = docMgr.get<BookCatalog>(`${book.vaultId}/catalog`);
   if (!catalog) return 0;
+
+  // Store imported assets and build checksum mapping (old -> new)
+  const checksumMap = new Map<string, string>();
+  if (assets && assets.length > 0 && book.encKey) {
+    const db = docMgr.getDb();
+    for (const asset of assets) {
+      const newChecksum = await storeBlob(db, book.vaultId, asset.data, asset.mimeType, asset.filename, book.encKey);
+      checksumMap.set(asset.checksum, newChecksum);
+    }
+  }
 
   // Prepare recipe entries with IDs
   const entries = recipes.map(({ meta, content }) => ({
@@ -62,7 +112,8 @@ export async function importRecipesIntoBook(
       d.servings = meta.servings ?? 4; d.prepMinutes = meta.prepMinutes ?? 0; d.cookMinutes = meta.cookMinutes ?? 0;
       d.createdAt = meta.createdAt ?? now; d.updatedAt = meta.updatedAt ?? now;
       d.description = content.description ?? ""; d.ingredients = (content.ingredients ?? []) as any;
-      d.instructions = content.instructions ?? ""; d.imageUrls = []; d.notes = content.notes ?? "";
+      d.instructions = rewriteBlobRefs(content.instructions ?? "", checksumMap);
+      d.imageUrls = []; d.notes = rewriteBlobRefs(content.notes ?? "", checksumMap);
     });
     rs.ensureInitialized();
     recipeDocIds.push(recipeDocId);
@@ -79,10 +130,19 @@ export async function importRecipesIntoBook(
   return recipeDocIds.length;
 }
 
+/** Rewrite blob:checksum references if checksums changed (defensive, normally a no-op). */
+function rewriteBlobRefs(text: string, map: Map<string, string>): string {
+  if (map.size === 0) return text;
+  return text.replace(/\(blob:([a-f0-9]{64})\)/g, (match, oldChecksum) => {
+    const newChecksum = map.get(oldChecksum);
+    return newChecksum ? `(blob:${newChecksum})` : match;
+  });
+}
+
 /**
  * Handle a zip import.
- * - If zip has named books (folders with _book.yaml), create a book per folder.
- * - If zip has folders without _book.yaml, create a book per folder using folder name.
+ * - If zip has named books (folders with YAML), create a book per folder.
+ * - If zip has folders without YAML, create a book per folder using folder name.
  * - If zip has flat .md files (no folders), import into targetBook if provided, or create one.
  */
 export async function handleZipImport(file: File, targetBook?: Book): Promise<void> {
@@ -101,7 +161,7 @@ export async function handleZipImport(file: File, targetBook?: Book): Promise<vo
       const progress = (current: number) => {
         loading.updateLine2(`Recipe ${current} / ${totalRecipes}`);
       };
-      totalImported = await importRecipesIntoBook(targetBook, importedBooks[0]!.recipes, progress);
+      totalImported = await importRecipesIntoBook(targetBook, importedBooks[0]!.recipes, importedBooks[0]!.assets, progress);
       toastSuccess(`Imported ${totalImported} recipe${totalImported !== 1 ? "s" : ""} into "${targetBook.name}"`);
     } else {
       for (let i = 0; i < importedBooks.length; i++) {
@@ -115,7 +175,7 @@ export async function handleZipImport(file: File, targetBook?: Book): Promise<vo
           const progress = (current: number) => {
             loading.updateLine2(`Recipe ${totalImported + current} / ${totalRecipes}`);
           };
-          totalImported += await importRecipesIntoBook(newBook, ib.recipes, progress);
+          totalImported += await importRecipesIntoBook(newBook, ib.recipes, ib.assets, progress);
         }
       }
       const { renderBookSelect } = await import("./ui/books");

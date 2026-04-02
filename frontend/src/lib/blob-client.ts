@@ -96,6 +96,47 @@ export async function loadBlobUrl(
   return unpackAndCache(key, remote, encKey, db);
 }
 
+/**
+ * Load a blob as decrypted plaintext bytes + metadata (from IDB or server).
+ * Used by export to get raw bytes without creating an object URL.
+ */
+export async function loadBlobDecrypted(
+  db: IDBDatabase,
+  vaultId: string,
+  checksum: string,
+  encKey: CryptoKey,
+): Promise<{ plaintext: Uint8Array; meta: BlobMeta } | null> {
+  const key = `${vaultId}/${checksum}`;
+
+  let raw = await idbGet<Uint8Array>(db, `blob:${key}`);
+  if (!raw) {
+    const remote = await fetchBlobFromServer(vaultId, checksum);
+    if (!remote) return null;
+    await idbPut(db, `blob:${key}`, remote);
+    raw = remote;
+  }
+
+  let plaintext: Uint8Array;
+  let meta: BlobMeta = { mimeType: "application/octet-stream", filename: "", size: 0 };
+
+  if (raw[0] === BLOB_META_VERSION && raw.length > 5) {
+    const metaLen = new DataView(raw.buffer, raw.byteOffset).getUint32(1);
+    plaintext = await decrypt(raw.slice(5 + metaLen), encKey);
+    try {
+      const metaJson = await decrypt(raw.slice(5, 5 + metaLen), encKey);
+      const parsed = JSON.parse(new TextDecoder().decode(metaJson));
+      meta = { mimeType: parsed.mimeType ?? meta.mimeType, filename: parsed.filename ?? "", size: plaintext.byteLength };
+    } catch { meta.size = plaintext.byteLength; }
+  } else {
+    plaintext = await decrypt(raw, encKey);
+    meta.size = plaintext.byteLength;
+    const cached = await idbGet<BlobMeta>(db, `blobMeta:${key}`);
+    if (cached) meta = cached;
+  }
+
+  return { plaintext, meta };
+}
+
 /** Load blob metadata from IndexedDB. */
 export async function loadBlobMeta(
   db: IDBDatabase,

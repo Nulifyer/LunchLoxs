@@ -5,7 +5,8 @@
 import { log, warn, error } from "../lib/logger";
 import { initRecipeList } from "../views/recipe-list";
 import { initRecipeDetail, openRecipe, closeRecipe, setIngredientSuggestions } from "../views/recipe-detail";
-import { recipeToMarkdown } from "../lib/export";
+import { recipeToMarkdown, extractBlobChecksums, mimeToExt } from "../lib/export";
+import { loadBlobDecrypted } from "../lib/blob-client";
 import { showConfirm, showSelect } from "../lib/dialogs";
 import { openModal, closeModal } from "../lib/modal";
 import { toastSuccess, toastWarning, toastError } from "../lib/toast";
@@ -241,13 +242,42 @@ export function initRecipes() {
       if (!recipeStore) return;
       const recipe = recipeStore.getDoc();
       const md = recipeToMarkdown(recipe);
-      const blob = new Blob([md], { type: "text/markdown" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `${recipe.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.md`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-      toastSuccess("Recipe exported as markdown");
+      const checksums = extractBlobChecksums(recipe);
+
+      if (checksums.size > 0 && activeBook.encKey) {
+        // Has assets — export as zip with assets folder
+        const JSZip = (await import("jszip")).default;
+        const zip = new JSZip();
+        zip.file(`${recipe.title}.md`, md);
+        const assetsFolder = zip.folder("assets")!;
+        const db = docMgr.getDb();
+        let missing = 0;
+        for (const checksum of checksums) {
+          const result = await loadBlobDecrypted(db, activeBook.vaultId, checksum, activeBook.encKey);
+          if (result) {
+            const ext = mimeToExt(result.meta.mimeType);
+            assetsFolder.file(`${checksum}.${ext}`, result.plaintext);
+          } else { missing++; }
+        }
+        const zipBlob = await zip.generateAsync({ type: "blob" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(zipBlob);
+        a.download = `${recipe.title}.zip`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        let msg = "Recipe exported as zip with assets";
+        if (missing > 0) msg += ` (${missing} asset${missing !== 1 ? "s" : ""} not found)`;
+        if (missing > 0) toastWarning(msg); else toastSuccess(msg);
+      } else {
+        // No assets — plain markdown
+        const blob = new Blob([md], { type: "text/markdown" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `${recipe.title.replace(/[<>:"/\\|?*]/g, "")}.md`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toastSuccess("Recipe exported as markdown");
+      }
     },
     onCopyToBook: async () => {
       const selectedRecipeId = getSelectedRecipeId();
