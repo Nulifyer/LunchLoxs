@@ -567,8 +567,7 @@ func blobPut(baseURL, vaultID, checksum, userID, authHash string, data []byte) (
 	}
 	req.Header.Set("X-User-ID", userID)
 	req.Header.Set("X-Auth-Hash", authHash)
-	req.Header.Set("X-Blob-Mime-Type", "image/webp")
-	req.Header.Set("X-Blob-Filename", "test.webp")
+	// Metadata headers no longer sent (encrypted in blob body by client)
 	return http.DefaultClient.Do(req)
 }
 
@@ -613,9 +612,6 @@ func TestBlobRoundTrip(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !bytes.Equal(body, data) {
 		t.Fatalf("Round-trip data mismatch: got %d bytes, want %d", len(body), len(data))
-	}
-	if resp.Header.Get("X-Blob-Mime-Type") != "image/webp" {
-		t.Fatalf("Expected mime type header, got %q", resp.Header.Get("X-Blob-Mime-Type"))
 	}
 	if resp.Header.Get("Cache-Control") == "" {
 		t.Fatal("Expected Cache-Control header on GET response")

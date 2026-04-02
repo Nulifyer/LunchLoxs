@@ -48,7 +48,7 @@ export async function deriveKeys(username: string, passphrase: string): Promise<
   const hexHash = await argon2id({
     password: passphrase,
     salt,
-    iterations: 2,
+    iterations: 3,
     memorySize: 19456,
     parallelism: 1,
     hashLength: 64,
@@ -69,6 +69,39 @@ export async function deriveKeys(username: string, passphrase: string): Promise<
     { name: "AES-GCM" },
     false,
     ["encrypt", "decrypt"],
+  );
+
+  return { authHash, wrappingKey };
+}
+
+/**
+ * Legacy key derivation (iterations=2) for migrating existing users.
+ * Try current deriveKeys first; if login fails, fall back to this,
+ * then rewrap + update server credentials to migrate transparently.
+ */
+export async function deriveKeysLegacy(username: string, passphrase: string): Promise<DerivedKeys> {
+  const usernameBytes = new TextEncoder().encode(username.trim().toLowerCase());
+  const salt = new Uint8Array(await crypto.subtle.digest("SHA-256", usernameBytes));
+
+  const hexHash = await argon2id({
+    password: passphrase,
+    salt,
+    iterations: 2,
+    memorySize: 19456,
+    parallelism: 1,
+    hashLength: 64,
+    outputType: "hex",
+  });
+
+  const kdfOutput = hexToBytes(hexHash);
+  const authKeyBytes = kdfOutput.slice(0, 32);
+  const wrappingKeyBytes = kdfOutput.slice(32, 64);
+
+  const authDigest = await crypto.subtle.digest("SHA-256", authKeyBytes);
+  const authHash = bytesToHex(new Uint8Array(authDigest));
+
+  const wrappingKey = await crypto.subtle.importKey(
+    "raw", wrappingKeyBytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"],
   );
 
   return { authHash, wrappingKey };

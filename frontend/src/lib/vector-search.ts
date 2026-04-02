@@ -97,7 +97,14 @@ export function enqueueRecipe(vaultId: string, recipeId: string, priority: "high
   const key = `${vaultId}/${recipeId}`;
   if (queueSet.has(key)) return;
   queueSet.add(key);
-  if (!indexingComplete) totalQueued++;
+  // Reset indexing state if new work arrives after completion
+  if (indexingComplete) {
+    indexingComplete = false;
+    totalQueued = 0;
+    totalProcessed = 0;
+    indexingStartTime = 0;
+  }
+  totalQueued++;
   if (priority === "high") {
     queue.unshift({ vaultId, recipeId, priority });
   } else {
@@ -182,7 +189,7 @@ async function processQueue(): Promise<void> {
     const batch = queue.splice(0, BATCH_SIZE);
     for (const item of batch) {
       queueSet.delete(`${item.vaultId}/${item.recipeId}`);
-      if (!indexingComplete) totalProcessed++;
+      totalProcessed++;
     }
 
     const textsToEmbed: Array<{ key: string; text: string }> = [];
@@ -220,8 +227,8 @@ async function processQueue(): Promise<void> {
 
   if (queue.length === 0 && !indexingComplete) {
     indexingComplete = true;
-    log("[vector] initial indexing complete");
-    toastSuccess("Smart search ready");
+    log("[vector] indexing complete:", totalProcessed, "recipes");
+    if (totalProcessed > 0) toastSuccess("Smart search ready");
     totalQueued = 0;
     totalProcessed = 0;
     indexingStartTime = 0;

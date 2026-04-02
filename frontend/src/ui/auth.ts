@@ -4,7 +4,7 @@
 
 import { log, warn, error } from "../lib/logger";
 import {
-  deriveKeys, deriveUserId, unwrapMasterKey,
+  deriveKeys, deriveKeysLegacy, deriveUserId, unwrapMasterKey, rewrapMasterKey,
   unwrapPrivateKey, unwrapSigningKey, importBookKey, decrypt,
   signPayload,
 } from "../lib/crypto";
@@ -33,6 +33,12 @@ import { updateSyncBadge } from "../ui/sync-status";
 import { refreshBookNameFromCatalog, rebuildBookIndex } from "../sync/vault-helpers";
 import { PushQueue, type SignFn } from "../sync/push-queue";
 import type { Book, BookCatalog } from "../types";
+
+function requireSecureContext() {
+  if (location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
+    throw new Error("LunchLoxs requires HTTPS for secure E2E encryption.");
+  }
+}
 
 // DOM refs (grabbed at init time)
 let loginSection: HTMLElement;
@@ -90,10 +96,24 @@ export async function login(username: string, passphrase: string) {
     log("[login] localWrapped:", localWrapped ? `${localWrapped.length} bytes` : "null");
     let masterKey: CryptoKey | null = null;
     let wrappedMasterKey: Uint8Array | null = null;
+    let legacyDerived: { authHash: string; wrappingKey: CryptoKey } | null = null;
     if (localWrapped) {
       try { masterKey = await unwrapMasterKey(localWrapped, derived.wrappingKey); wrappedMasterKey = localWrapped; log("[login] unwrapped local master key"); }
-      catch (e) { error("[login] unwrap failed:", e); throw new Error("Wrong passphrase -- could not decrypt local data."); }
+      catch {
+        // Current KDF failed — try legacy (iterations=2) for migration
+        log("[login] current KDF unwrap failed, trying legacy...");
+        try {
+          legacyDerived = await deriveKeysLegacy(username, passphrase);
+          masterKey = await unwrapMasterKey(localWrapped, legacyDerived.wrappingKey);
+          // Rewrap with current KDF wrapping key and persist locally
+          wrappedMasterKey = await rewrapMasterKey(masterKey, derived.wrappingKey);
+          log("[login] legacy KDF succeeded, will migrate on connect");
+        } catch (e) { error("[login] unwrap failed:", e); throw new Error("Wrong passphrase -- could not decrypt local data."); }
+      }
     }
+
+    // Use legacy auth hash for server if migrating, so server accepts our credentials
+    const serverDerived = legacyDerived ?? derived;
 
     // Try offline-first boot for returning users
     if (masterKey) {
@@ -108,7 +128,7 @@ export async function login(username: string, passphrase: string) {
         saveSession(username, { authHash: derived.authHash, masterKey, wrappedMasterKey: wrappedMasterKey!, userId });
         await localBoot(cache, masterKey, docMgr, username, userId);
         // Connect WebSocket in background for sync
-        connectInBackground(username, userId, derived, masterKey, wrappedMasterKey);
+        connectInBackground(username, userId, serverDerived, masterKey, wrappedMasterKey, legacyDerived ? derived : null);
         return;
       }
       log("[login] no local cache, falling through to server boot");
@@ -116,16 +136,28 @@ export async function login(username: string, passphrase: string) {
 
     // No cache (first login or new device) -- must wait for server
     log("[login] creating SyncClient...");
+    requireSecureContext();
     const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
     const isDev = location.hostname === "localhost" && location.port === "5000";
     const wsHost = isDev ? `${location.hostname}:8000` : location.host;
     const wsUrl = `${wsProtocol}//${wsHost}/ws`;
-    const syncClient = createSyncConnection(wsUrl, userId, derived, masterKey, wrappedMasterKey, username);
+    const syncClient = createSyncConnection(wsUrl, userId, serverDerived, masterKey, wrappedMasterKey, username);
     setSyncClient(syncClient);
     syncClient.setLastSeqGetter(async (docId) => { const s = getDocMgr()?.get(docId); return s ? s.getLastSeq() : 0; });
     log("[login] connecting WebSocket to", wsUrl);
     loginBtn.textContent = "Connecting...";
     syncClient.connect();
+    // If migrating KDF, change password on server after connection establishes
+    if (legacyDerived) {
+      const migrateOnConnect = () => {
+        const sc = getSyncClient();
+        if (sc) {
+          log("[login] migrating KDF: updating server auth hash");
+          sc.changePassword(legacyDerived!.authHash, derived.authHash, toBase64(wrappedMasterKey!));
+        }
+      };
+      onSyncEvent("auth-success", migrateOnConnect);
+    }
   } catch (e: any) {
     error("[login] ERROR:", e);
     const errEl = isSignup ? signupError : loginError;
@@ -228,17 +260,19 @@ async function localBoot(
 function connectInBackground(
   username: string,
   userId: string,
-  derived: { authHash: string; wrappingKey: CryptoKey },
+  serverDerived: { authHash: string; wrappingKey: CryptoKey },
   masterKey: CryptoKey,
   wrappedMasterKey: Uint8Array | null,
+  migrateTo: { authHash: string; wrappingKey: CryptoKey } | null,
 ) {
   const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
   const isDev = location.hostname === "localhost" && location.port === "5000";
   const wsHost = isDev ? `${location.hostname}:8000` : location.host;
   const wsUrl = `${wsProtocol}//${wsHost}/ws`;
+  requireSecureContext();
   log("[login] connecting WebSocket in background to", wsUrl);
   setIsSignup(false); // Background connect is always for existing users
-  const syncClient = createSyncConnection(wsUrl, userId, derived, masterKey, wrappedMasterKey, username);
+  const syncClient = createSyncConnection(wsUrl, userId, serverDerived, masterKey, wrappedMasterKey, username);
   setSyncClient(syncClient);
   syncClient.setLastSeqGetter(async (docId) => { const s = getDocMgr()?.get(docId); return s ? s.getLastSeq() : 0; });
   // Update PushQueue with the new SyncClient reference
@@ -249,6 +283,13 @@ function connectInBackground(
     pq.updateRefs(getDocMgr()!, syncClient, signFn);
   }
   syncClient.connect();
+  // If migrating KDF, change password on server after connection establishes
+  if (migrateTo) {
+    onSyncEvent("auth-success", () => {
+      log("[login] migrating KDF: updating server auth hash (background)");
+      syncClient.changePassword(serverDerived.authHash, migrateTo.authHash, toBase64(wrappedMasterKey!));
+    });
+  }
 }
 
 export function logout() {

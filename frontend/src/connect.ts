@@ -361,8 +361,10 @@ export function createSyncConnection(
       const s = getDocMgr()?.get(docId); if (!s) return;
       const senderSignKey = senderUserId ? signingKeyCache.get(senderUserId) ?? null : null;
       const { plaintext, verified } = await verifyPayload(snapshot, senderSignKey);
-      if (!verified && senderUserId && signingKeyCache.size > 0) {
-        warn("[ws] unverified payload for", docId, "from", senderUserId.slice(0, 8));
+      if (!verified && senderSignKey !== null) {
+        error("[ws] REJECTED unverified payload for", docId, "from", senderUserId?.slice(0, 8));
+        await s.setLastSeq(seq);
+        return;
       }
       s.merge(plaintext); await s.setLastSeq(seq);
       // Invalidate vector embedding for changed recipe content docs

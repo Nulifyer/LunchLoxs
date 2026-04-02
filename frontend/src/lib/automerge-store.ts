@@ -13,6 +13,17 @@ import { encrypt, decrypt } from "./crypto";
 
 const STORE_NAME = "docs";
 
+let lastPersistErrorToast = 0;
+function notifyPersistError(e: unknown) {
+  console.error("persist failed:", e);
+  const now = Date.now();
+  if (now - lastPersistErrorToast < 10_000) return;
+  lastPersistErrorToast = now;
+  import("./toast").then(({ toastError }) => {
+    toastError("Failed to save changes locally. Your edits may be lost if you close this tab.");
+  }).catch(() => {});
+}
+
 type ChangeListener<T> = (doc: Automerge.Doc<T>) => void;
 
 export class AutomergeStore<T> {
@@ -201,14 +212,14 @@ export class AutomergeStore<T> {
   private enqueuePersist(): void {
     this.pendingWrite = this.pendingWrite
       .then(() => this.persist())
-      .catch((e) => console.error("persist failed:", e));
+      .catch(notifyPersistError);
   }
 
   /** Enqueue a write so change() stays synchronous but writes are serialized and tracked. */
   private enqueuePersistAndMarkDirty(): void {
     this.pendingWrite = this.pendingWrite
       .then(() => this.persistAndMarkDirty())
-      .catch((e) => console.error("persistAndMarkDirty failed:", e));
+      .catch(notifyPersistError);
   }
 
   private async persistAndMarkDirty(): Promise<void> {

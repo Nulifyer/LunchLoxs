@@ -14,6 +14,7 @@ import { encrypt, decrypt } from "./crypto";
 import { getSessionKeys } from "./auth";
 
 const IDB_STORE = "docs";
+const BLOB_META_VERSION = 0x02; // v2: encrypted metadata prepended to blob body
 
 export interface BlobMeta {
   mimeType: string;
@@ -45,17 +46,17 @@ export async function storeBlob(
   encKey: CryptoKey,
 ): Promise<string> {
   const checksum = await sha256Hex(plaintextBytes);
-  const encrypted = await encrypt(plaintextBytes, encKey);
+  const combined = await packEncryptedBlob(plaintextBytes, mimeType, filename, encKey);
   const key = `${vaultId}/${checksum}`;
 
   await Promise.all([
-    idbPut(db, `blob:${key}`, encrypted),
+    idbPut(db, `blob:${key}`, combined),
     idbPut(db, `blobMeta:${key}`, { mimeType, filename, size: plaintextBytes.byteLength } as BlobMeta),
     idbPut(db, `blobDirty:${key}`, true),
   ]);
 
   // Attempt immediate upload (best-effort, dirty flag ensures retry on reconnect)
-  uploadBlobToServer(vaultId, checksum, encrypted, mimeType, filename).then((ok) => {
+  uploadBlobToServer(vaultId, checksum, combined).then((ok) => {
     if (ok) idbDelete(db, `blobDirty:${key}`);
   });
 
@@ -81,7 +82,7 @@ export async function loadBlobUrl(
   // 2. IndexedDB
   const local = await idbGet<Uint8Array>(db, `blob:${key}`);
   if (local) {
-    return decryptAndCache(key, local, encKey);
+    return unpackAndCache(key, local, encKey, db);
   }
 
   // 3. Server fetch
@@ -89,16 +90,9 @@ export async function loadBlobUrl(
   if (!remote) return null;
 
   // Cache in IndexedDB for offline
-  await idbPut(db, `blob:${key}`, remote.data);
-  if (remote.mimeType) {
-    // Only update meta if we don't already have it
-    const existing = await idbGet<BlobMeta>(db, `blobMeta:${key}`);
-    if (!existing) {
-      await idbPut(db, `blobMeta:${key}`, { mimeType: remote.mimeType, filename: "", size: remote.data.byteLength } as BlobMeta);
-    }
-  }
+  await idbPut(db, `blob:${key}`, remote);
 
-  return decryptAndCache(key, remote.data, encKey);
+  return unpackAndCache(key, remote, encKey, db);
 }
 
 /** Load blob metadata from IndexedDB. */
@@ -128,16 +122,14 @@ export async function flushDirtyBlobs(
     const vaultId = blobKey.slice(0, slash);
     const checksum = blobKey.slice(slash + 1);
 
-    const encrypted = await idbGet<Uint8Array>(db, `blob:${blobKey}`);
-    if (!encrypted) {
+    const blobData = await idbGet<Uint8Array>(db, `blob:${blobKey}`);
+    if (!blobData) {
       // Blob data missing, clear the dirty flag
       await idbDelete(db, dirtyKey);
       continue;
     }
 
-    const meta = await idbGet<BlobMeta>(db, `blobMeta:${blobKey}`);
-
-    const ok = await uploadBlobToServer(vaultId, checksum, encrypted, meta?.mimeType, meta?.filename);
+    const ok = await uploadBlobToServer(vaultId, checksum, blobData);
     if (ok) {
       await idbDelete(db, dirtyKey);
     }
@@ -163,19 +155,15 @@ function getAuthHeaders(): Record<string, string> {
 async function uploadBlobToServer(
   vaultId: string,
   checksum: string,
-  encryptedData: Uint8Array,
-  mimeType?: string,
-  filename?: string,
+  blobData: Uint8Array,
 ): Promise<boolean> {
   try {
     const headers: Record<string, string> = {
       ...getAuthHeaders(),
       "Content-Type": "application/octet-stream",
     };
-    if (mimeType) headers["X-Blob-Mime-Type"] = mimeType;
-    if (filename) headers["X-Blob-Filename"] = filename;
 
-    const body = new Blob([toArrayBuffer(encryptedData)]);
+    const body = new Blob([toArrayBuffer(blobData)]);
     const resp = await fetch(
       `${getApiBase()}/api/vaults/${encodeURIComponent(vaultId)}/blobs/${encodeURIComponent(checksum)}`,
       { method: "PUT", headers, body },
@@ -189,30 +177,84 @@ async function uploadBlobToServer(
 async function fetchBlobFromServer(
   vaultId: string,
   checksum: string,
-): Promise<{ data: Uint8Array; mimeType: string } | null> {
+): Promise<Uint8Array | null> {
   try {
     const resp = await fetch(
       `${getApiBase()}/api/vaults/${encodeURIComponent(vaultId)}/blobs/${encodeURIComponent(checksum)}`,
       { headers: getAuthHeaders() },
     );
     if (!resp.ok) return null;
-    const data = new Uint8Array(await resp.arrayBuffer());
-    const mimeType = resp.headers.get("X-Blob-Mime-Type") ?? "application/octet-stream";
-    return { data, mimeType };
+    return new Uint8Array(await resp.arrayBuffer());
   } catch {
     return null;
   }
 }
 
-// -- Helpers --
+// -- Encrypted blob format helpers --
 
-async function decryptAndCache(key: string, encrypted: Uint8Array, encKey: CryptoKey): Promise<string> {
-  const plaintext = await decrypt(encrypted, encKey);
+/**
+ * Pack plaintext + metadata into the encrypted wire format:
+ *   [1 byte: version 0x02][4 bytes: encrypted meta length (BE)][encrypted meta][encrypted blob]
+ */
+async function packEncryptedBlob(
+  plaintext: Uint8Array,
+  mimeType: string,
+  filename: string,
+  encKey: CryptoKey,
+): Promise<Uint8Array> {
+  const metaJson = new TextEncoder().encode(JSON.stringify({ mimeType, filename }));
+  const encMeta = await encrypt(metaJson, encKey);
+  const encBlob = await encrypt(plaintext, encKey);
+
+  const result = new Uint8Array(1 + 4 + encMeta.byteLength + encBlob.byteLength);
+  result[0] = BLOB_META_VERSION;
+  new DataView(result.buffer).setUint32(1, encMeta.byteLength);
+  result.set(encMeta, 5);
+  result.set(encBlob, 5 + encMeta.byteLength);
+  return result;
+}
+
+/**
+ * Unpack and decrypt a blob (supports both v2 packed format and legacy raw-encrypted format).
+ * Also updates IDB blobMeta cache if meta was found inside the packed format.
+ */
+async function unpackAndCache(
+  key: string,
+  data: Uint8Array,
+  encKey: CryptoKey,
+  db: IDBDatabase,
+): Promise<string> {
+  let plaintext: Uint8Array;
+
+  if (data[0] === BLOB_META_VERSION && data.length > 5) {
+    // v2 format: extract encrypted meta + encrypted blob
+    const metaLen = new DataView(data.buffer, data.byteOffset).getUint32(1);
+    const encMeta = data.slice(5, 5 + metaLen);
+    const encBlob = data.slice(5 + metaLen);
+
+    plaintext = await decrypt(encBlob, encKey);
+
+    // Decrypt and cache metadata
+    try {
+      const metaJson = await decrypt(encMeta, encKey);
+      const meta = JSON.parse(new TextDecoder().decode(metaJson)) as { mimeType: string; filename: string };
+      const existing = await idbGet<BlobMeta>(db, `blobMeta:${key}`);
+      if (!existing) {
+        await idbPut(db, `blobMeta:${key}`, { mimeType: meta.mimeType, filename: meta.filename, size: plaintext.byteLength } as BlobMeta);
+      }
+    } catch { /* metadata extraction is best-effort */ }
+  } else {
+    // Legacy format: raw encrypted blob (no embedded metadata)
+    plaintext = await decrypt(data, encKey);
+  }
+
   const blob = new Blob([toArrayBuffer(plaintext)]);
   const url = URL.createObjectURL(blob);
   urlCache.set(key, url);
   return url;
 }
+
+// -- Helpers --
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", toArrayBuffer(data));

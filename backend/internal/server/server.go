@@ -110,7 +110,7 @@ func NewMux(queries *db.Queries, frontendURL string, rateConfig syncpkg.RateConf
 			return
 		}
 
-		data, mimeType, err := queries.GetBlob(r.Context(), vaultID, checksum)
+		data, _, err := queries.GetBlob(r.Context(), vaultID, checksum)
 		if err == pgx.ErrNoRows {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -122,7 +122,6 @@ func NewMux(queries *db.Queries, frontendURL string, rateConfig syncpkg.RateConf
 		}
 
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("X-Blob-Mime-Type", mimeType)
 		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 		w.Write(data)
 	})
@@ -161,8 +160,7 @@ func authenticateHTTP(r *http.Request, queries *db.Queries, w http.ResponseWrite
 func setCORSHeaders(w http.ResponseWriter, origin string) {
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "X-User-ID, X-Auth-Hash, X-Blob-Mime-Type, X-Blob-Filename, Content-Type")
-	w.Header().Set("Access-Control-Expose-Headers", "X-Blob-Mime-Type")
+	w.Header().Set("Access-Control-Allow-Headers", "X-User-ID, X-Auth-Hash, Content-Type")
 }
 
 func buildCORSOrigin(frontendURL string) string {

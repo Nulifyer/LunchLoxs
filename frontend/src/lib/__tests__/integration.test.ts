@@ -453,8 +453,6 @@ describe("blob", () => {
       headers: {
         "X-User-ID": userId,
         "X-Auth-Hash": authHash,
-        "X-Blob-Mime-Type": "image/webp",
-        "X-Blob-Filename": "test.webp",
       },
       body: new Blob([toArrayBuffer(data)]),
     });
@@ -490,7 +488,6 @@ describe("blob", () => {
 
     const getResp = await getBlob(vaultId, "rt-checksum", userId, authHash);
     expect(getResp.status).toBe(200);
-    expect(getResp.headers.get("X-Blob-Mime-Type")).toBe("image/webp");
 
     const downloaded = new Uint8Array(await getResp.arrayBuffer());
     const decrypted = await decrypt(downloaded, testKey);
