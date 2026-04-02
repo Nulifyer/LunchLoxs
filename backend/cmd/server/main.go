@@ -42,7 +42,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	databaseURL := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/todos?sslmode=disable")
+	databaseURL := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/localdb?sslmode=disable")
 	port := getEnv("PORT", "8000")
 	bindHost := getEnv("BIND_HOST", "127.0.0.1")
 	frontendURL := getEnv("FRONTEND_URL", "http://localhost:5000")

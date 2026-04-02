@@ -1,16 +1,21 @@
 package server
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/coder/websocket"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/kyle/recipepwa/backend/internal/db"
 	syncpkg "github.com/kyle/recipepwa/backend/internal/sync"
 )
+
+const maxBlobSize = 10 << 20 // 10 MB
 
 func NewMux(queries *db.Queries, frontendURL string, rateConfig syncpkg.RateConfig) *http.ServeMux {
 	hub := syncpkg.NewHub()
@@ -41,12 +46,139 @@ func NewMux(queries *db.Queries, frontendURL string, rateConfig syncpkg.RateConf
 		w.Write([]byte("ok"))
 	})
 
+	// -- Blob endpoints --
+
+	corsOrigin := buildCORSOrigin(frontendURL)
+
+	mux.HandleFunc("PUT /api/vaults/{vaultId}/blobs/{checksum}", func(w http.ResponseWriter, r *http.Request) {
+		setCORSHeaders(w, corsOrigin)
+
+		userID, ok := authenticateHTTP(r, queries, w)
+		if !ok {
+			return
+		}
+
+		vaultID := r.PathValue("vaultId")
+		checksum := r.PathValue("checksum")
+
+		isMember, role, err := queries.IsVaultMember(r.Context(), vaultID, userID)
+		if err != nil || !isMember {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if role == "viewer" {
+			http.Error(w, "viewers cannot upload", http.StatusForbidden)
+			return
+		}
+
+		body := http.MaxBytesReader(w, r.Body, maxBlobSize)
+		data, err := io.ReadAll(body)
+		if err != nil {
+			http.Error(w, "payload too large or read error", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		mimeType := r.Header.Get("X-Blob-Mime-Type")
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		filename := r.Header.Get("X-Blob-Filename")
+
+		if err := queries.PutBlob(r.Context(), vaultID, checksum, mimeType, filename, data, len(data)); err != nil {
+			slog.Error("blob: put error", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mux.HandleFunc("GET /api/vaults/{vaultId}/blobs/{checksum}", func(w http.ResponseWriter, r *http.Request) {
+		setCORSHeaders(w, corsOrigin)
+
+		userID, ok := authenticateHTTP(r, queries, w)
+		if !ok {
+			return
+		}
+
+		vaultID := r.PathValue("vaultId")
+		checksum := r.PathValue("checksum")
+
+		isMember, _, err := queries.IsVaultMember(r.Context(), vaultID, userID)
+		if err != nil || !isMember {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		data, mimeType, err := queries.GetBlob(r.Context(), vaultID, checksum)
+		if err == pgx.ErrNoRows {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			slog.Error("blob: get error", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("X-Blob-Mime-Type", mimeType)
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+		w.Write(data)
+	})
+
+	// CORS preflight for blob endpoints
+	mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {
+		setCORSHeaders(w, corsOrigin)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	return mux
+}
+
+// authenticateHTTP verifies X-User-ID + X-Auth-Hash headers.
+func authenticateHTTP(r *http.Request, queries *db.Queries, w http.ResponseWriter) (string, bool) {
+	userID := r.Header.Get("X-User-ID")
+	authHash := r.Header.Get("X-Auth-Hash")
+	if userID == "" || authHash == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return "", false
+	}
+	// Minimum delay to prevent timing attacks
+	start := time.Now()
+	ok, err := queries.AuthenticateUser(r.Context(), userID, authHash)
+	elapsed := time.Since(start)
+	if elapsed < 50*time.Millisecond {
+		time.Sleep(50*time.Millisecond - elapsed)
+	}
+	if err != nil || !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return "", false
+	}
+	return userID, true
+}
+
+func setCORSHeaders(w http.ResponseWriter, origin string) {
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "X-User-ID, X-Auth-Hash, X-Blob-Mime-Type, X-Blob-Filename, Content-Type")
+	w.Header().Set("Access-Control-Expose-Headers", "X-Blob-Mime-Type")
+}
+
+func buildCORSOrigin(frontendURL string) string {
+	parsed, err := url.Parse(frontendURL)
+	if err != nil {
+		return frontendURL
+	}
+	return parsed.Scheme + "://" + parsed.Host
 }
 
 // buildOriginPatterns extracts origin patterns from the frontend URL.
 // If the URL contains "localhost", it also allows common localhost variants.
 func buildOriginPatterns(frontendURL string) []string {
+	if frontendURL == "*" {
+		return []string{"*"}
+	}
 	parsed, err := url.Parse(frontendURL)
 	if err != nil {
 		slog.Warn("failed to parse frontend URL, falling back to exact match", "url", frontendURL, "error", err)

@@ -10,6 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"bytes"
+	"io"
+	"net/http"
+	"strings"
+
 	"github.com/coder/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -25,7 +30,7 @@ type wsMsg map[string]any
 func getTestDSN() string {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgres://postgres:postgres@localhost:5432/todos_test?sslmode=disable"
+		dsn = "postgres://postgres:postgres@localhost:5432/localdb?sslmode=disable"
 	}
 	return dsn
 }
@@ -43,7 +48,7 @@ func setupTestDB(t *testing.T) *db.Queries {
 		t.Skipf("Cannot ping test DB: %v", err)
 	}
 	// Clean tables for each test (order respects FK constraints)
-	if _, err := pool.Exec(ctx, "DELETE FROM sync_messages; DELETE FROM vault_members; DELETE FROM vaults; DELETE FROM devices; DELETE FROM users"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM blobs; DELETE FROM sync_messages; DELETE FROM vault_members; DELETE FROM vaults; DELETE FROM devices; DELETE FROM users"); err != nil {
 		pool.Close()
 		t.Fatalf("Failed to clean tables: %v", err)
 	}
@@ -58,6 +63,11 @@ func startTestServer(t *testing.T, queries *db.Queries) string {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return "ws" + srv.URL[4:] // http -> ws
+}
+
+// httpURL converts a ws:// test URL back to http:// for blob endpoint testing.
+func httpURL(wsURL string) string {
+	return "http" + strings.TrimPrefix(wsURL, "ws")
 }
 
 type testClient struct {
@@ -526,5 +536,295 @@ func TestNonMemberCannotPushToVault(t *testing.T) {
 	errMsg := stranger.recvType("push_error", 5*time.Second)
 	if errMsg["message"] != "insufficient permissions to write" {
 		t.Fatalf("Expected push_error for non-member, got: %v", errMsg)
+	}
+}
+
+// --- Blob endpoint tests ---
+
+// createVaultForBlob is a helper that creates a user, vault, and returns (httpBaseURL, vaultID).
+func createVaultForBlob(t *testing.T, wsURL string) (string, string) {
+	t.Helper()
+	owner := connect(t, wsURL)
+	owner.authenticate("blobuser", "blobhash", "00000000-0000-0000-0000-0000000000b0", true)
+	owner.send(wsMsg{"type": "set_identity", "public_key": "b3duZXItcHVia2V5", "wrapped_private_key": "d3JhcHBlZC1rZXk="})
+
+	vaultID := fmt.Sprintf("blob-vault-%d", time.Now().UnixNano())
+	owner.send(wsMsg{
+		"type":                "create_vault",
+		"vault_id":            vaultID,
+		"encrypted_vault_key": "ZW5jLXZhdWx0LWtleQ==",
+		"sender_public_key":   "c2VuZGVyLXB1YmtleQ==",
+	})
+	owner.recvType("vault_created", 5*time.Second)
+	return httpURL(wsURL), vaultID
+}
+
+func blobPut(baseURL, vaultID, checksum, userID, authHash string, data []byte) (*http.Response, error) {
+	url := fmt.Sprintf("%s/api/vaults/%s/blobs/%s", baseURL, vaultID, checksum)
+	req, err := http.NewRequest("PUT", url, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-User-ID", userID)
+	req.Header.Set("X-Auth-Hash", authHash)
+	req.Header.Set("X-Blob-Mime-Type", "image/webp")
+	req.Header.Set("X-Blob-Filename", "test.webp")
+	return http.DefaultClient.Do(req)
+}
+
+func blobGet(baseURL, vaultID, checksum, userID, authHash string) (*http.Response, error) {
+	url := fmt.Sprintf("%s/api/vaults/%s/blobs/%s", baseURL, vaultID, checksum)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-User-ID", userID)
+	req.Header.Set("X-Auth-Hash", authHash)
+	return http.DefaultClient.Do(req)
+}
+
+func TestBlobRoundTrip(t *testing.T) {
+	queries := setupTestDB(t)
+	wsURL := startTestServer(t, queries)
+	baseURL, vaultID := createVaultForBlob(t, wsURL)
+
+	data := []byte("encrypted-image-data-here")
+
+	// PUT
+	resp, err := blobPut(baseURL, vaultID, "abc123checksum", "blobuser", "blobhash", data)
+	if err != nil {
+		t.Fatalf("PUT failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 on PUT, got %d", resp.StatusCode)
+	}
+
+	// GET
+	resp, err = blobGet(baseURL, vaultID, "abc123checksum", "blobuser", "blobhash")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 on GET, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(body, data) {
+		t.Fatalf("Round-trip data mismatch: got %d bytes, want %d", len(body), len(data))
+	}
+	if resp.Header.Get("X-Blob-Mime-Type") != "image/webp" {
+		t.Fatalf("Expected mime type header, got %q", resp.Header.Get("X-Blob-Mime-Type"))
+	}
+	if resp.Header.Get("Cache-Control") == "" {
+		t.Fatal("Expected Cache-Control header on GET response")
+	}
+}
+
+func TestBlobDedup(t *testing.T) {
+	queries := setupTestDB(t)
+	wsURL := startTestServer(t, queries)
+	baseURL, vaultID := createVaultForBlob(t, wsURL)
+
+	data := []byte("same-data-twice")
+
+	// First PUT
+	resp, err := blobPut(baseURL, vaultID, "dedup-checksum", "blobuser", "blobhash", data)
+	if err != nil {
+		t.Fatalf("First PUT failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 on first PUT, got %d", resp.StatusCode)
+	}
+
+	// Second PUT with same checksum — should succeed silently (ON CONFLICT DO NOTHING)
+	resp, err = blobPut(baseURL, vaultID, "dedup-checksum", "blobuser", "blobhash", []byte("different-payload"))
+	if err != nil {
+		t.Fatalf("Second PUT failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 on dedup PUT, got %d", resp.StatusCode)
+	}
+
+	// GET should return the original data (first write wins)
+	resp, err = blobGet(baseURL, vaultID, "dedup-checksum", "blobuser", "blobhash")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(body, data) {
+		t.Fatalf("Dedup should preserve first upload, got %q", string(body))
+	}
+}
+
+func TestBlobAuthRejection(t *testing.T) {
+	queries := setupTestDB(t)
+	wsURL := startTestServer(t, queries)
+	baseURL, vaultID := createVaultForBlob(t, wsURL)
+
+	// No auth headers
+	url := fmt.Sprintf("%s/api/vaults/%s/blobs/test-checksum", baseURL, vaultID)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 with no auth, got %d", resp.StatusCode)
+	}
+
+	// Wrong auth hash
+	resp, err = blobGet(baseURL, vaultID, "test-checksum", "blobuser", "wronghash")
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 with wrong hash, got %d", resp.StatusCode)
+	}
+
+	// Non-existent user
+	resp, err = blobGet(baseURL, vaultID, "test-checksum", "nonexistent", "anyhash")
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 for non-existent user, got %d", resp.StatusCode)
+	}
+}
+
+func TestBlobNonMemberCannotAccess(t *testing.T) {
+	queries := setupTestDB(t)
+	wsURL := startTestServer(t, queries)
+	baseURL, vaultID := createVaultForBlob(t, wsURL)
+
+	// Create a second user who is NOT a vault member
+	stranger := connect(t, wsURL)
+	stranger.authenticate("stranger", "strangerhash", "00000000-0000-0000-0000-0000000000b1", true)
+
+	// Owner uploads a blob first
+	data := []byte("secret-blob")
+	resp, err := blobPut(baseURL, vaultID, "secret-checksum", "blobuser", "blobhash", data)
+	if err != nil {
+		t.Fatalf("Owner PUT failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Stranger tries to GET
+	resp, err = blobGet(baseURL, vaultID, "secret-checksum", "stranger", "strangerhash")
+	if err != nil {
+		t.Fatalf("Stranger GET failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Expected 403 for non-member GET, got %d", resp.StatusCode)
+	}
+
+	// Stranger tries to PUT
+	resp, err = blobPut(baseURL, vaultID, "stranger-checksum", "stranger", "strangerhash", []byte("evil"))
+	if err != nil {
+		t.Fatalf("Stranger PUT failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Expected 403 for non-member PUT, got %d", resp.StatusCode)
+	}
+}
+
+func TestBlobViewerCanReadNotWrite(t *testing.T) {
+	queries := setupTestDB(t)
+	wsURL := startTestServer(t, queries)
+	baseURL, vaultID := createVaultForBlob(t, wsURL)
+
+	// Create viewer user
+	viewer := connect(t, wsURL)
+	viewer.authenticate("viewer", "viewerhash", "00000000-0000-0000-0000-0000000000b2", true)
+	viewer.send(wsMsg{"type": "set_identity", "public_key": "dmlld2VyLXB1YmtleQ==", "wrapped_private_key": "d3JhcHBlZC1rZXk="})
+
+	// Owner invites viewer
+	ownerConn := connect(t, wsURL)
+	ownerConn.authenticate("blobuser", "blobhash", "00000000-0000-0000-0000-0000000000b3", false)
+	ownerConn.send(wsMsg{
+		"type":                "invite_to_vault",
+		"vault_id":            vaultID,
+		"target_user_id":      "viewer",
+		"encrypted_vault_key": "ZW5jLWtleS1mb3Itdmlld2Vy",
+		"sender_public_key":   "c2VuZGVyLXB1YmtleQ==",
+		"role":                "viewer",
+	})
+	ownerConn.recvType("vault_invite_ok", 5*time.Second)
+
+	// Owner uploads a blob
+	data := []byte("viewable-blob")
+	resp, err := blobPut(baseURL, vaultID, "view-checksum", "blobuser", "blobhash", data)
+	if err != nil {
+		t.Fatalf("Owner PUT failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Viewer can GET
+	resp, err = blobGet(baseURL, vaultID, "view-checksum", "viewer", "viewerhash")
+	if err != nil {
+		t.Fatalf("Viewer GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 for viewer GET, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(body, data) {
+		t.Fatalf("Viewer should see same data")
+	}
+
+	// Viewer cannot PUT
+	resp, err = blobPut(baseURL, vaultID, "viewer-upload", "viewer", "viewerhash", []byte("nope"))
+	if err != nil {
+		t.Fatalf("Viewer PUT failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Expected 403 for viewer PUT, got %d", resp.StatusCode)
+	}
+}
+
+func TestBlobNotFound(t *testing.T) {
+	queries := setupTestDB(t)
+	wsURL := startTestServer(t, queries)
+	baseURL, vaultID := createVaultForBlob(t, wsURL)
+
+	resp, err := blobGet(baseURL, vaultID, "nonexistent-checksum", "blobuser", "blobhash")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Expected 404 for missing blob, got %d", resp.StatusCode)
+	}
+}
+
+func TestBlobCORSPreflight(t *testing.T) {
+	queries := setupTestDB(t)
+	wsURL := startTestServer(t, queries)
+	baseURL := httpURL(wsURL)
+
+	req, _ := http.NewRequest("OPTIONS", baseURL+"/api/vaults/any/blobs/any", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("OPTIONS failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("Expected 204 for CORS preflight, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Access-Control-Allow-Origin") == "" {
+		t.Fatal("Expected Access-Control-Allow-Origin header")
+	}
+	if !strings.Contains(resp.Header.Get("Access-Control-Allow-Headers"), "X-Auth-Hash") {
+		t.Fatal("Expected X-Auth-Hash in allowed headers")
 	}
 }

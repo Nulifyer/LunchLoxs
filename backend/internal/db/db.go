@@ -606,5 +606,53 @@ func (q *Queries) RotateVaultKeys(ctx context.Context, vaultID string, updates [
 	return tx.Commit(ctx)
 }
 
+// -- Blob storage --
+
+// AuthenticateUser verifies a user's auth hash for HTTP endpoint auth.
+func (q *Queries) AuthenticateUser(ctx context.Context, userID, authHash string) (bool, error) {
+	var storedHash string
+	err := q.pool.QueryRow(ctx, `SELECT auth_hash FROM users WHERE user_id = $1`, userID).Scan(&storedHash)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return subtle.ConstantTimeCompare([]byte(storedHash), []byte(authHash)) == 1, nil
+}
+
+// PutBlob stores an encrypted blob, deduplicating by (vault_id, checksum).
+func (q *Queries) PutBlob(ctx context.Context, vaultID, checksum, mimeType, filename string, data []byte, sizeBytes int) error {
+	_, err := q.pool.Exec(ctx,
+		`INSERT INTO blobs (vault_id, checksum, data, mime_type, filename, size_bytes)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (vault_id, checksum) DO NOTHING`,
+		vaultID, checksum, data, mimeType, filename, sizeBytes,
+	)
+	return err
+}
+
+// GetBlob retrieves an encrypted blob by vault ID and checksum.
+func (q *Queries) GetBlob(ctx context.Context, vaultID, checksum string) ([]byte, string, error) {
+	var data []byte
+	var mimeType string
+	err := q.pool.QueryRow(ctx,
+		`SELECT data, mime_type FROM blobs WHERE vault_id = $1 AND checksum = $2`,
+		vaultID, checksum,
+	).Scan(&data, &mimeType)
+	return data, mimeType, err
+}
+
+// GetBlobMeta retrieves blob metadata without the data payload.
+func (q *Queries) GetBlobMeta(ctx context.Context, vaultID, checksum string) (string, string, int, error) {
+	var mimeType, filename string
+	var sizeBytes int
+	err := q.pool.QueryRow(ctx,
+		`SELECT mime_type, filename, size_bytes FROM blobs WHERE vault_id = $1 AND checksum = $2`,
+		vaultID, checksum,
+	).Scan(&mimeType, &filename, &sizeBytes)
+	return mimeType, filename, sizeBytes, err
+}
+
 // Ensure slog is used (compile-time check).
 var _ = slog.Info

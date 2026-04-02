@@ -39,6 +39,7 @@ import { renderMemberList, getSharingVaultId } from "./ui/share";
 import { switchBook, showBookList } from "./ui/books";
 import { logout, purgeLocalData } from "./ui/auth";
 import { emit as syncEmit } from "./sync/sync-events";
+import { flushDirtyBlobs } from "./lib/blob-client";
 
 export function createSyncConnection(
   wsUrl: string,
@@ -241,6 +242,11 @@ export function createSyncConnection(
         const allVaultIds = new Set(getBooks().map((b) => b.vaultId));
         await pq.purgeOrphanedDirty(allVaultIds);
         pq.flushAllDirty();
+        // Flush any pending blob uploads
+        flushDirtyBlobs(docMgr!.getDb(), (vaultId: string) => {
+          const book = getBooks().find((b) => b.vaultId === vaultId);
+          return book?.encKey ?? null;
+        });
       }
       // Save offline cache with authoritative server data
       const docMgrForCache = getDocMgr();

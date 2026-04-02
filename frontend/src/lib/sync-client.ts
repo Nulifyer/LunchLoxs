@@ -153,7 +153,8 @@ export class SyncClient {
     this.ws.onmessage = (event) => {
       // Any message from server counts as a heartbeat response
       this.clearHeartbeatTimeout();
-      this.messageQueue = this.messageQueue.then(() => this.handleMessage(event.data));
+      const data = typeof event.data === "string" ? event.data : "";
+      this.messageQueue = this.messageQueue.then(() => this.handleMessage(data)).catch((e) => console.error("sync: message handler error:", e));
     };
 
     this.ws.onclose = (ev) => {
@@ -171,6 +172,7 @@ export class SyncClient {
   }
 
   private async handleMessage(data: string): Promise<void> {
+    if (!data) return;
     const msg: ServerMessage = JSON.parse(data);
 
     switch (msg.type) {
