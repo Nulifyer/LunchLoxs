@@ -47,15 +47,16 @@ export async function selectRecipe(id: string) {
   });
   getSyncClient()?.subscribe(recipeDocId);
 
-  // Migration: if recipe doc has no title but catalog has old-format meta, copy it over
+  // Reconcile catalog ↔ recipe doc title/tags.
+  // Recipe doc is source of truth; catalog is a derived cache.
   const recipe = recipeStore.getDoc();
   const catalog = docMgr.get<BookCatalog>(catalogDocId());
   const catalogEntry = catalog?.getDoc()?.recipes?.find((r: any) => r.id === id);
   if (!recipe.title && catalogEntry?.title) {
+    // Migration: recipe doc empty but catalog has old-format meta — seed the doc
     recipeStore.change((doc) => {
       doc.title = catalogEntry.title;
       doc.tags = (catalogEntry.tags ?? []) as any;
-      // Copy old-format fields if they exist on the catalog entry
       const old = catalogEntry as any;
       if (old.servings) doc.servings = old.servings;
       if (old.prepMinutes) doc.prepMinutes = old.prepMinutes;
@@ -64,6 +65,16 @@ export async function selectRecipe(id: string) {
       if (old.updatedAt) doc.updatedAt = old.updatedAt;
     });
     pushSnapshot(recipeDocId);
+  } else if (recipe.title && catalog && catalogEntry) {
+    // Recipe doc has data — ensure catalog matches (fixes historical divergence)
+    if (catalogEntry.title !== recipe.title || JSON.stringify(catalogEntry.tags ?? []) !== JSON.stringify(recipe.tags ?? [])) {
+      catalog.change((doc) => {
+        const entry = doc.recipes?.find((r: any) => r.id === id);
+        if (entry) { entry.title = recipe.title; entry.tags = (recipe.tags ?? []) as any; }
+      });
+      pushSnapshot(catalogDocId());
+      renderCatalog();
+    }
   }
 
   openRecipe(recipeStore, id, canEditActiveBook(), activeBook?.name, getAllTags());
@@ -277,6 +288,27 @@ export function initRecipes() {
       pushSnapshot(`${targetBook.vaultId}/catalog`);
       docMgr.close(`${targetBook.vaultId}/${newId}`);
       toastSuccess(`Copied to "${targetBook.name}"`);
+    },
+    onSyncCatalogMeta: (title, tags) => {
+      const selectedRecipeId = getSelectedRecipeId();
+      const docMgr = getDocMgr();
+      const activeBook = getActiveBook();
+      if (!selectedRecipeId || !docMgr || !activeBook) return;
+      const catalog = docMgr.get<BookCatalog>(catalogDocId());
+      if (!catalog) return;
+      const entry = catalog.getDoc()?.recipes?.find((r: any) => r.id === selectedRecipeId);
+      if (!entry) return;
+      // Only write if actually different to avoid unnecessary pushes
+      if (entry.title === title && JSON.stringify(entry.tags) === JSON.stringify(tags)) return;
+      catalog.change((doc) => {
+        const e = doc.recipes?.find((r: any) => r.id === selectedRecipeId);
+        if (e) { e.title = title; e.tags = tags as any; }
+      });
+      pushSnapshot(catalogDocId());
+      renderCatalog();
+    },
+    onNavigateToRecipe: (recipeId: string) => {
+      selectRecipe(recipeId);
     },
   });
 

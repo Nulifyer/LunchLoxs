@@ -19,11 +19,15 @@ import { createDropdown } from "../lib/dropdown";
 import { parseQty, formatQty, scaleQty } from "../lib/quantity";
 import { convertIngredient, convertToUnit, resolveUnit, getConversionTargets, isDecimalUnit, canonicalUnitName, type UnitSystem } from "../lib/units";
 import { findDensity, convertViaDensity, WEIGHT_UNITS, VOLUME_UNITS } from "../lib/densities";
-import { ingredientCompletions } from "../lib/cm-ingredient-completions";
+import { autocompletion } from "@codemirror/autocomplete";
+import { ingredientCompletionSource } from "../lib/cm-ingredient-completions";
+import { recipeCompletionSource, type RecipeEntry } from "../lib/cm-recipe-completions";
 import { imagePreviewExtension } from "../lib/cm-image-preview";
 import { processAsset, AssetError } from "../lib/asset-processing";
 import { storeBlob, loadBlobUrl, loadBlobMeta, revokeObjectUrls } from "../lib/blob-client";
 import { getActiveBook, getDocMgr } from "../state";
+import { catalogDocId } from "../sync/push";
+import type { BookCatalog, CatalogEntry } from "../types";
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
@@ -65,6 +69,8 @@ const instrEditorContainer = document.getElementById("editor-container") as HTML
 const instrPreviewContainer = document.getElementById("preview-container") as HTMLElement;
 const notesEditorContainer = document.getElementById("notes-editor-container") as HTMLElement;
 const notesPreviewContainer = document.getElementById("notes-preview-container") as HTMLElement;
+const linkedRecipesSection = document.getElementById("linked-recipes-section") as HTMLElement;
+const linkedRecipesList = document.getElementById("linked-recipes-list") as HTMLElement;
 
 // -- State --
 let store: AutomergeStore<Recipe> | null = null;
@@ -132,6 +138,8 @@ const UNIT_LABELS: Record<UnitSystem, string> = {
 let currentRecipeId: string | null = null;
 let allTagSuggestions: string[] = [];
 let allIngredientSuggestions: string[] = [];
+let lastSyncedTitle = "";
+let lastSyncedTags: string[] = [];
 /** Update ingredient suggestions after async loading. */
 export function setIngredientSuggestions(suggestions: string[]) {
   allIngredientSuggestions = suggestions;
@@ -148,6 +156,17 @@ function getIngredientSuggestions(): string[] {
   }
   return [...set].sort();
 }
+
+/** Get catalog recipe entries for recipe link autocomplete. */
+function getCatalogRecipes(): RecipeEntry[] {
+  const docMgr = getDocMgr();
+  if (!docMgr) return [];
+  const catalog = docMgr.get<BookCatalog>(catalogDocId());
+  if (!catalog) return [];
+  const entries = catalog.getDoc()?.recipes ?? [];
+  return entries.map((e: CatalogEntry) => ({ id: e.id, title: e.title }));
+}
+
 let metaDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const META_DEBOUNCE_MS = 400;
 let presenceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
@@ -183,8 +202,11 @@ export interface DetailCallbacks {
   /** Mirror title + tags to the catalog for sidebar display, and push both docs. */
   onMetaChanged: (title: string, tags: string[]) => void;
   onDeleteRecipe: () => void;
+  /** Sync title + tags from recipe doc to catalog (e.g. after remote change). Does NOT push the recipe doc. */
+  onSyncCatalogMeta?: (title: string, tags: string[]) => void;
   onExportRecipe?: () => void;
   onCopyToBook?: () => void;
+  onNavigateToRecipe?: (recipeId: string) => void;
 }
 
 let callbacks: DetailCallbacks;
@@ -780,6 +802,8 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
   allTagSuggestions = tagSuggestions;
   allIngredientSuggestions = [];
   const meta = store.getDoc();
+  lastSyncedTitle = meta.title ?? "";
+  lastSyncedTags = [...(meta.tags ?? [])];
   // Reset ingredient UI state
   checkedIngredients.clear();
   unitOverrides.clear();
@@ -842,9 +866,16 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
       markdown(), appTheme, appSyntaxHighlighting, drawSelection(), highlightActiveLine(),
       EditorView.lineWrapping, EditorView.contentAttributes.of({ spellcheck: "true" }),
       iBridge.extension, remoteCursorsExtension,
-      ingredientCompletions(() => {
-        const d = store?.getDoc();
-        return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];
+      autocompletion({
+        override: [
+          ingredientCompletionSource(() => {
+            const d = store?.getDoc();
+            return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];
+          }),
+          recipeCompletionSource(getCatalogRecipes, () => getActiveBook()?.vaultId ?? "", () => currentRecipeId ?? ""),
+        ],
+        activateOnTyping: true,
+        closeOnBlur: false,
       }),
       imagePreviewExtension(blobResolver),
       EditorView.updateListener.of((update) => {
@@ -891,9 +922,16 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
       markdown(), appTheme, appSyntaxHighlighting, drawSelection(), highlightActiveLine(),
       EditorView.lineWrapping, EditorView.contentAttributes.of({ spellcheck: "true" }),
       nBridge.extension, remoteCursorsExtension,
-      ingredientCompletions(() => {
-        const d = store?.getDoc();
-        return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];
+      autocompletion({
+        override: [
+          ingredientCompletionSource(() => {
+            const d = store?.getDoc();
+            return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];
+          }),
+          recipeCompletionSource(getCatalogRecipes, () => getActiveBook()?.vaultId ?? "", () => currentRecipeId ?? ""),
+        ],
+        activateOnTyping: true,
+        closeOnBlur: false,
       }),
       imagePreviewExtension(blobResolver),
       EditorView.updateListener.of((update) => {
@@ -924,6 +962,15 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
   setPageEditing(false);
 
   store.onChange((doc) => {
+    // Sync title/tags to catalog if they changed (covers remote edits)
+    const docTitle = doc.title ?? "";
+    const docTags = [...(doc.tags ?? [])];
+    if (docTitle !== lastSyncedTitle || JSON.stringify(docTags) !== JSON.stringify(lastSyncedTags)) {
+      lastSyncedTitle = docTitle;
+      lastSyncedTags = docTags;
+      callbacks.onSyncCatalogMeta?.(docTitle, docTags);
+    }
+
     // Update meta display from recipe doc
     titleEl.textContent = doc.title;
     if (pageEditing && document.activeElement !== titleInput) {
@@ -999,6 +1046,10 @@ export function closeRecipe() {
   checkedIngredients.clear();
   unitOverrides.clear();
   scaleFactor = 1;
+  lastLinkedRecipeIds = [];
+  linkedRecipesGeneration++;
+  linkedRecipesSection.hidden = true;
+  linkedRecipesList.innerHTML = "";
   scaleBar.hidden = true;
   detailView.hidden = true;
   emptyState.hidden = false;
@@ -1308,6 +1359,25 @@ function resolveIngredientRefs(md: string, doc: Recipe): string {
   });
 }
 
+/** Collected linked recipe IDs from the last render pass. */
+let lastLinkedRecipeIds: string[] = [];
+
+/** Resolve `#[name](vaultId/recipeId)` recipe references in markdown source before rendering. */
+function resolveRecipeRefs(md: string, linkedIds: Set<string>): string {
+  return md.replace(/#\[([^\]]+)\]\(([^)]+)\)/g, (_match, name: string, docId: string) => {
+    linkedIds.add(docId);
+    // Check if the recipe exists in the catalog
+    const recipes = getCatalogRecipes();
+    const parts = docId.split("/");
+    const recipeId = (parts.length > 1 ? parts[1]! : parts[0]!);
+    const entry = recipes.find((r) => r.id === recipeId);
+    if (!entry) {
+      return `<span class="recipe-ref recipe-ref-broken">${escapeHtml(name)}</span>`;
+    }
+    return `<span class="recipe-ref" data-recipe-id="${escapeAttr(recipeId)}" data-doc-id="${escapeAttr(docId)}">${escapeHtml(entry.title)}</span>`;
+  });
+}
+
 /** Extract width from ![alt|NNN](src) syntax, strip it for marked, return a map of alt→width. */
 function extractImageWidths(md: string): { cleaned: string; widths: Map<string, number> } {
   const widths = new Map<string, number>();
@@ -1328,24 +1398,156 @@ function applyImageWidths(container: HTMLElement, widths: Map<string, number>) {
   });
 }
 
+/** Generation counter to prevent stale async renders from appending. */
+let linkedRecipesGeneration = 0;
+
+/** Render the expandable linked recipes section at the bottom of the detail view. */
+async function renderLinkedRecipes(docIds: string[]) {
+  const gen = ++linkedRecipesGeneration;
+
+  if (docIds.length === 0) {
+    linkedRecipesSection.hidden = true;
+    linkedRecipesList.innerHTML = "";
+    return;
+  }
+
+  linkedRecipesSection.hidden = false;
+  linkedRecipesList.innerHTML = "";
+  const docMgr = getDocMgr();
+  const activeBook = getActiveBook();
+  if (!docMgr || !activeBook) return;
+
+  // Use catalog titles as source of truth (survives renames)
+  const catalogEntries = getCatalogRecipes();
+
+  const initRecipe = (doc: Recipe) => {
+    doc.title = ""; doc.tags = []; doc.servings = 4; doc.prepMinutes = 0; doc.cookMinutes = 0;
+    doc.createdAt = Date.now(); doc.updatedAt = Date.now();
+    doc.description = ""; doc.ingredients = []; doc.instructions = ""; doc.imageUrls = []; doc.notes = "";
+  };
+
+  for (const docId of docIds) {
+    if (gen !== linkedRecipesGeneration) return; // stale render, bail
+
+    const parts = docId.split("/");
+    const recipeId = (parts.length > 1 ? parts[1]! : parts[0]!);
+    const fullDocId = parts.length > 1 ? docId : `${activeBook.vaultId}/${recipeId}`;
+    const catalogEntry = catalogEntries.find((e) => e.id === recipeId);
+    const displayTitle = catalogEntry?.title ?? recipeId;
+
+    try {
+      const recipeStore = await docMgr.open<Recipe>(fullDocId, initRecipe);
+      if (gen !== linkedRecipesGeneration) return; // stale after await
+      const doc = recipeStore.getDoc();
+
+      const card = document.createElement("details");
+      card.className = "linked-recipe-card";
+
+      // Summary line — use catalog title (survives renames)
+      const summary = document.createElement("summary");
+      summary.innerHTML = `${escapeHtml(displayTitle)}<span class="linked-recipe-open">Open</span>`;
+      card.appendChild(summary);
+
+      // Preview content
+      const preview = document.createElement("div");
+      preview.className = "linked-recipe-preview";
+
+      let hasContent = false;
+
+      // Meta line
+      const metaParts: string[] = [];
+      if (doc.servings) metaParts.push(`${doc.servings} servings`);
+      if (doc.prepMinutes) metaParts.push(`${doc.prepMinutes}m prep`);
+      if (doc.cookMinutes) metaParts.push(`${doc.cookMinutes}m cook`);
+      if (metaParts.length > 0) {
+        preview.innerHTML += `<div class="linked-recipe-meta">${escapeHtml(metaParts.join(" · "))}</div>`;
+        hasContent = true;
+      }
+
+      // Description
+      if (doc.description) {
+        const desc = doc.description.length > 200 ? doc.description.slice(0, 200) + "..." : doc.description;
+        preview.innerHTML += `<div class="linked-recipe-description">${escapeHtml(desc)}</div>`;
+        hasContent = true;
+      }
+
+      // Ingredients chips
+      const ings = doc.ingredients ?? [];
+      if (ings.length > 0) {
+        const chips = ings.slice(0, 12).map((ing: { quantity: string; unit: string; item: string }) => {
+          const ingParts = [ing.quantity, ing.unit, ing.item].filter(Boolean).join(" ");
+          return `<span>${escapeHtml(ingParts)}</span>`;
+        }).join("");
+        const more = ings.length > 12 ? `<span>+${ings.length - 12} more</span>` : "";
+        preview.innerHTML += `<div class="linked-recipe-ingredients">${chips}${more}</div>`;
+        hasContent = true;
+      }
+
+      // Instructions snippet (rendered markdown, truncated via CSS)
+      if (doc.instructions) {
+        const instrText = doc.instructions.length > 500 ? doc.instructions.slice(0, 500) : doc.instructions;
+        const instrHtml = DOMPurify.sanitize(marked.parse(instrText) as string);
+        preview.innerHTML += `<div class="linked-recipe-instructions">${instrHtml}</div>`;
+        hasContent = true;
+      }
+
+      if (!hasContent) {
+        preview.innerHTML = `<em>No content yet.</em>`;
+      }
+
+      card.appendChild(preview);
+
+      // Click "Open" to navigate
+      const navId = recipeId;
+      summary.querySelector(".linked-recipe-open")!.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        callbacks.onNavigateToRecipe?.(navId);
+      });
+
+      linkedRecipesList.appendChild(card);
+    } catch {
+      // Skip recipes that fail to load
+    }
+  }
+}
+
 function renderPreviews() {
   if (!store) return;
   const doc = store.getDoc();
-  const instrResolved = resolveIngredientRefs(doc.instructions ?? "", doc);
+  const linkedIds = new Set<string>();
+
+  const instrIngResolved = resolveIngredientRefs(doc.instructions ?? "", doc);
+  const instrResolved = resolveRecipeRefs(instrIngResolved, linkedIds);
   const instrExtracted = extractImageWidths(instrResolved);
-  const instrHtml = DOMPurify.sanitize(marked.parse(instrExtracted.cleaned) as string);
+  const instrHtml = DOMPurify.sanitize(marked.parse(instrExtracted.cleaned) as string, { ADD_ATTR: ["data-recipe-id", "data-doc-id"] });
   instrPreviewContainer.innerHTML = instrHtml || "<em>No instructions yet.</em>";
   applyImageWidths(instrPreviewContainer, instrExtracted.widths);
 
-  const notesResolved = resolveIngredientRefs(doc.notes ?? "", doc);
+  const notesIngResolved = resolveIngredientRefs(doc.notes ?? "", doc);
+  const notesResolved = resolveRecipeRefs(notesIngResolved, linkedIds);
   const notesExtracted = extractImageWidths(notesResolved);
-  const notesHtml = DOMPurify.sanitize(marked.parse(notesExtracted.cleaned) as string);
+  const notesHtml = DOMPurify.sanitize(marked.parse(notesExtracted.cleaned) as string, { ADD_ATTR: ["data-recipe-id", "data-doc-id"] });
   notesPreviewContainer.innerHTML = notesHtml || "<em>No notes yet.</em>";
   applyImageWidths(notesPreviewContainer, notesExtracted.widths);
 
   // Resolve blob: image/asset URLs
   resolveBlobAssets(instrPreviewContainer);
   resolveBlobAssets(notesPreviewContainer);
+
+  // Wire up recipe ref click handlers
+  for (const container of [instrPreviewContainer, notesPreviewContainer]) {
+    container.querySelectorAll<HTMLElement>(".recipe-ref[data-recipe-id]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const recipeId = el.dataset.recipeId;
+        if (recipeId) callbacks.onNavigateToRecipe?.(recipeId);
+      });
+    });
+  }
+
+  // Render linked recipes section
+  lastLinkedRecipeIds = [...linkedIds];
+  renderLinkedRecipes(lastLinkedRecipeIds);
 }
 
 /** Write image width back into markdown as ![alt|NNN](blob:checksum). */

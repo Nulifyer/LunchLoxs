@@ -1488,6 +1488,126 @@ input.ing-edit.ing-text {
   font-weight: 400;
 }
 
+/* -- Recipe references in instructions/notes -- */
+.recipe-ref {
+  display: inline;
+  background: var(--accent-bg, color-mix(in srgb, var(--accent) 12%, transparent));
+  border-radius: var(--radius);
+  padding: 0.1em 0.4em;
+  font-size: 0.9em;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.recipe-ref:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.recipe-ref-broken {
+  opacity: 0.5;
+  text-decoration: line-through;
+  font-weight: 400;
+  cursor: default;
+  color: var(--muted);
+  background: var(--bg-hover);
+}
+
+/* -- Linked Recipes Section -- */
+.linked-recipes-section {
+  margin-top: 1.5rem;
+  padding-top: 0.5rem;
+}
+
+.linked-recipes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.linked-recipe-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.linked-recipe-card summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  background: var(--bg-surface);
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.linked-recipe-card summary:hover {
+  background: var(--bg-hover);
+}
+
+.linked-recipe-card summary::marker {
+  color: var(--muted);
+}
+
+.linked-recipe-card .linked-recipe-open {
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.linked-recipe-card summary:hover .linked-recipe-open {
+  opacity: 1;
+}
+
+.linked-recipe-preview {
+  padding: 0.75rem;
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.linked-recipe-preview .linked-recipe-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-bottom: 0.5rem;
+}
+
+.linked-recipe-preview .linked-recipe-description {
+  margin-bottom: 0.5rem;
+}
+
+.linked-recipe-preview .linked-recipe-ingredients {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-bottom: 0.5rem;
+}
+
+.linked-recipe-preview .linked-recipe-ingredients span {
+  background: var(--bg-hover);
+  border-radius: var(--radius);
+  padding: 0.1em 0.4em;
+  font-size: 0.85em;
+}
+
+.linked-recipe-preview .linked-recipe-instructions {
+  color: var(--subtle);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  max-height: 6rem;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, black 70%, transparent);
+  -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent);
+}
+
 /* -- Blob images in preview -- */
 #preview-container img,
 #notes-preview-container img {

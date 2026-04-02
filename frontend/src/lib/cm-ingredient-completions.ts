@@ -5,14 +5,14 @@
  * On accept, inserts `@[ingredient name]`.
  */
 
-import { autocompletion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
+import type { CompletionContext, CompletionResult, CompletionSource } from "@codemirror/autocomplete";
 
 /**
- * Create a CM extension that autocompletes ingredient references.
+ * Create a completion source that autocompletes ingredient references.
  * @param getNames - returns the current list of ingredient item names
  */
-export function ingredientCompletions(getNames: () => string[]) {
-  function complete(ctx: CompletionContext): CompletionResult | null {
+export function ingredientCompletionSource(getNames: () => string[]): CompletionSource {
+  return (ctx: CompletionContext): CompletionResult | null => {
     // Look for `@[` before the cursor, possibly with partial text after it
     const line = ctx.state.doc.lineAt(ctx.pos);
     const textBefore = line.text.slice(0, ctx.pos - line.from);
@@ -45,11 +45,5 @@ export function ingredientCompletions(getNames: () => string[]) {
       options,
       filter: false, // we already filtered
     };
-  }
-
-  return autocompletion({
-    override: [complete],
-    activateOnTyping: true,
-    closeOnBlur: false,
-  });
+  };
 }
