@@ -54,6 +54,11 @@ export async function storeBlob(
     idbPut(db, `blobDirty:${key}`, true),
   ]);
 
+  // Attempt immediate upload (best-effort, dirty flag ensures retry on reconnect)
+  uploadBlobToServer(vaultId, checksum, encrypted, mimeType, filename).then((ok) => {
+    if (ok) idbDelete(db, `blobDirty:${key}`);
+  });
+
   return checksum;
 }
 

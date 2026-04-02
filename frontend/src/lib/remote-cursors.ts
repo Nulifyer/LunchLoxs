@@ -20,6 +20,8 @@ export interface RemoteCursor {
   anchor: number;
   /** Which field this cursor is in */
   todoId: string;
+  /** Timestamp of last activity (ms since epoch) */
+  lastSeen: number;
 }
 
 // -- Color slots mapped to theme CSS vars --
@@ -40,7 +42,7 @@ function getColorIndex(deviceId: string): number {
 // -- Cursor widget --
 
 class CursorWidget extends WidgetType {
-  constructor(readonly name: string, readonly colorIdx: number) { super(); }
+  constructor(readonly name: string, readonly colorIdx: number, readonly stale: boolean) { super(); }
 
   toDOM(): HTMLElement {
     const cursor = document.createElement("span");
@@ -51,11 +53,20 @@ class CursorWidget extends WidgetType {
     label.textContent = this.name;
     cursor.appendChild(label);
 
+    // Defer stale class so the initial opacity:1 is painted first and the transition can run
+    if (this.stale) requestAnimationFrame(() => label.classList.add("cm-remote-cursor-label-stale"));
+
     return cursor;
   }
 
+  override updateDOM(dom: HTMLElement): boolean {
+    const label = dom.querySelector(".cm-remote-cursor-label");
+    if (label) label.classList.toggle("cm-remote-cursor-label-stale", this.stale);
+    return true;
+  }
+
   override eq(other: CursorWidget): boolean {
-    return this.name === other.name && this.colorIdx === other.colorIdx;
+    return this.name === other.name && this.colorIdx === other.colorIdx && this.stale === other.stale;
   }
 }
 
@@ -87,12 +98,13 @@ function buildDecorations(cursors: RemoteCursor[], docLength: number): Decoratio
     const head = Math.min(cursor.head, docLength);
     const anchor = Math.min(cursor.anchor, docLength);
     const ci = getColorIndex(cursor.deviceId);
+    const stale = cursor.lastSeen > 0 && (Date.now() - cursor.lastSeen > 5_000);
 
     // Cursor line
     decorations.push({
       from: head,
       decoration: Decoration.widget({
-        widget: new CursorWidget(cursor.name, ci),
+        widget: new CursorWidget(cursor.name, ci, stale),
         side: 1,
       }),
     });
@@ -144,6 +156,11 @@ function colorSlotStyles(): Record<string, any> {
       whiteSpace: "nowrap",
       pointerEvents: "none",
       lineHeight: "1.6",
+      opacity: "1",
+      transition: "opacity 2s ease",
+    },
+    ".cm-remote-cursor-label-stale": {
+      opacity: "0",
     },
   };
   for (let i = 0; i < COLOR_VARS.length; i++) {

@@ -67,7 +67,12 @@ export function createAutomergeMirror<T>(opts: AutomergeMirrorOptions<T>) {
    */
   function mapPosition(pos: number): number {
     if (!lastRemoteChangeSet) return pos;
-    return lastRemoteChangeSet.mapPos(pos, 1); // bias forward
+    try {
+      return lastRemoteChangeSet.mapPos(pos, 1); // bias forward
+    } catch {
+      // Position out of range for the changeset — return clamped to doc length
+      return view ? Math.min(pos, view.state.doc.length) : pos;
+    }
   }
 
   /** Set the EditorView reference (call after creating the EditorView). */

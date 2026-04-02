@@ -24,6 +24,15 @@ export async function selectRecipe(id: string) {
   const activeBook = getActiveBook();
   if (!docMgr || !activeBook) return;
   log("[selectRecipe]", id);
+
+  // Clean up previous recipe subscription/store if switching directly
+  const prevId = getSelectedRecipeId();
+  if (prevId && prevId !== id) {
+    const prevDocId = `${activeBook.vaultId}/${prevId}`;
+    getSyncClient()?.unsubscribe(prevDocId);
+    docMgr.close(prevDocId);
+  }
+
   const accountPage = document.getElementById("account-page") as HTMLElement;
   const appShell = document.getElementById("app-shell") as HTMLElement;
   accountPage.hidden = true;

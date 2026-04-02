@@ -20,6 +20,7 @@ import { parseQty, formatQty, scaleQty } from "../lib/quantity";
 import { convertIngredient, convertToUnit, resolveUnit, getConversionTargets, isDecimalUnit, canonicalUnitName, type UnitSystem } from "../lib/units";
 import { findDensity, convertViaDensity, WEIGHT_UNITS, VOLUME_UNITS } from "../lib/densities";
 import { ingredientCompletions } from "../lib/cm-ingredient-completions";
+import { imagePreviewExtension } from "../lib/cm-image-preview";
 import { processAsset, AssetError } from "../lib/asset-processing";
 import { storeBlob, loadBlobUrl, loadBlobMeta, revokeObjectUrls } from "../lib/blob-client";
 import { getActiveBook, getDocMgr } from "../state";
@@ -28,6 +29,16 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
     node.setAttribute("target", "_blank");
     node.setAttribute("rel", "noopener noreferrer");
+  }
+});
+
+// Allow blob: URIs so markdown images like ![alt](blob:checksum) survive sanitization.
+// The blob: prefix is later resolved to a decrypted object URL by resolveBlobAssets().
+DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+  if (data.attrName === "src" || data.attrName === "href") {
+    if (data.attrValue.startsWith("blob:")) {
+      data.forceKeepAttr = true;
+    }
   }
 });
 
@@ -64,6 +75,38 @@ let notesBridge: ReturnType<typeof createAutomergeMirror> | null = null;
 let pageEditing = false;
 let instrCursors = new Map<string, RemoteCursor>();
 let notesCursors = new Map<string, RemoteCursor>();
+let cursorFadeTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Periodically refresh cursor decorations so stale cursors fade and disappear. */
+function scheduleCursorFade() {
+  if (cursorFadeTimer) return; // already running
+  cursorFadeTimer = setInterval(() => {
+    const now = Date.now();
+    // Remove fully faded cursors (>10s stale)
+    for (const [key, c] of instrCursors) {
+      if (now - c.lastSeen > 10_000) instrCursors.delete(key);
+    }
+    for (const [key, c] of notesCursors) {
+      if (now - c.lastSeen > 10_000) notesCursors.delete(key);
+    }
+    // Refresh decorations to update opacity
+    if (instrEditorView && instrCursors.size > 0) {
+      updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
+    }
+    if (notesEditorView && notesCursors.size > 0) {
+      updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
+    }
+    // Stop timer when no cursors remain
+    if (instrCursors.size === 0 && notesCursors.size === 0) {
+      clearInterval(cursorFadeTimer!);
+      cursorFadeTimer = null;
+      // Clear decorations one last time
+      if (instrEditorView) updateRemoteCursors(instrEditorView, []);
+      if (notesEditorView) updateRemoteCursors(notesEditorView, []);
+    }
+  }, 1000);
+}
+
 let onPushSnapshot: (() => void) | null = null;
 let onSendPresence: ((data: any) => void) | null = null;
 let canEdit = true;
@@ -772,6 +815,14 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
 
   const doc = store.getDoc();
 
+  // Shared blob resolver for CM image preview widgets
+  const blobResolver = async (checksum: string): Promise<string | null> => {
+    const book = getActiveBook();
+    const db = getDocMgr()?.getDb();
+    if (!book?.encKey || !db) return null;
+    return loadBlobUrl(db, book.vaultId, checksum, book.encKey);
+  };
+
   const iBridge = createAutomergeMirror<Recipe>({
     getDoc: () => store!.getDoc(),
     getText: (d) => d.instructions ?? "",
@@ -795,6 +846,7 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
         const d = store?.getDoc();
         return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];
       }),
+      imagePreviewExtension(blobResolver),
       EditorView.updateListener.of((update) => {
         if (update.selectionSet || update.docChanged) {
           const sel = update.state.selection.main;
@@ -843,6 +895,7 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
         const d = store?.getDoc();
         return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];
       }),
+      imagePreviewExtension(blobResolver),
       EditorView.updateListener.of((update) => {
         if (update.selectionSet || update.docChanged) {
           const sel = update.state.selection.main;
@@ -904,12 +957,14 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
         onSendPresence?.({ field: "notes", head: sel.head, anchor: sel.anchor, _stage: true });
       }
       for (const [, cursor] of instrCursors) {
-        cursor.head = instrBridge!.mapPosition(cursor.head);
-        cursor.anchor = instrBridge!.mapPosition(cursor.anchor);
+        const len = instrEditorView?.state.doc.length ?? 0;
+        cursor.head = instrBridge!.mapPosition(Math.min(cursor.head, len));
+        cursor.anchor = instrBridge!.mapPosition(Math.min(cursor.anchor, len));
       }
       for (const [, cursor] of notesCursors) {
-        cursor.head = notesBridge!.mapPosition(cursor.head);
-        cursor.anchor = notesBridge!.mapPosition(cursor.anchor);
+        const len = notesEditorView?.state.doc.length ?? 0;
+        cursor.head = notesBridge!.mapPosition(Math.min(cursor.head, len));
+        cursor.anchor = notesBridge!.mapPosition(Math.min(cursor.anchor, len));
       }
       if (instrCursors.size > 0 && instrEditorView) {
         updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
@@ -940,6 +995,7 @@ export function closeRecipe() {
   pageEditing = false;
   instrCursors.clear();
   notesCursors.clear();
+  if (cursorFadeTimer) { clearInterval(cursorFadeTimer); cursorFadeTimer = null; }
   checkedIngredients.clear();
   unitOverrides.clear();
   scaleFactor = 1;
@@ -973,27 +1029,37 @@ export function handlePresence(deviceId: string, data: any, senderUserId?: strin
   const anchor = data.anchor ?? 0;
 
   if (data.field === "instructions" && instrEditorView) {
-    const mappedHead = instrBridge ? instrBridge.mapPosition(head) : head;
-    const mappedAnchor = instrBridge ? instrBridge.mapPosition(anchor) : anchor;
+    const docLen = instrEditorView.state.doc.length;
+    const clampedHead = Math.min(head, docLen);
+    const clampedAnchor = Math.min(anchor, docLen);
+    const mappedHead = instrBridge ? instrBridge.mapPosition(clampedHead) : clampedHead;
+    const mappedAnchor = instrBridge ? instrBridge.mapPosition(clampedAnchor) : clampedAnchor;
     // Remove from notes if they moved to instructions
     notesCursors.delete(cursorKey);
     if (notesEditorView) updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
     instrCursors.set(cursorKey, {
       deviceId: cursorKey, name,
       head: mappedHead, anchor: mappedAnchor, todoId: "instructions",
+      lastSeen: Date.now(),
     });
     updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
+    scheduleCursorFade();
   } else if (data.field === "notes" && notesEditorView) {
-    const mappedHead = notesBridge ? notesBridge.mapPosition(head) : head;
-    const mappedAnchor = notesBridge ? notesBridge.mapPosition(anchor) : anchor;
+    const docLen = notesEditorView.state.doc.length;
+    const clampedHead = Math.min(head, docLen);
+    const clampedAnchor = Math.min(anchor, docLen);
+    const mappedHead = notesBridge ? notesBridge.mapPosition(clampedHead) : clampedHead;
+    const mappedAnchor = notesBridge ? notesBridge.mapPosition(clampedAnchor) : clampedAnchor;
     // Remove from instructions if they moved to notes
     instrCursors.delete(cursorKey);
     if (instrEditorView) updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
     notesCursors.set(cursorKey, {
       deviceId: cursorKey, name,
       head: mappedHead, anchor: mappedAnchor, todoId: "notes",
+      lastSeen: Date.now(),
     });
     updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
+    scheduleCursorFade();
   }
 }
 
@@ -1242,19 +1308,66 @@ function resolveIngredientRefs(md: string, doc: Recipe): string {
   });
 }
 
+/** Extract width from ![alt|NNN](src) syntax, strip it for marked, return a map of alt→width. */
+function extractImageWidths(md: string): { cleaned: string; widths: Map<string, number> } {
+  const widths = new Map<string, number>();
+  const cleaned = md.replace(/!\[([^\]|]*)\|(\d+)\]\(/g, (_match, alt: string, w: string) => {
+    widths.set(alt, parseInt(w));
+    return `![${alt}](`;
+  });
+  return { cleaned, widths };
+}
+
+/** Apply stored widths to <img> elements by matching alt text. */
+function applyImageWidths(container: HTMLElement, widths: Map<string, number>) {
+  if (widths.size === 0) return;
+  container.querySelectorAll("img").forEach((img) => {
+    const alt = img.getAttribute("alt") ?? "";
+    const w = widths.get(alt);
+    if (w) img.style.width = `${w}px`;
+  });
+}
+
 function renderPreviews() {
   if (!store) return;
   const doc = store.getDoc();
-  const instrMd = resolveIngredientRefs(doc.instructions ?? "", doc);
-  const instrHtml = DOMPurify.sanitize(marked.parse(instrMd) as string);
+  const instrResolved = resolveIngredientRefs(doc.instructions ?? "", doc);
+  const instrExtracted = extractImageWidths(instrResolved);
+  const instrHtml = DOMPurify.sanitize(marked.parse(instrExtracted.cleaned) as string);
   instrPreviewContainer.innerHTML = instrHtml || "<em>No instructions yet.</em>";
-  const notesMd = resolveIngredientRefs(doc.notes ?? "", doc);
-  const notesHtml = DOMPurify.sanitize(marked.parse(notesMd) as string);
+  applyImageWidths(instrPreviewContainer, instrExtracted.widths);
+
+  const notesResolved = resolveIngredientRefs(doc.notes ?? "", doc);
+  const notesExtracted = extractImageWidths(notesResolved);
+  const notesHtml = DOMPurify.sanitize(marked.parse(notesExtracted.cleaned) as string);
   notesPreviewContainer.innerHTML = notesHtml || "<em>No notes yet.</em>";
+  applyImageWidths(notesPreviewContainer, notesExtracted.widths);
 
   // Resolve blob: image/asset URLs
   resolveBlobAssets(instrPreviewContainer);
   resolveBlobAssets(notesPreviewContainer);
+}
+
+/** Write image width back into markdown as ![alt|NNN](blob:checksum). */
+function persistImageWidth(field: "instructions" | "notes", alt: string, checksum: string, width: number) {
+  if (!store) return;
+  const doc = store.getDoc();
+  const text = field === "instructions" ? doc.instructions : doc.notes;
+  if (!text) return;
+
+  // Match ![alt](blob:checksum) or ![alt|OLDpx](blob:checksum)
+  const escaped = alt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`!\\[${escaped}(?:\\|\\d+)?\\]\\(blob:${checksum}\\)`);
+  const replacement = `![${alt}|${width}](blob:${checksum})`;
+
+  const updated = text.replace(pattern, replacement);
+  if (updated === text) return;
+
+  store.change((d) => {
+    if (field === "instructions") d.instructions = updated;
+    else d.notes = updated;
+  });
+  onPushSnapshot?.();
 }
 
 /** Find blob: references in rendered HTML and load/decrypt them. */
@@ -1280,6 +1393,22 @@ function resolveBlobAssets(container: HTMLElement) {
         img.classList.remove("blob-loading");
         img.style.cursor = "pointer";
         img.addEventListener("click", () => showAssetOverlay(url, "image"));
+
+        // Persist width on resize
+        const alt = img.getAttribute("alt") ?? "";
+        if (alt && checksum) {
+          const field = container === instrPreviewContainer ? "instructions" : "notes";
+          let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+          new ResizeObserver(() => {
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+              const w = Math.round(img.getBoundingClientRect().width);
+              if (w > 0 && store) {
+                persistImageWidth(field, alt, checksum, w);
+              }
+            }, 300);
+          }).observe(img);
+        }
       } else {
         img.alt = `[Image not found: ${checksum.slice(0, 8)}…]`;
         img.classList.remove("blob-loading");
