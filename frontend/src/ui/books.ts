@@ -7,6 +7,7 @@ import { showConfirm, showPrompt } from "../lib/dialogs";
 import { openModal, closeModal } from "../lib/modal";
 import { createDropdown } from "../lib/dropdown";
 import { removeBookFromIndex } from "../lib/search";
+import { onCatalogChanged } from "../views/recipe-detail";
 import { toastSuccess, toastWarning, toastError } from "../lib/toast";
 import { parseRecipeMarkdown, recipeToMarkdown } from "../lib/export";
 import {
@@ -176,7 +177,10 @@ export async function createBook(name: string): Promise<Book | null> {
   catalog.onChange(() => {
     refreshBookNameFromCatalog(catDocId);
     rebuildBookIndex(vaultId);
-    if (getActiveBook()?.vaultId === vaultId) renderCatalog();
+    if (getActiveBook()?.vaultId === vaultId) {
+      renderCatalog();
+      onCatalogChanged();
+    }
   });
   pushSnapshot(catDocId);
   if (syncClient) await syncClient.subscribe(catDocId);

@@ -1078,6 +1078,52 @@ dialog label+tag-input {
    Recipe Detail
    ============================================================ */
 
+#recipe-detail {
+  position: relative;
+}
+
+/* -- Skeleton loading placeholder -- */
+.detail-skeleton {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--bg);
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.skel-bar {
+  display: block;
+  height: 0.875rem;
+  width: 100%;
+  border-radius: var(--radius);
+  background: linear-gradient(90deg, var(--bg-hover) 25%, var(--border) 50%, var(--bg-hover) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.5s ease-in-out infinite;
+}
+
+.skel-title { height: 1.5rem; width: 50%; }
+.skel-breadcrumb { margin-bottom: 0.25rem; }
+.skel-meta { margin-bottom: 0.5rem; }
+.skel-section-header { margin-top: 0.5rem; }
+
+.skel-ingredients,
+.skel-instructions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding-left: 0.25rem;
+}
+
+.skel-line { height: 0.75rem; }
+
+@keyframes skel-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 #recipe-detail header {
   margin-bottom: 1rem;
 }

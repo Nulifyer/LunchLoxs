@@ -17,7 +17,7 @@ import { DocumentManager } from "../lib/document-manager";
 import { clearLocalCache, loadLocalCache, type LocalCache } from "../lib/automerge-store";
 import { toBase64, fromBase64 } from "../lib/encoding";
 import { clearIndex, indexRecipe } from "../lib/search";
-import { isOpen as isDetailOpen } from "../views/recipe-detail";
+import { isOpen as isDetailOpen, onCatalogChanged } from "../views/recipe-detail";
 import {
   getDocMgr, setDocMgr, getSyncClient, setSyncClient,
   setBooks, setActiveBook, getActiveBook, setCurrentUsername, setCurrentUserId,
@@ -199,7 +199,10 @@ async function localBoot(
     catalog.onChange(() => {
       refreshBookNameFromCatalog(catDocId);
       rebuildBookIndex(book.vaultId);
-      if (getActiveBook()?.vaultId === book.vaultId) renderCatalog();
+      if (getActiveBook()?.vaultId === book.vaultId) {
+        renderCatalog();
+        onCatalogChanged();
+      }
     });
   }
 

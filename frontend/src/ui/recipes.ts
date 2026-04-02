@@ -38,6 +38,15 @@ export async function selectRecipe(id: string) {
   accountPage.hidden = true;
   setSelectedRecipeId(id);
   appShell.classList.add("detail-open");
+
+  // Show skeleton immediately while recipe loads
+  const detailView = document.getElementById("recipe-detail") as HTMLElement;
+  const skeleton = document.getElementById("recipe-detail-skeleton") as HTMLElement;
+  const emptyState = document.getElementById("empty-state") as HTMLElement;
+  emptyState.hidden = true;
+  detailView.hidden = false;
+  skeleton.hidden = false;
+
   renderCatalog();
   const recipeDocId = `${activeBook.vaultId}/${id}`;
   const recipeStore = await docMgr.open<Recipe>(recipeDocId, (doc) => {

@@ -48,6 +48,7 @@ DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
 
 // -- DOM refs --
 const detailView = document.getElementById("recipe-detail") as HTMLElement;
+const skeleton = document.getElementById("recipe-detail-skeleton") as HTMLElement;
 const emptyState = document.getElementById("empty-state") as HTMLElement;
 const backBtn = document.getElementById("back-btn") as HTMLButtonElement;
 const titleEl = document.getElementById("recipe-title") as HTMLHeadingElement;
@@ -818,6 +819,7 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
   canEdit = editable;
   emptyState.hidden = true;
   detailView.hidden = false;
+  skeleton.hidden = true;
   // Edit button for viewers is hidden
   pageEditBtn.hidden = !canEdit;
 
@@ -1054,6 +1056,7 @@ export function closeRecipe() {
   linkedRecipesSection.hidden = true;
   linkedRecipesList.innerHTML = "";
   scaleBar.hidden = true;
+  skeleton.hidden = true;
   detailView.hidden = true;
   emptyState.hidden = false;
   titleEl.hidden = false;
@@ -1134,6 +1137,15 @@ export function updateEditPermission(editable: boolean) {
 /** Get the recipe ID currently displayed in the detail view. */
 export function getOpenRecipeId(): string | null {
   return currentRecipeId;
+}
+
+/** Called when the catalog changes (e.g. a linked recipe was renamed). Updates link names in markdown. */
+export function onCatalogChanged() {
+  if (!store) return;
+  reconcileRecipeLinkNames();
+  // In view mode, re-render previews; in edit mode, the store.onChange handler
+  // will call applyRemoteText() on the editor bridges automatically.
+  if (!pageEditing) renderPreviews();
 }
 
 // -- Page-level edit/preview toggle --

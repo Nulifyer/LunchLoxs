@@ -21,7 +21,7 @@ import { DocumentManager } from "./lib/document-manager";
 import { SyncClient, type VaultInfo } from "./lib/sync-client";
 import { toBase64, fromBase64 } from "./lib/encoding";
 import { indexRecipe, removeBookFromIndex, clearIndex } from "./lib/search";
-import { handlePresence, updateEditPermission, isOpen as isDetailOpen, closeRecipe } from "./views/recipe-detail";
+import { handlePresence, updateEditPermission, isOpen as isDetailOpen, closeRecipe, onCatalogChanged } from "./views/recipe-detail";
 import { showAlert } from "./lib/dialogs";
 import type { BookCatalog } from "./types";
 
@@ -212,7 +212,10 @@ export function createSyncConnection(
             catalog.onChange(() => {
               refreshBookNameFromCatalog(catDocId);
               rebuildBookIndex(book.vaultId);
-              if (getActiveBook()?.vaultId === book.vaultId) renderCatalog();
+              if (getActiveBook()?.vaultId === book.vaultId) {
+                renderCatalog();
+                onCatalogChanged();
+              }
             });
           }
         }
