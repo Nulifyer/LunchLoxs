@@ -4,7 +4,7 @@
 
 import { log, warn, error } from "../lib/logger";
 import { initRecipeList } from "../views/recipe-list";
-import { initRecipeDetail, openRecipe, closeRecipe } from "../views/recipe-detail";
+import { initRecipeDetail, openRecipe, closeRecipe, setIngredientSuggestions } from "../views/recipe-detail";
 import { recipeToMarkdown } from "../lib/export";
 import { showConfirm, showSelect } from "../lib/dialogs";
 import { openModal, closeModal } from "../lib/modal";
@@ -16,7 +16,7 @@ import {
 import { pushSnapshot, renderCatalog, catalogDocId } from "../sync/push";
 import { canEditActiveBook } from "../sync/vault-helpers";
 import { switchBook } from "../ui/books";
-import type { BookCatalog, Recipe } from "../types";
+import type { BookCatalog, CatalogEntry, Recipe } from "../types";
 import type { TagInput } from "../components/tag-input";
 
 export async function selectRecipe(id: string) {
@@ -67,6 +67,8 @@ export async function selectRecipe(id: string) {
   }
 
   openRecipe(recipeStore, id, canEditActiveBook(), activeBook?.name, getAllTags());
+  // Load ingredient suggestions in background (don't block rendering or onChange registration)
+  getAllIngredientNames().then((names) => setIngredientSuggestions(names)).catch(() => {});
   // Prioritize this recipe for vector indexing (if stale)
   import("../lib/vector-search").then(({ enqueueRecipe }) => enqueueRecipe(activeBook.vaultId, id, "high")).catch(() => {});
 }
@@ -97,6 +99,33 @@ function getAllTags(): string[] {
   const recipes = catalog.getDoc()?.recipes ?? [];
   const set = new Set<string>();
   for (const r of recipes) for (const t of r.tags ?? []) set.add(t.toLowerCase());
+  return [...set].sort();
+}
+
+/** Collect all unique ingredient names from every recipe in the active book. */
+async function getAllIngredientNames(): Promise<string[]> {
+  const docMgr = getDocMgr();
+  const activeBook = getActiveBook();
+  if (!docMgr || !activeBook) return [];
+  const catalog = docMgr.get<BookCatalog>(catalogDocId());
+  if (!catalog) return [];
+  const entries = catalog.getDoc()?.recipes ?? [];
+  const set = new Set<string>();
+  const initRecipe = (doc: Recipe) => {
+    doc.title = ""; doc.tags = []; doc.servings = 4; doc.prepMinutes = 0; doc.cookMinutes = 0;
+    doc.createdAt = Date.now(); doc.updatedAt = Date.now();
+    doc.description = ""; doc.ingredients = []; doc.instructions = ""; doc.imageUrls = []; doc.notes = "";
+  };
+  await Promise.all(entries.map(async (entry: CatalogEntry) => {
+    try {
+      const store = await docMgr.open<Recipe>(`${activeBook.vaultId}/${entry.id}`, initRecipe);
+      const doc = store.getDoc();
+      for (const ing of doc.ingredients ?? []) {
+        const name = ing.item?.trim().toLowerCase();
+        if (name) set.add(name);
+      }
+    } catch { /* skip recipes that fail to load */ }
+  }));
   return [...set].sort();
 }
 

@@ -4,6 +4,7 @@
 
 import type { Recipe } from "../types";
 import type { TagInput } from "../components/tag-input";
+import type { AutocompleteInput } from "../components/autocomplete-input";
 import { AutomergeStore } from "../lib/automerge-store";
 import { createAutomergeMirror } from "../lib/codemirror-automerge";
 import { remoteCursorsExtension, updateRemoteCursors, shortDeviceName, type RemoteCursor } from "../lib/remote-cursors";
@@ -16,7 +17,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { createDropdown } from "../lib/dropdown";
 import { parseQty, formatQty, scaleQty } from "../lib/quantity";
-import { convertIngredient, convertToUnit, resolveUnit, getConversionTargets, isDecimalUnit, type UnitSystem } from "../lib/units";
+import { convertIngredient, convertToUnit, resolveUnit, getConversionTargets, isDecimalUnit, canonicalUnitName, type UnitSystem } from "../lib/units";
 import { findDensity, convertViaDensity, WEIGHT_UNITS, VOLUME_UNITS } from "../lib/densities";
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
@@ -83,6 +84,23 @@ const UNIT_LABELS: Record<UnitSystem, string> = {
 };
 let currentRecipeId: string | null = null;
 let allTagSuggestions: string[] = [];
+let allIngredientSuggestions: string[] = [];
+/** Update ingredient suggestions after async loading. */
+export function setIngredientSuggestions(suggestions: string[]) {
+  allIngredientSuggestions = suggestions;
+}
+/** Merge passed-in suggestions with current recipe's ingredient names. */
+function getIngredientSuggestions(): string[] {
+  const set = new Set<string>(allIngredientSuggestions);
+  const doc = store?.getDoc();
+  if (doc?.ingredients) {
+    for (const ing of doc.ingredients) {
+      const name = ing.item?.trim().toLowerCase();
+      if (name) set.add(name);
+    }
+  }
+  return [...set].sort();
+}
 let metaDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const META_DEBOUNCE_MS = 400;
 let presenceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
@@ -347,42 +365,84 @@ export function initRecipeDetail(cb: DetailCallbacks) {
   });
 
   ingredientsList.addEventListener("input", (e) => {
-    const input = e.target as HTMLInputElement;
-    if (!input.dataset.ingField || !store) return;
+    const target = e.target as HTMLElement;
+    const field = target.dataset.ingField as "quantity" | "unit" | "item" | undefined;
+    if (!field || !store) return;
 
-    // Ghost row input
-    if (input.dataset.ghost) return;
+    // Read value from either a plain input or an autocomplete-input
+    const value = (target as any).value as string;
 
-    const idx = parseInt(input.dataset.ingIdx ?? "-1");
+    // Clamp quantity: strip negative sign so amount can't go below 0
+    if (field === "quantity") {
+      const input = target as HTMLInputElement;
+      const stripped = input.value.replace(/-/g, "");
+      if (stripped !== input.value) {
+        const pos = input.selectionStart ?? 0;
+        input.value = stripped;
+        input.setSelectionRange(Math.max(0, pos - 1), Math.max(0, pos - 1));
+      }
+    }
+
+    // Ghost row input -- don't persist to store
+    if (target.dataset.ghost) return;
+
+    const idx = parseInt(target.dataset.ingIdx ?? "-1");
     if (idx < 0) return;
-    const field = input.dataset.ingField as "quantity" | "unit" | "item";
     store.change((doc) => {
       if (doc.ingredients && idx >= 0 && idx < doc.ingredients.length) {
-        doc.ingredients[idx]![field] = input.value;
+        doc.ingredients[idx]![field] = value;
       }
     });
     onPushSnapshot?.();
   });
 
-  // Ghost row: commit on Enter
+  // Ghost row: commit on Enter (only listen on non-autocomplete inputs;
+  // autocomplete-input handles Enter internally and only lets it through
+  // when no dropdown option is active)
   ingredientsList.addEventListener("keydown", (e) => {
-    const input = e.target as HTMLInputElement;
-    if (!input.dataset.ghost || e.key !== "Enter") return;
+    const target = e.target as HTMLElement;
+    if (!target.dataset.ghost || e.key !== "Enter") return;
     e.preventDefault();
     commitGhostRow();
   });
 
-  // Ghost row: commit on blur of item field if it has a value
+  // Blur: normalize unit abbreviations + commit ghost row
   ingredientsList.addEventListener("focusout", (e) => {
-    const input = e.target as HTMLInputElement;
-    if (!input.dataset.ghost || input.dataset.ingField !== "item") return;
-    // Delay slightly so clicking another ghost field doesn't trigger
-    setTimeout(() => {
-      const ghostLi = ingredientsList.querySelector(".ing-ghost");
-      if (ghostLi && !ghostLi.contains(document.activeElement)) {
-        commitGhostRow();
+    const target = e.target as HTMLElement;
+    if (!target.dataset.ingField) return;
+
+    // Auto-abbreviate unit names on blur (teaspoon -> tsp, etc.)
+    if (target.dataset.ingField === "unit") {
+      const input = target as HTMLInputElement;
+      if (input.value.trim()) {
+        const canonical = canonicalUnitName(input.value);
+        if (canonical && canonical !== input.value.trim()) {
+          input.value = canonical;
+          // Persist normalized value
+          if (!input.dataset.ghost && store) {
+            const idx = parseInt(input.dataset.ingIdx ?? "-1");
+            if (idx >= 0) {
+              store.change((doc) => {
+                if (doc.ingredients && idx >= 0 && idx < doc.ingredients.length) {
+                  doc.ingredients[idx]!.unit = canonical;
+                }
+              });
+              onPushSnapshot?.();
+            }
+          }
+        }
       }
-    }, 50);
+    }
+
+    // Ghost row: commit on blur of item field
+    if (target.dataset.ghost && target.dataset.ingField === "item") {
+      setTimeout(() => {
+        const ghostLi = ingredientsList.querySelector(".ing-ghost");
+        if (ghostLi && !ghostLi.contains(document.activeElement)) {
+          commitGhostRow();
+        }
+      }, 50);
+    }
   });
 
   // -- Pointer-based drag-to-reorder (works for mouse + touch) --
@@ -566,6 +626,7 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
   store = recipeStore;
   currentRecipeId = recipeId;
   allTagSuggestions = tagSuggestions;
+  allIngredientSuggestions = [];
   const meta = store.getDoc();
   // Reset ingredient UI state
   checkedIngredients.clear();
@@ -692,7 +753,22 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
   store.onChange((doc) => {
     // Update meta display from recipe doc
     titleEl.textContent = doc.title;
-    baseServings = doc.servings || 4;
+    if (pageEditing && document.activeElement !== titleInput) {
+      titleInput.value = doc.title;
+    }
+    const newBase = doc.servings || 4;
+    if (newBase !== baseServings) {
+      if (scaleFactor === 1) {
+        // User hasn't scaled — follow the new base
+        currentServings = newBase;
+      } else {
+        // User has a custom multiplier — preserve it
+        currentServings = Math.max(1, Math.round(newBase * scaleFactor));
+      }
+      baseServings = newBase;
+      scaleFactor = currentServings / baseServings;
+      updateScaleDisplay();
+    }
     if (!pageEditing) renderMetaDisplay();
     renderIngredients(doc);
     if (pageEditing) {
@@ -885,12 +961,13 @@ function commitGhostRow() {
   if (!ghostLi) return;
   const qtyIn = ghostLi.querySelector("[data-ing-field='quantity']") as HTMLInputElement;
   const unitIn = ghostLi.querySelector("[data-ing-field='unit']") as HTMLInputElement;
-  const itemIn = ghostLi.querySelector("[data-ing-field='item']") as HTMLInputElement;
-  const item = itemIn?.value.trim();
+  const itemIn = ghostLi.querySelector("[data-ing-field='item']") as AutocompleteInput;
+  const item = itemIn?.value?.trim();
   if (!item) return;
   store.change((doc) => {
     if (!doc.ingredients) doc.ingredients = [];
-    doc.ingredients.push({ item, quantity: qtyIn?.value.trim() ?? "", unit: unitIn?.value.trim() ?? "" });
+    const unit = canonicalUnitName(unitIn?.value ?? "") ?? unitIn?.value.trim() ?? "";
+    doc.ingredients.push({ item, quantity: qtyIn?.value.trim() ?? "", unit });
   });
   onPushSnapshot?.();
   // Re-render will create a fresh ghost row; focus its item field
@@ -926,7 +1003,7 @@ function renderIngredients(doc: Recipe) {
           <span class="ing-drag-handle">&#x283F;</span>
           <input class="ing-edit ing-qty" data-ing-idx="${i}" data-ing-field="quantity" value="${escapeAttr(ing.quantity)}" placeholder="qty" />
           <input class="ing-edit ing-unit" data-ing-idx="${i}" data-ing-field="unit" value="${escapeAttr(ing.unit)}" placeholder="unit" />
-          <input class="ing-edit ing-text" data-ing-idx="${i}" data-ing-field="item" value="${escapeAttr(ing.item)}" placeholder="ingredient" />
+          <autocomplete-input class="ing-edit ing-text" data-ing-idx="${i}" data-ing-field="item" value="${escapeAttr(ing.item)}" placeholder="ingredient"></autocomplete-input>
           <button data-delete-ing="${i}" title="Remove">&times;</button>
         </li>`)
         .join("");
@@ -936,18 +1013,24 @@ function renderIngredients(doc: Recipe) {
       <span class="ing-drag-handle" style="visibility:hidden">&#x283F;</span>
       <input class="ing-edit ing-qty" data-ghost="true" data-ing-field="quantity" value="" placeholder="qty" />
       <input class="ing-edit ing-unit" data-ghost="true" data-ing-field="unit" value="" placeholder="unit" />
-      <input class="ing-edit ing-text" data-ghost="true" data-ing-field="item" value="" placeholder="add ingredient..." />
+      <autocomplete-input class="ing-edit ing-text" data-ghost="true" data-ing-field="item" placeholder="add ingredient..."></autocomplete-input>
     </li>`;
     ingredientsList.innerHTML = html;
+
+    // Set suggestions on all autocomplete-input elements
+    const suggestions = getIngredientSuggestions();
+    ingredientsList.querySelectorAll("autocomplete-input").forEach((el) => {
+      (el as AutocompleteInput).suggestions = suggestions;
+    });
 
     // Restore focus
     if (focusKey) {
       const [idx, field] = focusKey.split(":");
-      const el = ingredientsList.querySelector(`[data-ing-idx="${idx}"][data-ing-field="${field}"]:not([data-ghost])`) as HTMLInputElement;
-      if (el) { el.focus(); el.setSelectionRange(focusPos, focusPos); }
+      const el = ingredientsList.querySelector(`[data-ing-idx="${idx}"][data-ing-field="${field}"]:not([data-ghost])`) as HTMLElement;
+      if (el) { el.focus(); (el as any).setSelectionRange?.(focusPos, focusPos); }
     } else if (ghostFocusField) {
-      const el = ingredientsList.querySelector(`.ing-ghost [data-ing-field="${ghostFocusField}"]`) as HTMLInputElement;
-      if (el) { el.focus(); el.setSelectionRange(focusPos, focusPos); }
+      const el = ingredientsList.querySelector(`.ing-ghost [data-ing-field="${ghostFocusField}"]`) as HTMLElement;
+      if (el) { el.focus(); (el as any).setSelectionRange?.(focusPos, focusPos); }
     }
   } else {
     // View mode with check-off, scaling, and unit conversion

@@ -856,6 +856,8 @@ dialog label+tag-input {
   padding: 0.05rem 0.35rem;
   border-radius: 3px;
   font-size: 0.65rem;
+  line-height: 1.4;
+  vertical-align: middle;
   color: var(--text);
   text-transform: capitalize;
 }

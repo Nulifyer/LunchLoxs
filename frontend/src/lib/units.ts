@@ -47,43 +47,33 @@ const UNIT_DEFS: UnitDef[] = [
   { canonical: "kg",    dimension: "weight", system: "metric",   toBase: 1000 },
 ];
 
-// Map aliases (lowercase) to canonical name.
-const ALIASES: Record<string, string> = {
-  // pinch
-  pinch: "pinch",
-  // dash
-  dash: "dash", dashes: "dash",
-  // tsp
-  tsp: "tsp", teaspoon: "tsp", teaspoons: "tsp", tsps: "tsp",
-  // tbsp
-  tbsp: "tbsp", tablespoon: "tbsp", tablespoons: "tbsp", tbsps: "tbsp", tbs: "tbsp",
-  // fl oz
-  "fl oz": "fl oz", "fluid ounce": "fl oz", "fluid ounces": "fl oz",
-  // cup
-  cup: "cup", cups: "cup", c: "cup",
-  // pint
-  pint: "pint", pints: "pint", pt: "pint",
-  // quart
-  quart: "quart", quarts: "quart", qt: "quart", qts: "quart",
-  // gallon
-  gallon: "gallon", gallons: "gallon", gal: "gallon",
-  // ml
-  ml: "ml", milliliter: "ml", milliliters: "ml", millilitre: "ml", millilitres: "ml",
-  // dl
-  dl: "dl", deciliter: "dl", deciliters: "dl", decilitre: "dl", decilitres: "dl",
-  // l
-  l: "l", liter: "l", liters: "l", litre: "l", litres: "l",
-  // oz
-  oz: "oz", ounce: "oz", ounces: "oz",
-  // lb
-  lb: "lb", lbs: "lb", pound: "lb", pounds: "lb",
-  // stick (butter)
-  stick: "stick", sticks: "stick",
-  // g
-  g: "g", gram: "g", grams: "g",
-  // kg
-  kg: "kg", kilogram: "kg", kilograms: "kg",
+// Canonical unit -> aliases. The key itself is also a valid match.
+const ALIAS_MAP: Record<string, string[]> = {
+  pinch:  ["pinches", "pinch of"],
+  dash:   ["dashes", "dash of"],
+  tsp:    ["teaspoon", "teaspoons", "tsps", "tsp."],
+  tbsp:   ["tablespoon", "tablespoons", "tbsps", "tbs", "tbsp.", "tbs."],
+  "fl oz": ["fluid ounce", "fluid ounces", "fl. oz.", "fl oz."],
+  cup:    ["cups", "c", "cup of", "cups of"],
+  pint:   ["pints", "pt", "pt."],
+  quart:  ["quarts", "qt", "qts", "qt."],
+  gallon: ["gallons", "gal", "gal."],
+  ml:     ["milliliter", "milliliters", "millilitre", "millilitres", "ml."],
+  dl:     ["deciliter", "deciliters", "decilitre", "decilitres"],
+  l:      ["liter", "liters", "litre", "litres"],
+  oz:     ["ounce", "ounces", "oz."],
+  lb:     ["lbs", "pound", "pounds", "lb.", "lbs."],
+  stick:  ["sticks", "stick of", "sticks of"],
+  g:      ["gram", "grams", "g."],
+  kg:     ["kilogram", "kilograms", "kg."],
 };
+
+// Flatten into a fast lookup: alias -> canonical
+const ALIASES: Record<string, string> = {};
+for (const [canonical, aliases] of Object.entries(ALIAS_MAP)) {
+  ALIASES[canonical] = canonical;
+  for (const alias of aliases) ALIASES[alias] = canonical;
+}
 
 const defByCanonical = new Map<string, UnitDef>();
 for (const d of UNIT_DEFS) defByCanonical.set(d.canonical, d);
@@ -105,6 +95,13 @@ export function resolveUnit(raw: string): UnitDef | null {
   const canonical = ALIASES[key];
   if (!canonical) return null;
   return defByCanonical.get(canonical) ?? null;
+}
+
+/** Return the canonical abbreviation for a unit string, or null if unrecognized. */
+export function canonicalUnitName(raw: string): string | null {
+  const key = raw.trim().toLowerCase();
+  if (!key) return null;
+  return ALIASES[key] ?? null;
 }
 
 /** Preferred target units per dimension when converting to a system. */
