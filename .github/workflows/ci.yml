@@ -7,12 +7,12 @@ on:
     branches: [main]
 
 jobs:
-  build-backend:
-    name: Build & Test Backend
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18-alpine
+        image: postgres:17-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -25,11 +25,11 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Run migrations on test DB
+      - name: Migrations
         run: |
           go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
           migrate -path backend/migrations -database "postgres://postgres:postgres@localhost:5432/localdb?sslmode=disable" up
@@ -42,17 +42,52 @@ jobs:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/localdb?sslmode=disable
         run: go test ./... -v -timeout 120s
 
-  build-frontend:
-    name: Build & Test Frontend
+  frontend-unit:
+    name: Frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - name: Install
         run: cd frontend && bun install --frozen-lockfile
       - name: Typecheck
-        run: cd frontend && bun tsc --noEmit
+        run: cd frontend && bunx tsc --noEmit
       - name: Build
         run: cd frontend && bun run build
-      - name: Test
-        run: cd frontend && bun test
+      - name: Unit tests
+        run: cd frontend && bun run test:unit --timeout 30000
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    needs: [backend, frontend-unit]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: localdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - name: Migrations
+        run: |
+          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+          migrate -path backend/migrations -database "postgres://postgres:postgres@localhost:5432/localdb?sslmode=disable" up
+      - name: Install frontend deps
+        run: cd frontend && bun install --frozen-lockfile
+      - name: Integration tests
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/localdb?sslmode=disable
+        run: cd frontend && bun run test:integration --timeout 60000

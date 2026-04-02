@@ -7,7 +7,9 @@
     "build": "bun build src/index.ts --outdir dist --minify && bun build src/workers/service-worker.ts --outdir dist --minify && bun build src/workers/embedding-worker.ts --outdir dist --minify --format esm && bun run scripts/copy-public.ts && bun run scripts/gen-theme-loader.ts",
     "watch": "bun run scripts/watch.ts",
     "preview": "bunx serve dist",
-    "test": "bun test"
+    "test": "bun test",
+    "test:unit": "bun test --path-ignore-patterns '**/integration*'",
+    "test:integration": "bun test src/lib/__tests__/integration.test.ts"
   },
   "dependencies": {
     "@automerge/automerge": "^3.2.4",
