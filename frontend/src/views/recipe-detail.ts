@@ -4,11 +4,9 @@
 
 import type { Recipe } from "../types";
 import type { TagInput } from "../components/tag-input";
-import type { AutocompleteInput } from "../components/autocomplete-input";
 import { AutomergeStore } from "../lib/automerge-store";
 import { createAutomergeMirror } from "../lib/codemirror-automerge";
-import { remoteCursorsExtension, updateRemoteCursors, shortDeviceName, type RemoteCursor } from "../lib/remote-cursors";
-import { escapeHtml, escapeAttr } from "../lib/html";
+import { remoteCursorsExtension, updateRemoteCursors } from "../lib/remote-cursors";
 import { EditorView, keymap, drawSelection, highlightActiveLine } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { appTheme, appSyntaxHighlighting } from "../lib/cm-theme";
@@ -17,18 +15,45 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { createDropdown } from "../lib/dropdown";
 import { parseQty, formatQty, scaleQty } from "../lib/quantity";
-import { convertIngredient, convertToUnit, resolveUnit, getConversionTargets, isDecimalUnit, canonicalUnitName, type UnitSystem } from "../lib/units";
+import { convertToUnit, resolveUnit, getConversionTargets, isDecimalUnit, canonicalUnitName } from "../lib/units";
 import { findDensity, convertViaDensity, WEIGHT_UNITS, VOLUME_UNITS } from "../lib/densities";
 import { autocompletion, completionKeymap, acceptCompletion } from "@codemirror/autocomplete";
 import { ingredientCompletionSource } from "../lib/cm-ingredient-completions";
-import { recipeCompletionSource, type RecipeEntry } from "../lib/cm-recipe-completions";
+import { recipeCompletionSource } from "../lib/cm-recipe-completions";
 import { imagePreviewExtension } from "../lib/cm-image-preview";
-import { processAsset, AssetError } from "../lib/asset-processing";
-import { storeBlob, loadBlobUrl, loadBlobMeta, revokeObjectUrls } from "../lib/blob-client";
+import { revokeObjectUrls, loadBlobUrl } from "../lib/blob-client";
 import { getActiveBook, getDocMgr } from "../state";
-import type { RecipePreview } from "../components/recipe-preview";
-import { catalogDocId } from "../sync/push";
-import type { BookCatalog, CatalogEntry } from "../types";
+import {
+  getStore, setStore, getInstrEditorView, setInstrEditorView, getInstrBridge, setInstrBridge,
+  getNotesEditorView, setNotesEditorView, getNotesBridge, setNotesBridge,
+  isPageEditing, setPageEditing as setPageEditingState, getCanEdit, setCanEdit,
+  getScaleFactor, setScaleFactor, getBaseServings, setBaseServings,
+  getCurrentServings, setCurrentServings, getUnitSystem, setUnitSystem,
+  getUnitOverrides, getCheckedIngredients,
+  getPushSnapshotFn, setPushSnapshotFn, getSendPresenceFn, setSendPresenceFn,
+  getCurrentRecipeId, setCurrentRecipeId,
+} from "./detail/state";
+import {
+  handlePresence as _handlePresence, queuePresence, sendPresenceNow,
+  getInstrCursors, getNotesCursors, clearCursorState,
+  getPresenceFallbackTimer, clearPresenceFallbackTimer,
+} from "./detail/presence";
+import {
+  renderIngredients, updateScaleDisplay, commitGhostRow,
+  cycleUnitSystem, UNIT_LABELS,
+  setIngredientSuggestions as _setIngredientSuggestions,
+} from "./detail/ingredients";
+import { assetDomHandlers } from "./detail/asset-handling";
+import {
+  resolveIngredientRefs, resolveRecipeRefs, reconcileRecipeLinkNames,
+  renderLinkedRecipes, updateLinkedPreviewState, cleanupLinkedRecipes,
+  getCatalogRecipes, getActiveLinkedPreviews, setLastLinkedRecipeIds,
+  bumpLinkedRecipesGeneration,
+} from "./detail/recipe-links";
+import { extractImageWidths, applyImageWidths, resolveBlobAssets } from "./detail/asset-handling";
+import { renderMetaDisplay } from "./detail/meta";
+
+export { _setIngredientSuggestions as setIngredientSuggestions };
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
@@ -65,7 +90,6 @@ const actionsSlot = document.getElementById("recipe-actions-slot") as HTMLElemen
 
 const ingredientsList = document.getElementById("ingredients-list") as HTMLElement;
 const scaleBar = document.getElementById("ingredient-scale-bar") as HTMLElement;
-const scaleDisplay = document.getElementById("scale-display") as HTMLElement;
 
 const instrEditorContainer = document.getElementById("editor-container") as HTMLElement;
 const instrPreviewContainer = document.getElementById("preview-container") as HTMLElement;
@@ -74,127 +98,14 @@ const notesPreviewContainer = document.getElementById("notes-preview-container")
 const linkedRecipesSection = document.getElementById("linked-recipes-section") as HTMLElement;
 const linkedRecipesList = document.getElementById("linked-recipes-list") as HTMLElement;
 
-// -- State --
-let store: AutomergeStore<Recipe> | null = null;
-let instrEditorView: EditorView | null = null;
-let instrBridge: ReturnType<typeof createAutomergeMirror> | null = null;
-let notesEditorView: EditorView | null = null;
-let notesBridge: ReturnType<typeof createAutomergeMirror> | null = null;
-let pageEditing = false;
-let instrCursors = new Map<string, RemoteCursor>();
-let notesCursors = new Map<string, RemoteCursor>();
-let cursorFadeTimer: ReturnType<typeof setInterval> | null = null;
-
-/** Periodically refresh cursor decorations so stale cursors fade and disappear. */
-function scheduleCursorFade() {
-  if (cursorFadeTimer) return; // already running
-  cursorFadeTimer = setInterval(() => {
-    const now = Date.now();
-    // Remove fully faded cursors (>10s stale)
-    for (const [key, c] of instrCursors) {
-      if (now - c.lastSeen > 10_000) instrCursors.delete(key);
-    }
-    for (const [key, c] of notesCursors) {
-      if (now - c.lastSeen > 10_000) notesCursors.delete(key);
-    }
-    // Refresh decorations to update opacity
-    if (instrEditorView && instrCursors.size > 0) {
-      updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
-    }
-    if (notesEditorView && notesCursors.size > 0) {
-      updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
-    }
-    // Stop timer when no cursors remain
-    if (instrCursors.size === 0 && notesCursors.size === 0) {
-      clearInterval(cursorFadeTimer!);
-      cursorFadeTimer = null;
-      // Clear decorations one last time
-      if (instrEditorView) updateRemoteCursors(instrEditorView, []);
-      if (notesEditorView) updateRemoteCursors(notesEditorView, []);
-    }
-  }, 1000);
-}
-
-let onPushSnapshot: (() => void) | null = null;
-let onSendPresence: ((data: any) => void) | null = null;
-let canEdit = true;
-let checkedIngredients = new Set<number>();
-let scaleFactor = 1;
-let baseServings = 4;
-let currentServings = 4;
-let unitSystem: UnitSystem = (localStorage.getItem("unit-system") as UnitSystem) || "original";
-let unitOverrides = new Map<number, string>(); // per-ingredient overrides: idx -> target unit canonical name
 const unitToggleBtn = document.getElementById("unit-toggle-btn") as HTMLButtonElement;
 
-function cycleUnitSystem(current: UnitSystem): UnitSystem {
-  if (current === "original") return "metric";
-  if (current === "metric") return "imperial";
-  return "original";
-}
-
-const UNIT_LABELS: Record<UnitSystem, string> = {
-  original: "Original",
-  metric: "Metric",
-  imperial: "Imperial",
-};
-let currentRecipeId: string | null = null;
 let allTagSuggestions: string[] = [];
-let allIngredientSuggestions: string[] = [];
 let lastSyncedTitle = "";
 let lastSyncedTags: string[] = [];
-/** Update ingredient suggestions after async loading. */
-export function setIngredientSuggestions(suggestions: string[]) {
-  allIngredientSuggestions = suggestions;
-}
-/** Merge passed-in suggestions with current recipe's ingredient names. */
-function getIngredientSuggestions(): string[] {
-  const set = new Set<string>(allIngredientSuggestions);
-  const doc = store?.getDoc();
-  if (doc?.ingredients) {
-    for (const ing of doc.ingredients) {
-      const name = ing.item?.trim().toLowerCase();
-      if (name) set.add(name);
-    }
-  }
-  return [...set].sort();
-}
-
-/** Get catalog recipe entries for recipe link autocomplete. */
-function getCatalogRecipes(): RecipeEntry[] {
-  const docMgr = getDocMgr();
-  if (!docMgr) return [];
-  const catalog = docMgr.get<BookCatalog>(catalogDocId());
-  if (!catalog) return [];
-  const entries = catalog.getDoc()?.recipes ?? [];
-  return entries.map((e: CatalogEntry) => ({ id: e.id, title: e.title }));
-}
 
 let metaDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const META_DEBOUNCE_MS = 400;
-let presenceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-
-/**
- * Stage cursor data to ride with the next text push.
- * Starts a fallback timer so selection-only moves (no text change)
- * still send a standalone presence after 500ms.
- */
-function queuePresence(data: any) {
-  // _stage tells the callback to stage on the SyncClient (bundled with push)
-  onSendPresence?.({ ...data, _stage: true });
-  // Fallback: if no push happens within 500ms (selection-only move),
-  // send a standalone presence so the cursor still updates for others.
-  if (presenceFallbackTimer) clearTimeout(presenceFallbackTimer);
-  presenceFallbackTimer = setTimeout(() => {
-    presenceFallbackTimer = null;
-    onSendPresence?.(data);
-  }, 500);
-}
-
-/** Send presence immediately (focus/blur events). */
-function sendPresenceNow(data: any) {
-  if (presenceFallbackTimer) { clearTimeout(presenceFallbackTimer); presenceFallbackTimer = null; }
-  onSendPresence?.(data);
-}
 
 export interface DetailCallbacks {
   onBack: () => void;
@@ -214,13 +125,14 @@ export interface DetailCallbacks {
 let callbacks: DetailCallbacks;
 
 function debounceMeta() {
-  if (!pageEditing || !store) return;
+  if (!isPageEditing() || !getStore()) return;
   if (metaDebounceTimer) clearTimeout(metaDebounceTimer);
   metaDebounceTimer = setTimeout(flushMeta, META_DEBOUNCE_MS);
 }
 
 function flushMeta() {
   if (metaDebounceTimer) { clearTimeout(metaDebounceTimer); metaDebounceTimer = null; }
+  const store = getStore();
   if (!store) return;
   const doc = store.getDoc();
   const title = titleInput.value.trim() || doc.title;
@@ -239,10 +151,10 @@ function flushMeta() {
 export function initRecipeDetail(cb: DetailCallbacks) {
   callbacks = cb;
   backBtn.addEventListener("click", cb.onBack);
-  onPushSnapshot = cb.onContentChanged;
-  onSendPresence = cb.onSendPresence;
+  setPushSnapshotFn(cb.onContentChanged);
+  setSendPresenceFn(cb.onSendPresence);
 
-  pageEditBtn.addEventListener("click", () => setPageEditing(!pageEditing));
+  pageEditBtn.addEventListener("click", () => setPageEditing(!isPageEditing()));
 
   titleInput.addEventListener("input", debounceMeta);
   metaServingsInput.addEventListener("input", debounceMeta);
@@ -251,16 +163,17 @@ export function initRecipeDetail(cb: DetailCallbacks) {
   metaTagInput.addEventListener("change", debounceMeta);
 
   instrPreviewContainer.addEventListener("click", () => {
-    if (pageEditing) instrEditorView?.focus();
+    if (isPageEditing()) getInstrEditorView()?.focus();
   });
   notesPreviewContainer.addEventListener("click", () => {
-    if (pageEditing) notesEditorView?.focus();
+    if (isPageEditing()) getNotesEditorView()?.focus();
   });
 
   // -- Ingredient event delegation --
 
   ingredientsList.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
+    const store = getStore();
 
     // Delete button
     const deleteBtn = target.closest("[data-delete-ing]") as HTMLElement;
@@ -271,7 +184,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
           doc.ingredients.splice(idx, 1);
         }
       });
-      onPushSnapshot?.();
+      getPushSnapshotFn()?.();
       return;
     }
 
@@ -281,6 +194,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
       const li = check.closest("li") as HTMLElement;
       const idx = parseInt(li.dataset.ingIdx ?? "-1");
       if (idx < 0) return;
+      const checkedIngredients = getCheckedIngredients();
       if (checkedIngredients.has(idx)) checkedIngredients.delete(idx);
       else checkedIngredients.add(idx);
       li.classList.toggle("ing-checked", checkedIngredients.has(idx));
@@ -289,7 +203,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
 
     // Unit conversion picker (click on unit span in view mode)
     const unitSpan = target.closest(".ing-unit") as HTMLElement;
-    if (unitSpan && !pageEditing) {
+    if (unitSpan && !isPageEditing()) {
       e.stopPropagation(); // prevent document click listener from immediately closing the picker
       const rect = unitSpan.getBoundingClientRect();
       showUnitPicker(unitSpan, rect.left, rect.bottom + 4);
@@ -311,6 +225,11 @@ export function initRecipeDetail(cb: DetailCallbacks) {
 
     // Close any existing picker
     closeUnitPicker();
+
+    const store = getStore();
+    const unitOverrides = getUnitOverrides();
+    const scaleFactor = getScaleFactor();
+    const unitSystem = getUnitSystem();
 
     const menu = document.createElement("div");
     menu.className = "dropdown-menu unit-picker";
@@ -438,6 +357,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
   ingredientsList.addEventListener("input", (e) => {
     const target = e.target as HTMLElement;
     const field = target.dataset.ingField as "quantity" | "unit" | "item" | undefined;
+    const store = getStore();
     if (!field || !store) return;
 
     // Read value from either a plain input or an autocomplete-input
@@ -472,9 +392,9 @@ export function initRecipeDetail(cb: DetailCallbacks) {
           if (doc.instructions) doc.instructions = doc.instructions.replace(pattern, `@[${value}]`);
           if (doc.notes) doc.notes = doc.notes.replace(pattern, `@[${value}]`);
         });
-        instrBridge?.applyRemoteText();
-        notesBridge?.applyRemoteText();
-        onPushSnapshot?.();
+        getInstrBridge()?.applyRemoteText();
+        getNotesBridge()?.applyRemoteText();
+        getPushSnapshotFn()?.();
         return;
       }
     }
@@ -484,7 +404,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
         doc.ingredients[idx]![field] = value;
       }
     });
-    onPushSnapshot?.();
+    getPushSnapshotFn()?.();
   });
 
   // Ghost row: commit on Enter (only listen on non-autocomplete inputs;
@@ -510,6 +430,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
         if (canonical && canonical !== input.value.trim()) {
           input.value = canonical;
           // Persist normalized value
+          const store = getStore();
           if (!input.dataset.ghost && store) {
             const idx = parseInt(input.dataset.ingIdx ?? "-1");
             if (idx >= 0) {
@@ -518,7 +439,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
                   doc.ingredients[idx]!.unit = canonical;
                 }
               });
-              onPushSnapshot?.();
+              getPushSnapshotFn()?.();
             }
           }
         }
@@ -608,6 +529,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     const from = dragIdx;
     let to = dropIdx;
     clearDragState();
+    const store = getStore();
     if (to === null || !store) return;
     // Adjust target index since removing the source shifts indices
     if (to > from) to--;
@@ -621,7 +543,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
       doc.ingredients.splice(from, 1);
       doc.ingredients.splice(to!, 0, copy);
     });
-    onPushSnapshot?.();
+    getPushSnapshotFn()?.();
   });
 
   ingredientsList.addEventListener("pointercancel", () => clearDragState());
@@ -632,204 +554,75 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     const btn = (e.target as HTMLElement).closest("[data-scale]") as HTMLElement;
     if (!btn) return;
     const action = btn.dataset.scale;
-    if (action === "increase") currentServings++;
-    else if (action === "decrease" && currentServings > 1) currentServings--;
-    else if (action === "double") currentServings *= 2;
-    else if (action === "triple") currentServings *= 3;
-    else if (action === "quadruple") currentServings *= 4;
-    else if (action === "half" && currentServings > 1) currentServings = Math.max(1, Math.round(currentServings / 2));
+    let cs = getCurrentServings();
+    const bs = getBaseServings();
+    if (action === "increase") cs++;
+    else if (action === "decrease" && cs > 1) cs--;
+    else if (action === "double") cs *= 2;
+    else if (action === "triple") cs *= 3;
+    else if (action === "quadruple") cs *= 4;
+    else if (action === "half" && cs > 1) cs = Math.max(1, Math.round(cs / 2));
     else if (action === "reset") {
-      currentServings = baseServings;
-      checkedIngredients.clear();
-      unitOverrides.clear();
-      unitSystem = "original";
-      localStorage.setItem("unit-system", unitSystem);
-      unitToggleBtn.textContent = UNIT_LABELS[unitSystem];
-      unitToggleBtn.dataset.unitSystem = unitSystem;
+      cs = bs;
+      getCheckedIngredients().clear();
+      getUnitOverrides().clear();
+      setUnitSystem("original");
+      unitToggleBtn.textContent = UNIT_LABELS["original"];
+      unitToggleBtn.dataset.unitSystem = "original";
     }
-    scaleFactor = currentServings / baseServings;
+    setCurrentServings(cs);
+    setScaleFactor(cs / bs);
     updateScaleDisplay();
+    const store = getStore();
     if (store) renderIngredients(store.getDoc());
     updateLinkedPreviewState();
     if (action === "reset") {
-      for (const p of activeLinkedPreviews) p.resetState();
+      for (const p of getActiveLinkedPreviews()) p.resetState();
     }
   });
 
   // -- Unit system toggle --
-  unitToggleBtn.textContent = UNIT_LABELS[unitSystem];
-  unitToggleBtn.dataset.unitSystem = unitSystem;
+  unitToggleBtn.textContent = UNIT_LABELS[getUnitSystem()];
+  unitToggleBtn.dataset.unitSystem = getUnitSystem();
   unitToggleBtn.addEventListener("click", () => {
-    unitSystem = cycleUnitSystem(unitSystem);
-    localStorage.setItem("unit-system", unitSystem);
-    unitToggleBtn.textContent = UNIT_LABELS[unitSystem];
-    unitToggleBtn.dataset.unitSystem = unitSystem;
-    unitOverrides.clear();
+    const newSystem = cycleUnitSystem(getUnitSystem());
+    setUnitSystem(newSystem);
+    unitToggleBtn.textContent = UNIT_LABELS[newSystem];
+    unitToggleBtn.dataset.unitSystem = newSystem;
+    getUnitOverrides().clear();
+    const store = getStore();
     if (store) renderIngredients(store.getDoc());
     updateLinkedPreviewState();
-  });
-}
-
-function timeAgo(ts: number): string {
-  const seconds = Math.floor((Date.now() - ts) / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo ago`;
-  const years = Math.floor(months / 12);
-  return `${years}y ago`;
-}
-
-function renderMetaDisplay() {
-  if (!store) return;
-  const doc = store.getDoc();
-  metaEl.innerHTML = "";
-
-  // Tags line
-  const tags = doc.tags ?? [];
-  if (tags.length > 0) {
-    const tagLine = document.createElement("div");
-    tagLine.className = "meta-tags-line";
-    tagLine.innerHTML = tags.map((t: string) => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
-    metaEl.appendChild(tagLine);
-  }
-
-  // Stats line: servings · prep · cook · updated
-  const stats = [
-    doc.servings ? `${doc.servings} servings` : "",
-    doc.prepMinutes ? `${doc.prepMinutes}m prep` : "",
-    doc.cookMinutes ? `${doc.cookMinutes}m cook` : "",
-  ].filter(Boolean);
-  if (doc.updatedAt && doc.updatedAt > 0) {
-    stats.push("updated " + timeAgo(doc.updatedAt));
-  }
-  if (stats.length > 0) {
-    const statsLine = document.createElement("div");
-    statsLine.className = "meta-stats-line";
-    statsLine.textContent = stats.join(" · ");
-    if (doc.updatedAt && doc.updatedAt > 0) {
-      statsLine.title = new Date(doc.updatedAt).toLocaleString();
-    }
-    metaEl.appendChild(statsLine);
-  }
-}
-
-/** Handle image/asset paste or drop into a CodeMirror editor. */
-function handleAssetFiles(files: File[], view: EditorView, pos: number): boolean {
-  const imageFiles = files.filter((f) => f.type.startsWith("image/") || f.name.endsWith(".pdf") || f.name.endsWith(".svg"));
-  if (imageFiles.length === 0) return false;
-
-  const book = getActiveBook();
-  const db = getDocMgr()?.getDb();
-  if (!book?.encKey || !db) return false;
-
-  for (const file of imageFiles) {
-    // Insert placeholder
-    const placeholder = `![Uploading ${file.name}…]()\n`;
-    view.dispatch({ changes: { from: pos, insert: placeholder } });
-    const placeholderEnd = pos + placeholder.length;
-
-    processAsset(file)
-      .then(async (asset) => {
-        const checksum = await storeBlob(db, book.vaultId, asset.bytes, asset.mimeType, asset.filename, book.encKey!);
-        const isImage = asset.mimeType.startsWith("image/");
-        const md = isImage
-          ? `![${asset.filename}](blob:${checksum})\n`
-          : `[${asset.filename}](blob:${checksum})\n`;
-
-        // Replace the placeholder
-        const docText = view.state.doc.toString();
-        const phIdx = docText.indexOf(placeholder);
-        if (phIdx >= 0) {
-          view.dispatch({ changes: { from: phIdx, to: phIdx + placeholder.length, insert: md } });
-        } else {
-          // Placeholder was edited away — append at end
-          const end = view.state.doc.length;
-          view.dispatch({ changes: { from: end, insert: "\n" + md } });
-        }
-        onPushSnapshot?.();
-      })
-      .catch((err) => {
-        // Remove placeholder on error
-        const docText = view.state.doc.toString();
-        const phIdx = docText.indexOf(placeholder);
-        if (phIdx >= 0) {
-          view.dispatch({ changes: { from: phIdx, to: phIdx + placeholder.length, insert: "" } });
-        }
-        const msg = err instanceof AssetError ? err.message : "Failed to process file.";
-        console.error("Asset upload error:", err);
-        alert(msg);
-      });
-
-    pos = placeholderEnd;
-  }
-  return true;
-}
-
-/** Create CM domEventHandlers for asset paste/drop. */
-function assetDomHandlers(getView: () => EditorView | null) {
-  return EditorView.domEventHandlers({
-    paste: (event) => {
-      const items = event.clipboardData?.items;
-      if (!items) return false;
-      const files: File[] = [];
-      for (const item of items) {
-        if (item.kind === "file") {
-          const f = item.getAsFile();
-          if (f) files.push(f);
-        }
-      }
-      const view = getView();
-      if (!view || files.length === 0) return false;
-      event.preventDefault();
-      return handleAssetFiles(files, view, view.state.selection.main.head);
-    },
-    drop: (event) => {
-      const files = event.dataTransfer?.files;
-      const view = getView();
-      if (!files || files.length === 0 || !view) return false;
-      const imageFiles = Array.from(files).filter(
-        (f) => f.type.startsWith("image/") || f.name.endsWith(".pdf") || f.name.endsWith(".svg"),
-      );
-      if (imageFiles.length === 0) return false;
-      event.preventDefault();
-      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.doc.length;
-      return handleAssetFiles(imageFiles, view, pos);
-    },
   });
 }
 
 export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string, editable = true, bookName?: string, tagSuggestions: string[] = []) {
   closeRecipe();
-  store = recipeStore;
-  currentRecipeId = recipeId;
+  setStore(recipeStore);
+  setCurrentRecipeId(recipeId);
   allTagSuggestions = tagSuggestions;
-  allIngredientSuggestions = [];
+  _setIngredientSuggestions([]);
+  const store = getStore()!;
   const meta = store.getDoc();
   lastSyncedTitle = meta.title ?? "";
   lastSyncedTags = [...(meta.tags ?? [])];
   // Reset ingredient UI state
-  checkedIngredients.clear();
-  unitOverrides.clear();
-  baseServings = meta.servings || 4;
-  currentServings = baseServings;
-  scaleFactor = 1;
+  getCheckedIngredients().clear();
+  getUnitOverrides().clear();
+  setBaseServings(meta.servings || 4);
+  setCurrentServings(getBaseServings());
+  setScaleFactor(1);
   titleEl.textContent = meta.title;
   // Update breadcrumb
   const breadcrumbBookName = document.getElementById("breadcrumb-book-name") as HTMLElement;
   if (breadcrumbBookName) breadcrumbBookName.textContent = bookName ?? "";
   renderMetaDisplay();
-  canEdit = editable;
+  setCanEdit(editable);
   emptyState.hidden = true;
   detailView.hidden = false;
   skeleton.hidden = true;
   // Edit button for viewers is hidden
-  pageEditBtn.hidden = !canEdit;
+  pageEditBtn.hidden = !getCanEdit();
 
   // Build actions dropdown
   actionsSlot.innerHTML = "";
@@ -837,10 +630,10 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
   if (callbacks.onExportRecipe) {
     menuItems.push({ label: "Export as .md", action: () => callbacks.onExportRecipe!() });
   }
-  if (callbacks.onCopyToBook && canEdit) {
+  if (callbacks.onCopyToBook && getCanEdit()) {
     menuItems.push({ label: "Copy to Book...", action: () => callbacks.onCopyToBook!() });
   }
-  if (canEdit) {
+  if (getCanEdit()) {
     menuItems.push({ label: "Delete", action: () => callbacks.onDeleteRecipe(), danger: true, separator: true });
   }
   if (menuItems.length > 0) {
@@ -861,18 +654,18 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
   };
 
   const iBridge = createAutomergeMirror<Recipe>({
-    getDoc: () => store!.getDoc(),
+    getDoc: () => getStore()!.getDoc(),
     getText: (d) => d.instructions ?? "",
     spliceText: (from, del, ins) => {
-      store!.change((d) => {
+      getStore()!.change((d) => {
         const c = d.instructions ?? "";
         d.instructions = c.slice(0, from) + ins + c.slice(from + del);
       });
     },
-    onLocalChange: () => onPushSnapshot?.(),
+    onLocalChange: () => getPushSnapshotFn()?.(),
   });
-  instrBridge = iBridge;
-  instrEditorView = new EditorView({
+  setInstrBridge(iBridge);
+  const instrView = new EditorView({
     doc: doc.instructions ?? "",
     extensions: [
       keymap.of([{ key: "Tab", run: acceptCompletion }, ...completionKeymap, ...defaultKeymap, ...historyKeymap]), history(),
@@ -882,10 +675,10 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
       autocompletion({
         override: [
           ingredientCompletionSource(() => {
-            const d = store?.getDoc();
+            const d = getStore()?.getDoc();
             return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];
           }),
-          recipeCompletionSource(getCatalogRecipes, () => getActiveBook()?.vaultId ?? "", () => currentRecipeId ?? ""),
+          recipeCompletionSource(getCatalogRecipes, () => getActiveBook()?.vaultId ?? "", () => getCurrentRecipeId() ?? ""),
         ],
         activateOnTyping: true,
         closeOnBlur: false,
@@ -895,16 +688,15 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
         if (update.selectionSet || update.docChanged) {
           const sel = update.state.selection.main;
           queuePresence({ field: "instructions", head: sel.head, anchor: sel.anchor });
-          if (update.docChanged && presenceFallbackTimer) {
-            clearTimeout(presenceFallbackTimer);
-            presenceFallbackTimer = null;
+          if (update.docChanged && getPresenceFallbackTimer()) {
+            clearPresenceFallbackTimer();
           }
         }
       }),
-      assetDomHandlers(() => instrEditorView),
+      assetDomHandlers(() => getInstrEditorView()),
       EditorView.domEventHandlers({
         focus: () => {
-          const sel = instrEditorView!.state.selection.main;
+          const sel = getInstrEditorView()!.state.selection.main;
           sendPresenceNow({ field: "instructions", head: sel.head, anchor: sel.anchor });
         },
         blur: () => {
@@ -914,21 +706,22 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
     ],
     parent: instrEditorContainer,
   });
-  iBridge.setView(instrEditorView);
+  setInstrEditorView(instrView);
+  iBridge.setView(instrView);
 
   const nBridge = createAutomergeMirror<Recipe>({
-    getDoc: () => store!.getDoc(),
+    getDoc: () => getStore()!.getDoc(),
     getText: (d) => d.notes ?? "",
     spliceText: (from, del, ins) => {
-      store!.change((d) => {
+      getStore()!.change((d) => {
         const c = d.notes ?? "";
         d.notes = c.slice(0, from) + ins + c.slice(from + del);
       });
     },
-    onLocalChange: () => onPushSnapshot?.(),
+    onLocalChange: () => getPushSnapshotFn()?.(),
   });
-  notesBridge = nBridge;
-  notesEditorView = new EditorView({
+  setNotesBridge(nBridge);
+  const notesView = new EditorView({
     doc: doc.notes ?? "",
     extensions: [
       keymap.of([{ key: "Tab", run: acceptCompletion }, ...completionKeymap, ...defaultKeymap, ...historyKeymap]), history(),
@@ -938,10 +731,10 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
       autocompletion({
         override: [
           ingredientCompletionSource(() => {
-            const d = store?.getDoc();
+            const d = getStore()?.getDoc();
             return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];
           }),
-          recipeCompletionSource(getCatalogRecipes, () => getActiveBook()?.vaultId ?? "", () => currentRecipeId ?? ""),
+          recipeCompletionSource(getCatalogRecipes, () => getActiveBook()?.vaultId ?? "", () => getCurrentRecipeId() ?? ""),
         ],
         activateOnTyping: true,
         closeOnBlur: false,
@@ -951,16 +744,15 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
         if (update.selectionSet || update.docChanged) {
           const sel = update.state.selection.main;
           queuePresence({ field: "notes", head: sel.head, anchor: sel.anchor });
-          if (update.docChanged && presenceFallbackTimer) {
-            clearTimeout(presenceFallbackTimer);
-            presenceFallbackTimer = null;
+          if (update.docChanged && getPresenceFallbackTimer()) {
+            clearPresenceFallbackTimer();
           }
         }
       }),
-      assetDomHandlers(() => notesEditorView),
+      assetDomHandlers(() => getNotesEditorView()),
       EditorView.domEventHandlers({
         focus: () => {
-          const sel = notesEditorView!.state.selection.main;
+          const sel = getNotesEditorView()!.state.selection.main;
           sendPresenceNow({ field: "notes", head: sel.head, anchor: sel.anchor });
         },
         blur: () => {
@@ -970,7 +762,8 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
     ],
     parent: notesEditorContainer,
   });
-  nBridge.setView(notesEditorView);
+  setNotesEditorView(notesView);
+  nBridge.setView(notesView);
 
   setPageEditing(false);
 
@@ -986,51 +779,55 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
 
     // Update meta display from recipe doc
     titleEl.textContent = doc.title;
-    if (pageEditing && document.activeElement !== titleInput) {
+    if (isPageEditing() && document.activeElement !== titleInput) {
       titleInput.value = doc.title;
     }
     const newBase = doc.servings || 4;
-    if (newBase !== baseServings) {
-      if (scaleFactor === 1) {
-        // User hasn't scaled — follow the new base
-        currentServings = newBase;
+    if (newBase !== getBaseServings()) {
+      if (getScaleFactor() === 1) {
+        // User hasn't scaled -- follow the new base
+        setCurrentServings(newBase);
       } else {
-        // User has a custom multiplier — preserve it
-        currentServings = Math.max(1, Math.round(newBase * scaleFactor));
+        // User has a custom multiplier -- preserve it
+        setCurrentServings(Math.max(1, Math.round(newBase * getScaleFactor())));
       }
-      baseServings = newBase;
-      scaleFactor = currentServings / baseServings;
+      setBaseServings(newBase);
+      setScaleFactor(getCurrentServings() / getBaseServings());
       updateScaleDisplay();
     }
-    if (!pageEditing) renderMetaDisplay();
+    if (!isPageEditing()) renderMetaDisplay();
     renderIngredients(doc);
-    if (pageEditing) {
-      instrBridge?.applyRemoteText();
-      notesBridge?.applyRemoteText();
+    if (isPageEditing()) {
+      getInstrBridge()?.applyRemoteText();
+      getNotesBridge()?.applyRemoteText();
       // Re-stage local cursor position after remote text change (will ride with next push if any)
-      if (instrEditorView && instrEditorView.hasFocus) {
-        const sel = instrEditorView.state.selection.main;
-        onSendPresence?.({ field: "instructions", head: sel.head, anchor: sel.anchor, _stage: true });
+      const instrEV = getInstrEditorView();
+      if (instrEV && instrEV.hasFocus) {
+        const sel = instrEV.state.selection.main;
+        getSendPresenceFn()?.({ field: "instructions", head: sel.head, anchor: sel.anchor, _stage: true });
       }
-      if (notesEditorView && notesEditorView.hasFocus) {
-        const sel = notesEditorView.state.selection.main;
-        onSendPresence?.({ field: "notes", head: sel.head, anchor: sel.anchor, _stage: true });
+      const notesEV = getNotesEditorView();
+      if (notesEV && notesEV.hasFocus) {
+        const sel = notesEV.state.selection.main;
+        getSendPresenceFn()?.({ field: "notes", head: sel.head, anchor: sel.anchor, _stage: true });
       }
+      const instrCursors = getInstrCursors();
+      const notesCursors = getNotesCursors();
       for (const [, cursor] of instrCursors) {
-        const len = instrEditorView?.state.doc.length ?? 0;
-        cursor.head = instrBridge!.mapPosition(Math.min(cursor.head, len));
-        cursor.anchor = instrBridge!.mapPosition(Math.min(cursor.anchor, len));
+        const len = getInstrEditorView()?.state.doc.length ?? 0;
+        cursor.head = getInstrBridge()!.mapPosition(Math.min(cursor.head, len));
+        cursor.anchor = getInstrBridge()!.mapPosition(Math.min(cursor.anchor, len));
       }
       for (const [, cursor] of notesCursors) {
-        const len = notesEditorView?.state.doc.length ?? 0;
-        cursor.head = notesBridge!.mapPosition(Math.min(cursor.head, len));
-        cursor.anchor = notesBridge!.mapPosition(Math.min(cursor.anchor, len));
+        const len = getNotesEditorView()?.state.doc.length ?? 0;
+        cursor.head = getNotesBridge()!.mapPosition(Math.min(cursor.head, len));
+        cursor.anchor = getNotesBridge()!.mapPosition(Math.min(cursor.anchor, len));
       }
-      if (instrCursors.size > 0 && instrEditorView) {
-        updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
+      if (instrCursors.size > 0 && getInstrEditorView()) {
+        updateRemoteCursors(getInstrEditorView()!, Array.from(instrCursors.values()));
       }
-      if (notesCursors.size > 0 && notesEditorView) {
-        updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
+      if (notesCursors.size > 0 && getNotesEditorView()) {
+        updateRemoteCursors(getNotesEditorView()!, Array.from(notesCursors.values()));
       }
     } else {
       renderPreviews();
@@ -1042,25 +839,23 @@ export function closeRecipe() {
   // Notify remote users our cursors are gone
   sendPresenceNow({ field: "instructions", active: false });
   sendPresenceNow({ field: "notes", active: false });
-  instrEditorView?.destroy();
-  instrEditorView = null;
-  instrBridge = null;
-  notesEditorView?.destroy();
-  notesEditorView = null;
-  notesBridge = null;
+  getInstrEditorView()?.destroy();
+  setInstrEditorView(null);
+  setInstrBridge(null);
+  getNotesEditorView()?.destroy();
+  setNotesEditorView(null);
+  setNotesBridge(null);
   if (metaDebounceTimer) flushMeta();
   revokeObjectUrls();
-  store = null;
-  currentRecipeId = null;
-  pageEditing = false;
-  instrCursors.clear();
-  notesCursors.clear();
-  if (cursorFadeTimer) { clearInterval(cursorFadeTimer); cursorFadeTimer = null; }
-  checkedIngredients.clear();
-  unitOverrides.clear();
-  scaleFactor = 1;
-  lastLinkedRecipeIds = [];
-  linkedRecipesGeneration++;
+  setStore(null);
+  setCurrentRecipeId(null);
+  setPageEditingState(false);
+  clearCursorState();
+  getCheckedIngredients().clear();
+  getUnitOverrides().clear();
+  setScaleFactor(1);
+  setLastLinkedRecipeIds([]);
+  bumpLinkedRecipesGeneration();
   cleanupLinkedRecipes();
   linkedRecipesSection.hidden = true;
   linkedRecipesList.innerHTML = "";
@@ -1075,100 +870,50 @@ export function closeRecipe() {
 }
 
 export function handlePresence(deviceId: string, data: any, senderUserId?: string) {
-  if (!data.field) return;
-  const cursorKey = senderUserId ? `${senderUserId}:${deviceId}` : deviceId;
-
-  // User blurred this editor -- remove their cursor
-  if (data.active === false) {
-    if (data.field === "instructions") {
-      instrCursors.delete(cursorKey);
-      if (instrEditorView) updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
-    } else if (data.field === "notes") {
-      notesCursors.delete(cursorKey);
-      if (notesEditorView) updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
-    }
-    return;
-  }
-
-  const name = data.username || shortDeviceName(deviceId);
-  const head = data.head ?? 0;
-  const anchor = data.anchor ?? 0;
-
-  if (data.field === "instructions" && instrEditorView) {
-    const docLen = instrEditorView.state.doc.length;
-    const clampedHead = Math.min(head, docLen);
-    const clampedAnchor = Math.min(anchor, docLen);
-    const mappedHead = instrBridge ? instrBridge.mapPosition(clampedHead) : clampedHead;
-    const mappedAnchor = instrBridge ? instrBridge.mapPosition(clampedAnchor) : clampedAnchor;
-    // Remove from notes if they moved to instructions
-    notesCursors.delete(cursorKey);
-    if (notesEditorView) updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
-    instrCursors.set(cursorKey, {
-      deviceId: cursorKey, name,
-      head: mappedHead, anchor: mappedAnchor, todoId: "instructions",
-      lastSeen: Date.now(),
-    });
-    updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
-    scheduleCursorFade();
-  } else if (data.field === "notes" && notesEditorView) {
-    const docLen = notesEditorView.state.doc.length;
-    const clampedHead = Math.min(head, docLen);
-    const clampedAnchor = Math.min(anchor, docLen);
-    const mappedHead = notesBridge ? notesBridge.mapPosition(clampedHead) : clampedHead;
-    const mappedAnchor = notesBridge ? notesBridge.mapPosition(clampedAnchor) : clampedAnchor;
-    // Remove from instructions if they moved to notes
-    instrCursors.delete(cursorKey);
-    if (instrEditorView) updateRemoteCursors(instrEditorView, Array.from(instrCursors.values()));
-    notesCursors.set(cursorKey, {
-      deviceId: cursorKey, name,
-      head: mappedHead, anchor: mappedAnchor, todoId: "notes",
-      lastSeen: Date.now(),
-    });
-    updateRemoteCursors(notesEditorView, Array.from(notesCursors.values()));
-    scheduleCursorFade();
-  }
+  _handlePresence(deviceId, data, senderUserId);
 }
 
 export function isOpen(): boolean {
-  return store !== null;
+  return getStore() !== null;
 }
 
 /** Update edit permissions without re-opening the recipe (e.g. role changed). */
 export function updateEditPermission(editable: boolean) {
-  if (!store) return;
-  canEdit = editable;
-  pageEditBtn.hidden = !canEdit;
-  if (!canEdit && pageEditing) {
+  if (!getStore()) return;
+  setCanEdit(editable);
+  pageEditBtn.hidden = !getCanEdit();
+  if (!getCanEdit() && isPageEditing()) {
     setPageEditing(false);
   }
 }
 
 /** Get the recipe ID currently displayed in the detail view. */
 export function getOpenRecipeId(): string | null {
-  return currentRecipeId;
+  return getCurrentRecipeId();
 }
 
 /** Called when the catalog changes (e.g. a linked recipe was renamed). Updates link names in markdown. */
 export function onCatalogChanged() {
-  if (!store) return;
+  if (!getStore()) return;
   reconcileRecipeLinkNames();
   // In view mode, re-render previews; in edit mode, the store.onChange handler
   // will call applyRemoteText() on the editor bridges automatically.
-  if (!pageEditing) renderPreviews();
+  if (!isPageEditing()) renderPreviews();
 }
 
 // -- Page-level edit/preview toggle --
 
 function setPageEditing(editing: boolean) {
-  if (!canEdit && editing) return;
-  const wasEditing = pageEditing;
-  pageEditing = editing;
+  if (!getCanEdit() && editing) return;
+  const wasEditing = isPageEditing();
+  setPageEditingState(editing);
   detailView.classList.toggle("editing", editing);
   pageEditBtn.textContent = editing ? "Done" : "Edit";
 
   // Toggle inline title editing
   titleEl.hidden = editing;
   titleInput.hidden = !editing;
+  const store = getStore();
   if (editing && store) {
     const doc = store.getDoc();
     titleInput.value = doc.title;
@@ -1181,16 +926,16 @@ function setPageEditing(editing: boolean) {
   metaEl.hidden = editing;
   metaEditEl.hidden = !editing;
 
-  // On "Done" — flush any pending debounce
+  // On "Done" -- flush any pending debounce
   if (wasEditing && !editing) flushMeta();
 
   // Scale bar: show in view mode, hide in edit mode
   scaleBar.hidden = editing;
   if (editing) {
     // Reset scaling and checks when entering edit mode
-    checkedIngredients.clear();
-    currentServings = baseServings;
-    scaleFactor = 1;
+    getCheckedIngredients().clear();
+    setCurrentServings(getBaseServings());
+    setScaleFactor(1);
     updateScaleDisplay();
   } else {
     // Tell remote users our cursors are gone
@@ -1201,7 +946,7 @@ function setPageEditing(editing: boolean) {
   instrEditorContainer.hidden = !editing;
   instrPreviewContainer.hidden = editing;
   if (editing) {
-    instrBridge?.applyRemoteText();
+    getInstrBridge()?.applyRemoteText();
   } else {
     renderPreviews();
   }
@@ -1209,7 +954,7 @@ function setPageEditing(editing: boolean) {
   notesEditorContainer.hidden = !editing;
   notesPreviewContainer.hidden = editing;
   if (editing) {
-    notesBridge?.applyRemoteText();
+    getNotesBridge()?.applyRemoteText();
   }
 
   renderIngredients(store?.getDoc() ?? { title: "", tags: [], servings: 4, prepMinutes: 0, cookMinutes: 0, createdAt: 0, updatedAt: 0, description: "", ingredients: [], instructions: "", imageUrls: [], notes: "" });
@@ -1217,385 +962,8 @@ function setPageEditing(editing: boolean) {
 
 // -- Render --
 
-function commitGhostRow() {
-  if (!store) return;
-  const ghostLi = ingredientsList.querySelector(".ing-ghost");
-  if (!ghostLi) return;
-  const qtyIn = ghostLi.querySelector("[data-ing-field='quantity']") as HTMLInputElement;
-  const unitIn = ghostLi.querySelector("[data-ing-field='unit']") as HTMLInputElement;
-  const itemIn = ghostLi.querySelector("[data-ing-field='item']") as AutocompleteInput;
-  const item = itemIn?.value?.trim();
-  if (!item) return;
-  store.change((doc) => {
-    if (!doc.ingredients) doc.ingredients = [];
-    const unit = canonicalUnitName(unitIn?.value ?? "") ?? unitIn?.value.trim() ?? "";
-    doc.ingredients.push({ item, quantity: qtyIn?.value.trim() ?? "", unit });
-  });
-  onPushSnapshot?.();
-  // Re-render will create a fresh ghost row; focus its item field
-  renderIngredients(store.getDoc());
-  const newGhost = ingredientsList.querySelector(".ing-ghost [data-ing-field='quantity']") as HTMLInputElement;
-  newGhost?.focus();
-}
-
-function updateScaleDisplay() {
-  scaleDisplay.textContent = `${currentServings} servings`;
-  scaleBar.classList.toggle("scaled", currentServings !== baseServings);
-}
-
-
-function renderIngredients(doc: Recipe) {
-  const ingredients = doc.ingredients ?? [];
-
-  if (pageEditing) {
-    // Save focus state before re-render
-    const focused = document.activeElement as HTMLInputElement | null;
-    const focusGhost = focused?.dataset.ghost === "true";
-    const focusKey = !focusGhost && focused?.dataset.ingIdx && focused?.dataset.ingField
-      ? `${focused.dataset.ingIdx}:${focused.dataset.ingField}` : null;
-    const ghostFocusField = focusGhost ? focused?.dataset.ingField ?? null : null;
-    const focusPos = focused?.selectionStart ?? 0;
-
-    let html = "";
-    if (ingredients.length === 0) {
-      html += '<li class="ing-empty"><em>No ingredients yet. Type below to add.</em></li>';
-    } else {
-      html += ingredients
-        .map((ing, i) => `<li data-ing-idx="${i}">
-          <span class="ing-drag-handle">&#x283F;</span>
-          <input class="ing-edit ing-qty" data-ing-idx="${i}" data-ing-field="quantity" value="${escapeAttr(ing.quantity)}" placeholder="qty" />
-          <input class="ing-edit ing-unit" data-ing-idx="${i}" data-ing-field="unit" value="${escapeAttr(ing.unit)}" placeholder="unit" />
-          <autocomplete-input class="ing-edit ing-text" data-ing-idx="${i}" data-ing-field="item" value="${escapeAttr(ing.item)}" placeholder="ingredient"></autocomplete-input>
-          <button data-delete-ing="${i}" title="Remove">&times;</button>
-        </li>`)
-        .join("");
-    }
-    // Ghost row for adding
-    html += `<li class="ing-ghost">
-      <span class="ing-drag-handle" style="visibility:hidden">&#x283F;</span>
-      <input class="ing-edit ing-qty" data-ghost="true" data-ing-field="quantity" value="" placeholder="qty" />
-      <input class="ing-edit ing-unit" data-ghost="true" data-ing-field="unit" value="" placeholder="unit" />
-      <autocomplete-input class="ing-edit ing-text" data-ghost="true" data-ing-field="item" placeholder="add ingredient..."></autocomplete-input>
-    </li>`;
-    ingredientsList.innerHTML = html;
-
-    // Set suggestions on all autocomplete-input elements
-    const suggestions = getIngredientSuggestions();
-    ingredientsList.querySelectorAll("autocomplete-input").forEach((el) => {
-      (el as AutocompleteInput).suggestions = suggestions;
-    });
-
-    // Restore focus
-    if (focusKey) {
-      const [idx, field] = focusKey.split(":");
-      const el = ingredientsList.querySelector(`[data-ing-idx="${idx}"][data-ing-field="${field}"]:not([data-ghost])`) as HTMLElement;
-      if (el) { el.focus(); (el as any).setSelectionRange?.(focusPos, focusPos); }
-    } else if (ghostFocusField) {
-      const el = ingredientsList.querySelector(`.ing-ghost [data-ing-field="${ghostFocusField}"]`) as HTMLElement;
-      if (el) { el.focus(); (el as any).setSelectionRange?.(focusPos, focusPos); }
-    }
-  } else {
-    // View mode with check-off, scaling, and unit conversion
-    if (ingredients.length === 0) {
-      ingredientsList.innerHTML = '<li class="ing-empty"><em>No ingredients.</em></li>';
-    } else {
-      ingredientsList.innerHTML = ingredients
-        .map((ing, i) => {
-          const checked = checkedIngredients.has(i);
-          const scaledRaw = scaleQty(ing.quantity, scaleFactor);
-          const scaledNum = parseQty(scaledRaw);
-          const overrideUnit = unitOverrides.get(i);
-          let displayQty = escapeHtml(scaledRaw);
-          let displayUnit = escapeHtml(ing.unit);
-          let converted = false;
-          if (scaledNum !== null) {
-            // Per-ingredient override takes priority, then global system
-            let result: { qty: number; unit: string } | null = null;
-            if (overrideUnit?.startsWith("~")) {
-              // Density-based cross-dimension conversion
-              const targetUnit = overrideUnit.slice(1);
-              const ud = resolveUnit(ing.unit);
-              const den = findDensity(ing.item);
-              if (ud && den) {
-                result = convertViaDensity(scaledNum, ud.toBase, ud.dimension, targetUnit, den);
-              }
-            } else if (overrideUnit) {
-              result = convertToUnit(scaledNum, ing.unit, overrideUnit);
-            } else if (unitSystem !== "original") {
-              const sys = convertIngredient(scaledNum, ing.unit, unitSystem);
-              if (sys.unit !== ing.unit) result = sys;
-            }
-            if (result) {
-              displayQty = escapeHtml(formatQty(result.qty, isDecimalUnit(result.unit)));
-              displayUnit = escapeHtml(result.unit);
-              converted = true;
-            }
-          }
-          const convertible = resolveUnit(ing.unit) !== null;
-          const unitClass = "ing-unit" + (converted ? " ing-converted" : "") + (convertible ? " ing-convertible" : "");
-          return `<li data-ing-idx="${i}" data-orig-unit="${escapeAttr(ing.unit)}" class="${checked ? "ing-checked" : ""}">
-            <span class="ing-check"></span>
-            <span class="ing-qty">${displayQty}</span>
-            <span class="${unitClass}">${displayUnit}</span>
-            <span class="ing-text">${escapeHtml(ing.item)}</span>
-          </li>`;
-        })
-        .join("");
-    }
-    updateScaleDisplay();
-  }
-}
-
-/** Resolve `@[name]` ingredient references in markdown source before rendering. */
-function resolveIngredientRefs(md: string, doc: Recipe): string {
-  const ingredients = doc.ingredients ?? [];
-  return md.replace(/@\[([^\]]+)\]/g, (_match, name: string) => {
-    const ing = ingredients.find((i) => i.item.toLowerCase() === name.toLowerCase());
-    if (!ing) {
-      return `<span class="ing-ref ing-ref-broken">${escapeHtml(name)}</span>`;
-    }
-    const scaledRaw = scaleQty(ing.quantity, scaleFactor);
-    const scaledNum = parseQty(scaledRaw);
-    let displayQty = escapeHtml(scaledRaw);
-    let displayUnit = escapeHtml(ing.unit);
-    if (scaledNum !== null) {
-      const idx = ingredients.indexOf(ing);
-      const overrideUnit = unitOverrides.get(idx);
-      let result: { qty: number; unit: string } | null = null;
-      if (overrideUnit?.startsWith("~")) {
-        const targetUnit = overrideUnit.slice(1);
-        const ud = resolveUnit(ing.unit);
-        const den = findDensity(ing.item);
-        if (ud && den) result = convertViaDensity(scaledNum, ud.toBase, ud.dimension, targetUnit, den);
-      } else if (overrideUnit) {
-        result = convertToUnit(scaledNum, ing.unit, overrideUnit);
-      } else if (unitSystem !== "original") {
-        const sys = convertIngredient(scaledNum, ing.unit, unitSystem);
-        if (sys.unit !== ing.unit) result = sys;
-      }
-      if (result) {
-        displayQty = escapeHtml(formatQty(result.qty, isDecimalUnit(result.unit)));
-        displayUnit = escapeHtml(result.unit);
-      }
-    }
-    const parts = [displayQty, displayUnit, escapeHtml(ing.item)].filter(Boolean);
-    return `<span class="ing-ref">${parts.join(" ")}</span>`;
-  });
-}
-
-/**
- * Update stale recipe link display names in instructions/notes.
- * Matches `#[Old Name](vaultId/recipeId)` and replaces with the current
- * catalog title for that recipe, preserving the stable ID.
- */
-function reconcileRecipeLinkNames() {
-  if (!store) return;
-  const recipes = getCatalogRecipes();
-  if (recipes.length === 0) return;
-
-  const pattern = /#\[([^\]]+)\]\(([^)]+)\)/g;
-
-  function updateField(text: string): string | null {
-    let changed = false;
-    const updated = text.replace(pattern, (match, name: string, docId: string) => {
-      const parts = docId.split("/");
-      const recipeId = parts.length > 1 ? parts[1]! : parts[0]!;
-      const entry = recipes.find((r) => r.id === recipeId);
-      if (entry && entry.title !== name) {
-        changed = true;
-        return `#[${entry.title}](${docId})`;
-      }
-      return match;
-    });
-    return changed ? updated : null;
-  }
-
-  const doc = store.getDoc();
-  const newInstructions = updateField(doc.instructions ?? "");
-  const newNotes = updateField(doc.notes ?? "");
-
-  if (newInstructions !== null || newNotes !== null) {
-    store.change((d) => {
-      if (newInstructions !== null) d.instructions = newInstructions;
-      if (newNotes !== null) d.notes = newNotes;
-    });
-    onPushSnapshot?.();
-  }
-}
-
-/** Collected linked recipe IDs from the last render pass. */
-let lastLinkedRecipeIds: string[] = [];
-
-/** Resolve `#[name](vaultId/recipeId)` recipe references in markdown source before rendering. */
-function resolveRecipeRefs(md: string, linkedIds: Set<string>): string {
-  return md.replace(/#\[([^\]]+)\]\(([^)]+)\)/g, (_match, name: string, docId: string) => {
-    linkedIds.add(docId);
-    // Check if the recipe exists in the catalog
-    const recipes = getCatalogRecipes();
-    const parts = docId.split("/");
-    const recipeId = (parts.length > 1 ? parts[1]! : parts[0]!);
-    const entry = recipes.find((r) => r.id === recipeId);
-    if (!entry) {
-      return `<span class="recipe-ref recipe-ref-broken">${escapeHtml(name)}</span>`;
-    }
-    return `<span class="recipe-ref" data-recipe-id="${escapeAttr(recipeId)}" data-doc-id="${escapeAttr(docId)}">${escapeHtml(entry.title)}</span>`;
-  });
-}
-
-/** Extract width from ![alt|NNN](src) syntax, strip it for marked, return a map of alt→width. */
-function extractImageWidths(md: string): { cleaned: string; widths: Map<string, number> } {
-  const widths = new Map<string, number>();
-  const cleaned = md.replace(/!\[([^\]|]*)\|(\d+)\]\(/g, (_match, alt: string, w: string) => {
-    widths.set(alt, parseInt(w));
-    return `![${alt}](`;
-  });
-  return { cleaned, widths };
-}
-
-/** Apply stored widths to <img> elements by matching alt text. */
-function applyImageWidths(container: HTMLElement, widths: Map<string, number>) {
-  if (widths.size === 0) return;
-  container.querySelectorAll("img").forEach((img) => {
-    const alt = img.getAttribute("alt") ?? "";
-    const w = widths.get(alt);
-    if (w) img.style.width = `${w}px`;
-  });
-}
-
-/** Active linked recipe preview elements (for broadcasting state changes). */
-let activeLinkedPreviews: RecipePreview[] = [];
-
-/** Broadcast current scale/unit state to all linked recipe previews. */
-function updateLinkedPreviewState() {
-  for (const p of activeLinkedPreviews) {
-    p.scaleFactor = scaleFactor;
-    p.unitSystem = unitSystem;
-  }
-}
-
-/** Generation counter to prevent stale async renders from appending. */
-let linkedRecipesGeneration = 0;
-/** Cleanup functions for linked recipe onChange subscriptions. */
-let linkedRecipeCleanups: Array<() => void> = [];
-
-function cleanupLinkedRecipes() {
-  for (const fn of linkedRecipeCleanups) fn();
-  linkedRecipeCleanups = [];
-  activeLinkedPreviews = [];
-}
-
-const INIT_LINKED_RECIPE = (doc: Recipe) => {
-  doc.title = ""; doc.tags = []; doc.servings = 4; doc.prepMinutes = 0; doc.cookMinutes = 0;
-  doc.createdAt = Date.now(); doc.updatedAt = Date.now();
-  doc.description = ""; doc.ingredients = []; doc.instructions = ""; doc.imageUrls = []; doc.notes = "";
-};
-
-/** Render the expandable linked recipes section at the bottom of the detail view. */
-function renderLinkedRecipes(docIds: string[]) {
-  const gen = ++linkedRecipesGeneration;
-  cleanupLinkedRecipes();
-
-  if (docIds.length === 0) {
-    linkedRecipesSection.hidden = true;
-    linkedRecipesList.innerHTML = "";
-    return;
-  }
-
-  linkedRecipesSection.hidden = false;
-  linkedRecipesList.innerHTML = "";
-  const docMgr = getDocMgr();
-  const activeBook = getActiveBook();
-  if (!docMgr || !activeBook) return;
-
-  const catalogEntries = getCatalogRecipes();
-
-  for (const docId of docIds) {
-    const parts = docId.split("/");
-    const recipeId = (parts.length > 1 ? parts[1]! : parts[0]!);
-    const fullDocId = parts.length > 1 ? docId : `${activeBook.vaultId}/${recipeId}`;
-    const catalogEntry = catalogEntries.find((e) => e.id === recipeId);
-    if (!catalogEntry) continue; // deleted recipe — skip card, inline ref shows as broken
-    const displayTitle = catalogEntry.title;
-
-    const card = document.createElement("details");
-    card.className = "linked-recipe-card";
-
-    const summary = document.createElement("summary");
-    summary.innerHTML = `${escapeHtml(displayTitle)}<span class="linked-recipe-open">Open</span>`;
-    card.appendChild(summary);
-
-    const previewWrap = document.createElement("div");
-    previewWrap.className = "linked-recipe-preview";
-    previewWrap.innerHTML = `<div class="detail-skeleton linked-recipe-skeleton">
-      <div class="skel-meta"><span class="skel-bar" style="width:140px"></span></div>
-      <div class="skel-section-header"><span class="skel-bar" style="width:90px"></span></div>
-      <div class="skel-ingredients">
-        <span class="skel-bar skel-line"></span>
-        <span class="skel-bar skel-line" style="width:75%"></span>
-        <span class="skel-bar skel-line" style="width:60%"></span>
-      </div>
-      <div class="skel-section-header"><span class="skel-bar" style="width:100px"></span></div>
-      <div class="skel-instructions">
-        <span class="skel-bar skel-line"></span>
-        <span class="skel-bar skel-line" style="width:85%"></span>
-        <span class="skel-bar skel-line" style="width:70%"></span>
-      </div>
-    </div>`;
-    card.appendChild(previewWrap);
-
-    // Click "Open" to navigate
-    const navId = recipeId;
-    summary.querySelector(".linked-recipe-open")!.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      callbacks.onNavigateToRecipe?.(navId);
-    });
-
-    // Lazy load: open doc and subscribe only when expanded
-    let loaded = false;
-    let unsub: (() => void) | null = null;
-    card.addEventListener("toggle", async () => {
-      if (!card.open || loaded) return;
-      loaded = true;
-      if (gen !== linkedRecipesGeneration) return;
-
-      try {
-        const recipeStore = await docMgr.open<Recipe>(fullDocId, INIT_LINKED_RECIPE);
-        if (gen !== linkedRecipesGeneration) return;
-
-        previewWrap.innerHTML = ""; // remove skeleton
-        const preview = document.createElement("recipe-preview") as RecipePreview;
-        previewWrap.appendChild(preview);
-
-        // Set initial state from parent, then render
-        preview.scaleFactor = scaleFactor;
-        preview.unitSystem = unitSystem;
-        preview.setRecipe(recipeStore.getDoc());
-        activeLinkedPreviews.push(preview);
-
-        // Live updates: re-render when linked recipe changes
-        unsub = recipeStore.onChange(() => {
-          if (gen !== linkedRecipesGeneration) { unsub?.(); return; }
-          preview.setRecipe(recipeStore.getDoc());
-        });
-      } catch {
-        previewWrap.innerHTML = `<em style="color:var(--muted)">Failed to load recipe.</em>`;
-      }
-    });
-
-    // Track cleanup
-    linkedRecipeCleanups.push(() => { unsub?.(); });
-
-    linkedRecipesList.appendChild(card);
-  }
-
-  // Hide section if no cards were added (all linked recipes deleted)
-  if (linkedRecipesList.children.length === 0) {
-    linkedRecipesSection.hidden = true;
-  }
-}
-
 function renderPreviews() {
+  const store = getStore();
   if (!store) return;
   const doc = store.getDoc();
   const linkedIds = new Set<string>();
@@ -1629,133 +997,7 @@ function renderPreviews() {
   }
 
   // Render linked recipes section
-  lastLinkedRecipeIds = [...linkedIds];
-  renderLinkedRecipes(lastLinkedRecipeIds);
-}
-
-/** Write image width back into markdown as ![alt|NNN](blob:checksum). */
-function persistImageWidth(field: "instructions" | "notes", alt: string, checksum: string, width: number) {
-  if (!store) return;
-  const doc = store.getDoc();
-  const text = field === "instructions" ? doc.instructions : doc.notes;
-  if (!text) return;
-
-  // Match ![alt](blob:checksum) or ![alt|OLDpx](blob:checksum)
-  const escaped = alt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`!\\[${escaped}(?:\\|\\d+)?\\]\\(blob:${checksum}\\)`);
-  const replacement = `![${alt}|${width}](blob:${checksum})`;
-
-  const updated = text.replace(pattern, replacement);
-  if (updated === text) return;
-
-  store.change((d) => {
-    if (field === "instructions") d.instructions = updated;
-    else d.notes = updated;
-  });
-  onPushSnapshot?.();
-}
-
-/** Find blob: references in rendered HTML and load/decrypt them. */
-function resolveBlobAssets(container: HTMLElement) {
-  const book = getActiveBook();
-  const db = getDocMgr()?.getDb();
-  if (!book?.encKey || !db) return;
-
-  // Images: <img src="blob:checksum">
-  container.querySelectorAll("img").forEach((img) => {
-    const src = img.getAttribute("src") ?? "";
-    if (!src.startsWith("blob:")) return;
-    const checksum = src.slice(5);
-    if (!checksum) return;
-
-    img.removeAttribute("src");
-    img.classList.add("blob-loading");
-    img.dataset.blob = checksum;
-
-    loadBlobUrl(db, book.vaultId, checksum, book.encKey!).then((url) => {
-      if (url) {
-        img.src = url;
-        img.classList.remove("blob-loading");
-        img.style.cursor = "pointer";
-        img.addEventListener("click", () => showAssetOverlay(url, "image"));
-
-        // Persist width on resize
-        const alt = img.getAttribute("alt") ?? "";
-        if (alt && checksum) {
-          const field = container === instrPreviewContainer ? "instructions" : "notes";
-          let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-          new ResizeObserver(() => {
-            if (resizeTimer) clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(() => {
-              const w = Math.round(img.getBoundingClientRect().width);
-              if (w > 0 && store) {
-                persistImageWidth(field, alt, checksum, w);
-              }
-            }, 300);
-          }).observe(img);
-        }
-      } else {
-        img.alt = `[Image not found: ${checksum.slice(0, 8)}…]`;
-        img.classList.remove("blob-loading");
-      }
-    });
-  });
-
-  // Links: <a href="blob:checksum">
-  container.querySelectorAll("a").forEach((a) => {
-    const href = a.getAttribute("href") ?? "";
-    if (!href.startsWith("blob:")) return;
-    const checksum = href.slice(5);
-    if (!checksum) return;
-
-    a.removeAttribute("href");
-    a.classList.add("blob-file-link");
-
-    loadBlobMeta(db, book.vaultId, checksum).then((meta) => {
-      const name = meta?.filename || `file-${checksum.slice(0, 8)}`;
-      const sizeStr = meta ? formatBlobSize(meta.size) : "";
-      a.innerHTML = `📄 ${escapeHtml(name)}${sizeStr ? ` <span class="file-size">(${sizeStr})</span>` : ""}`;
-      a.style.cursor = "pointer";
-      a.addEventListener("click", (e) => {
-        e.preventDefault();
-        loadBlobUrl(db, book.vaultId, checksum, book.encKey!).then((url) => {
-          if (url) showAssetOverlay(url, meta?.mimeType === "application/pdf" ? "pdf" : "image");
-        });
-      });
-    });
-  });
-}
-
-function formatBlobSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/** Simple overlay for viewing images and PDFs full-screen. */
-function showAssetOverlay(url: string, type: "image" | "pdf") {
-  const overlay = document.createElement("div");
-  overlay.className = "asset-overlay";
-  overlay.innerHTML = `<button class="asset-overlay-close" title="Close">&times;</button>`;
-
-  if (type === "pdf") {
-    const iframe = document.createElement("iframe");
-    iframe.src = url;
-    overlay.appendChild(iframe);
-  } else {
-    const img = document.createElement("img");
-    img.src = url;
-    overlay.appendChild(img);
-  }
-
-  const close = () => overlay.remove();
-  overlay.querySelector(".asset-overlay-close")!.addEventListener("click", close);
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) close();
-  });
-  document.addEventListener("keydown", function handler(e) {
-    if (e.key === "Escape") { close(); document.removeEventListener("keydown", handler); }
-  });
-
-  document.body.appendChild(overlay);
+  const ids = [...linkedIds];
+  setLastLinkedRecipeIds(ids);
+  renderLinkedRecipes(ids, callbacks);
 }

@@ -44,7 +44,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME && k !== MODEL_CACHE).map((k) => caches.delete(k)))
+      Promise.all(keys.filter((k) => k !== CACHE_NAME && k !== MODEL_CACHE && k !== "blob-cache-v1").map((k) => caches.delete(k)))
     )
   );
   self.clients.claim();
@@ -60,6 +60,23 @@ self.addEventListener("fetch", (event) => {
 
   if (url.origin !== self.location.origin) return;
   if (url.pathname === "/version.json" || url.pathname === "/asset-manifest.json") return;
+
+  // Blob API: cache-first (immutable content-addressed blobs)
+  if (url.pathname.startsWith("/api/vaults/") && url.pathname.includes("/blobs/")) {
+    event.respondWith(
+      caches.match(request).then((cached) => {
+        if (cached) return cached;
+        return fetch(request).then((response) => {
+          if (response.ok) {
+            const clone = response.clone();
+            caches.open("blob-cache-v1").then((cache) => cache.put(request, clone));
+          }
+          return response;
+        }).catch(() => new Response("Offline", { status: 503 }));
+      })
+    );
+    return;
+  }
 
   // In dev, always go to network first so changes are picked up immediately
   if (isDev) {

@@ -152,6 +152,18 @@ export async function rewrapMasterKey(masterKey: CryptoKey, newWrappingKey: Cryp
   return wrapKey(masterKey, newWrappingKey);
 }
 
+/**
+ * Rotate the master key: generate a fresh master key and wrap it with the new wrapping key.
+ * Used during password change for true key rotation — all data must be re-encrypted.
+ */
+export async function rotateMasterKey(
+  oldMasterKey: CryptoKey,
+  newWrappingKey: CryptoKey,
+): Promise<{ masterKey: CryptoKey; wrappedMasterKey: Uint8Array }> {
+  const { masterKey, wrappedMasterKey } = await generateMasterKey(newWrappingKey);
+  return { masterKey, wrappedMasterKey };
+}
+
 async function wrapKey(masterKey: CryptoKey, wrappingKey: CryptoKey): Promise<Uint8Array> {
   const rawBytes = await crypto.subtle.exportKey("raw", masterKey);
   return encrypt(new Uint8Array(rawBytes), wrappingKey);

@@ -29,18 +29,36 @@ export function catalogDocId(): string {
   return activeBook ? `${activeBook.vaultId}/catalog` : "catalog";
 }
 
-export function renderCatalog() {
+let lastRenderedVaultId = "";
+let lastRenderedHeads = "";
+let lastRenderedSelectedId: string | null = null;
+
+export function renderCatalog(force = false) {
   const docMgr = getDocMgr();
   const activeBook = getActiveBook();
   const selectedRecipeId = getSelectedRecipeId();
   if (!docMgr || !activeBook) {
-    renderRecipeList([], null);
-    const recipeCount = document.getElementById("recipe-count") as HTMLElement;
-    if (recipeCount) recipeCount.textContent = "";
+    if (lastRenderedHeads !== "") {
+      lastRenderedHeads = "";
+      lastRenderedVaultId = "";
+      renderRecipeList([], null);
+      const recipeCount = document.getElementById("recipe-count") as HTMLElement;
+      if (recipeCount) recipeCount.textContent = "";
+    }
     return;
   }
   const catalog = docMgr.get<BookCatalog>(catalogDocId());
   if (!catalog) return;
+  const vaultId = activeBook.vaultId;
+  const heads = catalog.getHeads().join(",");
+
+  if (!force && heads === lastRenderedHeads && vaultId === lastRenderedVaultId && selectedRecipeId === lastRenderedSelectedId) {
+    return;
+  }
+
+  lastRenderedHeads = heads;
+  lastRenderedVaultId = vaultId;
+  lastRenderedSelectedId = selectedRecipeId;
   const doc = catalog.getDoc();
   const recipes = doc.recipes ?? [];
   renderRecipeList(recipes, selectedRecipeId);

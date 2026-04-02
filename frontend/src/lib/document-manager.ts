@@ -90,4 +90,9 @@ export class DocumentManager {
   getDb(): IDBDatabase {
     return this.db;
   }
+
+  /** Update the default encryption key (used after master key rotation). */
+  updateEncKey(encKey: CryptoKey): void {
+    this.encKey = encKey;
+  }
 }

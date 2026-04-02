@@ -4,17 +4,19 @@
 
 import { log, error, exportLogs, copyLogs } from "../lib/logger";
 import {
-  deriveKeys, deriveUserId, rewrapMasterKey,
+  deriveKeys, deriveUserId, rotateMasterKey, wrapPrivateKey, wrapSigningKey,
 } from "../lib/crypto";
 import {
   getStoredUsername, getDeviceId, updateWrappedKey, getSessionKeys,
+  getIdentityPrivateKey, getSigningPrivateKey,
 } from "../lib/auth";
+import { reEncryptAllDocs } from "../lib/automerge-store";
 import { toBase64 } from "../lib/encoding";
 import { themes, applyTheme, getStoredTheme } from "../lib/themes";
 import { showConfirm } from "../lib/dialogs";
 import { toastSuccess, toastWarning, toastError } from "../lib/toast";
 import { isOpen as isDetailOpen } from "../views/recipe-detail";
-import { getSyncClient, getPushQueue } from "../state";
+import { getSyncClient, getPushQueue, getDocMgr } from "../state";
 import { purgeLocalData, logout } from "../ui/auth";
 import { deselectRecipe } from "../ui/recipes";
 
@@ -90,9 +92,36 @@ export function initAccount() {
     try {
       const [od, nd, uid] = await Promise.all([deriveKeys(username, oldPw), deriveKeys(username, newPw), deriveUserId(username)]);
       const session = getSessionKeys(); if (!session) return;
-      const nw = await rewrapMasterKey(session.masterKey, nd.wrappingKey);
+      const docMgr = getDocMgr(); if (!docMgr) return;
+
+      // Generate a fresh master key (true rotation)
+      const { masterKey: newMasterKey, wrappedMasterKey: nw } = await rotateMasterKey(session.masterKey, nd.wrappingKey);
+
+      // Re-encrypt all local docs with the new master key
+      await reEncryptAllDocs(docMgr.getDb(), session.masterKey, newMasterKey);
+
+      // Re-wrap identity and signing private keys with the new master key
+      let wrappedPrivateKey: string | undefined;
+      let wrappedSigningPrivateKey: string | undefined;
+      const identityPriv = getIdentityPrivateKey();
+      const signingPriv = getSigningPrivateKey();
+      if (identityPriv) {
+        const wrapped = await wrapPrivateKey(identityPriv, newMasterKey);
+        wrappedPrivateKey = toBase64(wrapped);
+      }
+      if (signingPriv) {
+        const wrapped = await wrapSigningKey(signingPriv, newMasterKey);
+        wrappedSigningPrivateKey = toBase64(wrapped);
+      }
+
+      // Update local state
       updateWrappedKey(uid, nw);
-      await syncClient.changePassword(od.authHash, nd.authHash, toBase64(nw));
+      session.masterKey = newMasterKey;
+      session.wrappedMasterKey = nw;
+      docMgr.updateEncKey(newMasterKey);
+
+      // Send to server
+      await syncClient.changePassword(od.authHash, nd.authHash, toBase64(nw), wrappedPrivateKey, wrappedSigningPrivateKey);
       pwSuccess.textContent = "Password changed."; pwSuccess.hidden = false; changePwForm.reset();
     } catch (e: any) { pwError.textContent = "Failed: " + (e.message ?? e); pwError.hidden = false; }
   });

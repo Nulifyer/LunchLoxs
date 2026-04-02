@@ -358,6 +358,41 @@ export async function clearLocalCache(db: IDBDatabase): Promise<void> {
   await deleteToDB(db, LOCAL_CACHE_KEY);
 }
 
+/** Re-encrypt all docs and local cache with a new key (used during master key rotation). */
+export async function reEncryptAllDocs(
+  db: IDBDatabase,
+  oldKey: CryptoKey,
+  newKey: CryptoKey,
+): Promise<void> {
+  const tx = db.transaction(STORE_NAME, "readonly");
+  const store = tx.objectStore(STORE_NAME);
+  const allKeys = await new Promise<string[]>((resolve, reject) => {
+    const req = store.getAllKeys();
+    req.onsuccess = () => resolve(req.result as string[]);
+    req.onerror = () => reject(req.error);
+  });
+
+  const docKeys = allKeys.filter((k) => typeof k === "string" && k.startsWith("doc:"));
+
+  for (const key of docKeys) {
+    const encrypted = await getFromDB<Uint8Array>(db, key);
+    if (!encrypted) continue;
+    const plaintext = await decrypt(encrypted, oldKey);
+    const reEncrypted = await encrypt(plaintext, newKey);
+    await putToDB(db, key, reEncrypted);
+  }
+
+  // Re-encrypt local cache if present
+  const cacheEncrypted = await getFromDB<Uint8Array>(db, LOCAL_CACHE_KEY);
+  if (cacheEncrypted) {
+    try {
+      const plaintext = await decrypt(cacheEncrypted, oldKey);
+      const reEncrypted = await encrypt(plaintext, newKey);
+      await putToDB(db, LOCAL_CACHE_KEY, reEncrypted);
+    } catch { /* cache will be rebuilt on next login */ }
+  }
+}
+
 // ── Shared IndexedDB opener ──
 
 export function openStoreDB(userId: string): Promise<IDBDatabase> {

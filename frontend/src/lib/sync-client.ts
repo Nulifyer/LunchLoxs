@@ -415,9 +415,12 @@ export class SyncClient {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
-  changePassword(oldAuthHash: string, newAuthHash: string, wrappedKey: string): Promise<void> {
+  changePassword(oldAuthHash: string, newAuthHash: string, wrappedKey: string, wrappedPrivateKey?: string, wrappedSigningPrivateKey?: string): Promise<void> {
     return this.awaitConfirmation("password_change_ok", () => {
-      this.sendMsg({ type: "change_password", old_auth_hash: oldAuthHash, new_auth_hash: newAuthHash, wrapped_key: wrappedKey });
+      const msg: Record<string, any> = { type: "change_password", old_auth_hash: oldAuthHash, new_auth_hash: newAuthHash, wrapped_key: wrappedKey };
+      if (wrappedPrivateKey) msg.wrapped_private_key = wrappedPrivateKey;
+      if (wrappedSigningPrivateKey) msg.wrapped_signing_private_key = wrappedSigningPrivateKey;
+      this.sendMsg(msg);
     });
   }
 
