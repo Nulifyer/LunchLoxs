@@ -19,13 +19,14 @@ import { createDropdown } from "../lib/dropdown";
 import { parseQty, formatQty, scaleQty } from "../lib/quantity";
 import { convertIngredient, convertToUnit, resolveUnit, getConversionTargets, isDecimalUnit, canonicalUnitName, type UnitSystem } from "../lib/units";
 import { findDensity, convertViaDensity, WEIGHT_UNITS, VOLUME_UNITS } from "../lib/densities";
-import { autocompletion } from "@codemirror/autocomplete";
+import { autocompletion, completionKeymap, acceptCompletion } from "@codemirror/autocomplete";
 import { ingredientCompletionSource } from "../lib/cm-ingredient-completions";
 import { recipeCompletionSource, type RecipeEntry } from "../lib/cm-recipe-completions";
 import { imagePreviewExtension } from "../lib/cm-image-preview";
 import { processAsset, AssetError } from "../lib/asset-processing";
 import { storeBlob, loadBlobUrl, loadBlobMeta, revokeObjectUrls } from "../lib/blob-client";
 import { getActiveBook, getDocMgr } from "../state";
+import type { RecipePreview } from "../components/recipe-preview";
 import { catalogDocId } from "../sync/push";
 import type { BookCatalog, CatalogEntry } from "../types";
 
@@ -634,6 +635,8 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     if (action === "increase") currentServings++;
     else if (action === "decrease" && currentServings > 1) currentServings--;
     else if (action === "double") currentServings *= 2;
+    else if (action === "triple") currentServings *= 3;
+    else if (action === "quadruple") currentServings *= 4;
     else if (action === "half" && currentServings > 1) currentServings = Math.max(1, Math.round(currentServings / 2));
     else if (action === "reset") {
       currentServings = baseServings;
@@ -647,6 +650,10 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     scaleFactor = currentServings / baseServings;
     updateScaleDisplay();
     if (store) renderIngredients(store.getDoc());
+    updateLinkedPreviewState();
+    if (action === "reset") {
+      for (const p of activeLinkedPreviews) p.resetState();
+    }
   });
 
   // -- Unit system toggle --
@@ -659,6 +666,7 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     unitToggleBtn.dataset.unitSystem = unitSystem;
     unitOverrides.clear();
     if (store) renderIngredients(store.getDoc());
+    updateLinkedPreviewState();
   });
 }
 
@@ -867,7 +875,7 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
   instrEditorView = new EditorView({
     doc: doc.instructions ?? "",
     extensions: [
-      keymap.of([...defaultKeymap, ...historyKeymap]), history(),
+      keymap.of([{ key: "Tab", run: acceptCompletion }, ...completionKeymap, ...defaultKeymap, ...historyKeymap]), history(),
       markdown(), appTheme, appSyntaxHighlighting, drawSelection(), highlightActiveLine(),
       EditorView.lineWrapping, EditorView.contentAttributes.of({ spellcheck: "true" }),
       iBridge.extension, remoteCursorsExtension,
@@ -923,7 +931,7 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
   notesEditorView = new EditorView({
     doc: doc.notes ?? "",
     extensions: [
-      keymap.of([...defaultKeymap, ...historyKeymap]), history(),
+      keymap.of([{ key: "Tab", run: acceptCompletion }, ...completionKeymap, ...defaultKeymap, ...historyKeymap]), history(),
       markdown(), appTheme, appSyntaxHighlighting, drawSelection(), highlightActiveLine(),
       EditorView.lineWrapping, EditorView.contentAttributes.of({ spellcheck: "true" }),
       nBridge.extension, remoteCursorsExtension,
@@ -1053,6 +1061,7 @@ export function closeRecipe() {
   scaleFactor = 1;
   lastLinkedRecipeIds = [];
   linkedRecipesGeneration++;
+  cleanupLinkedRecipes();
   linkedRecipesSection.hidden = true;
   linkedRecipesList.innerHTML = "";
   scaleBar.hidden = true;
@@ -1453,12 +1462,38 @@ function applyImageWidths(container: HTMLElement, widths: Map<string, number>) {
   });
 }
 
+/** Active linked recipe preview elements (for broadcasting state changes). */
+let activeLinkedPreviews: RecipePreview[] = [];
+
+/** Broadcast current scale/unit state to all linked recipe previews. */
+function updateLinkedPreviewState() {
+  for (const p of activeLinkedPreviews) {
+    p.scaleFactor = scaleFactor;
+    p.unitSystem = unitSystem;
+  }
+}
+
 /** Generation counter to prevent stale async renders from appending. */
 let linkedRecipesGeneration = 0;
+/** Cleanup functions for linked recipe onChange subscriptions. */
+let linkedRecipeCleanups: Array<() => void> = [];
+
+function cleanupLinkedRecipes() {
+  for (const fn of linkedRecipeCleanups) fn();
+  linkedRecipeCleanups = [];
+  activeLinkedPreviews = [];
+}
+
+const INIT_LINKED_RECIPE = (doc: Recipe) => {
+  doc.title = ""; doc.tags = []; doc.servings = 4; doc.prepMinutes = 0; doc.cookMinutes = 0;
+  doc.createdAt = Date.now(); doc.updatedAt = Date.now();
+  doc.description = ""; doc.ingredients = []; doc.instructions = ""; doc.imageUrls = []; doc.notes = "";
+};
 
 /** Render the expandable linked recipes section at the bottom of the detail view. */
-async function renderLinkedRecipes(docIds: string[]) {
+function renderLinkedRecipes(docIds: string[]) {
   const gen = ++linkedRecipesGeneration;
+  cleanupLinkedRecipes();
 
   if (docIds.length === 0) {
     linkedRecipesSection.hidden = true;
@@ -1472,98 +1507,91 @@ async function renderLinkedRecipes(docIds: string[]) {
   const activeBook = getActiveBook();
   if (!docMgr || !activeBook) return;
 
-  // Use catalog titles as source of truth (survives renames)
   const catalogEntries = getCatalogRecipes();
 
-  const initRecipe = (doc: Recipe) => {
-    doc.title = ""; doc.tags = []; doc.servings = 4; doc.prepMinutes = 0; doc.cookMinutes = 0;
-    doc.createdAt = Date.now(); doc.updatedAt = Date.now();
-    doc.description = ""; doc.ingredients = []; doc.instructions = ""; doc.imageUrls = []; doc.notes = "";
-  };
-
   for (const docId of docIds) {
-    if (gen !== linkedRecipesGeneration) return; // stale render, bail
-
     const parts = docId.split("/");
     const recipeId = (parts.length > 1 ? parts[1]! : parts[0]!);
     const fullDocId = parts.length > 1 ? docId : `${activeBook.vaultId}/${recipeId}`;
     const catalogEntry = catalogEntries.find((e) => e.id === recipeId);
-    const displayTitle = catalogEntry?.title ?? recipeId;
+    if (!catalogEntry) continue; // deleted recipe — skip card, inline ref shows as broken
+    const displayTitle = catalogEntry.title;
 
-    try {
-      const recipeStore = await docMgr.open<Recipe>(fullDocId, initRecipe);
-      if (gen !== linkedRecipesGeneration) return; // stale after await
-      const doc = recipeStore.getDoc();
+    const card = document.createElement("details");
+    card.className = "linked-recipe-card";
 
-      const card = document.createElement("details");
-      card.className = "linked-recipe-card";
+    const summary = document.createElement("summary");
+    summary.innerHTML = `${escapeHtml(displayTitle)}<span class="linked-recipe-open">Open</span>`;
+    card.appendChild(summary);
 
-      // Summary line — use catalog title (survives renames)
-      const summary = document.createElement("summary");
-      summary.innerHTML = `${escapeHtml(displayTitle)}<span class="linked-recipe-open">Open</span>`;
-      card.appendChild(summary);
+    const previewWrap = document.createElement("div");
+    previewWrap.className = "linked-recipe-preview";
+    previewWrap.innerHTML = `<div class="detail-skeleton linked-recipe-skeleton">
+      <div class="skel-meta"><span class="skel-bar" style="width:140px"></span></div>
+      <div class="skel-section-header"><span class="skel-bar" style="width:90px"></span></div>
+      <div class="skel-ingredients">
+        <span class="skel-bar skel-line"></span>
+        <span class="skel-bar skel-line" style="width:75%"></span>
+        <span class="skel-bar skel-line" style="width:60%"></span>
+      </div>
+      <div class="skel-section-header"><span class="skel-bar" style="width:100px"></span></div>
+      <div class="skel-instructions">
+        <span class="skel-bar skel-line"></span>
+        <span class="skel-bar skel-line" style="width:85%"></span>
+        <span class="skel-bar skel-line" style="width:70%"></span>
+      </div>
+    </div>`;
+    card.appendChild(previewWrap);
 
-      // Preview content
-      const preview = document.createElement("div");
-      preview.className = "linked-recipe-preview";
+    // Click "Open" to navigate
+    const navId = recipeId;
+    summary.querySelector(".linked-recipe-open")!.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      callbacks.onNavigateToRecipe?.(navId);
+    });
 
-      let hasContent = false;
+    // Lazy load: open doc and subscribe only when expanded
+    let loaded = false;
+    let unsub: (() => void) | null = null;
+    card.addEventListener("toggle", async () => {
+      if (!card.open || loaded) return;
+      loaded = true;
+      if (gen !== linkedRecipesGeneration) return;
 
-      // Meta line
-      const metaParts: string[] = [];
-      if (doc.servings) metaParts.push(`${doc.servings} servings`);
-      if (doc.prepMinutes) metaParts.push(`${doc.prepMinutes}m prep`);
-      if (doc.cookMinutes) metaParts.push(`${doc.cookMinutes}m cook`);
-      if (metaParts.length > 0) {
-        preview.innerHTML += `<div class="linked-recipe-meta">${escapeHtml(metaParts.join(" · "))}</div>`;
-        hasContent = true;
+      try {
+        const recipeStore = await docMgr.open<Recipe>(fullDocId, INIT_LINKED_RECIPE);
+        if (gen !== linkedRecipesGeneration) return;
+
+        previewWrap.innerHTML = ""; // remove skeleton
+        const preview = document.createElement("recipe-preview") as RecipePreview;
+        previewWrap.appendChild(preview);
+
+        // Set initial state from parent, then render
+        preview.scaleFactor = scaleFactor;
+        preview.unitSystem = unitSystem;
+        preview.setRecipe(recipeStore.getDoc());
+        activeLinkedPreviews.push(preview);
+
+        // Live updates: re-render when linked recipe changes
+        unsub = recipeStore.onChange(() => {
+          if (gen !== linkedRecipesGeneration) { unsub?.(); return; }
+          preview.setRecipe(recipeStore.getDoc());
+        });
+      } catch {
+        previewWrap.innerHTML = `<em style="color:var(--muted)">Failed to load recipe.</em>`;
       }
+    });
 
-      // Description
-      if (doc.description) {
-        const desc = doc.description.length > 200 ? doc.description.slice(0, 200) + "..." : doc.description;
-        preview.innerHTML += `<div class="linked-recipe-description">${escapeHtml(desc)}</div>`;
-        hasContent = true;
-      }
+    // Track cleanup
+    linkedRecipeCleanups.push(() => { unsub?.(); });
 
-      // Ingredients chips
-      const ings = doc.ingredients ?? [];
-      if (ings.length > 0) {
-        const chips = ings.slice(0, 12).map((ing: { quantity: string; unit: string; item: string }) => {
-          const ingParts = [ing.quantity, ing.unit, ing.item].filter(Boolean).join(" ");
-          return `<span>${escapeHtml(ingParts)}</span>`;
-        }).join("");
-        const more = ings.length > 12 ? `<span>+${ings.length - 12} more</span>` : "";
-        preview.innerHTML += `<div class="linked-recipe-ingredients">${chips}${more}</div>`;
-        hasContent = true;
-      }
+    linkedRecipesList.appendChild(card);
+  }
 
-      // Instructions snippet (rendered markdown, truncated via CSS)
-      if (doc.instructions) {
-        const instrText = doc.instructions.length > 500 ? doc.instructions.slice(0, 500) : doc.instructions;
-        const instrHtml = DOMPurify.sanitize(marked.parse(instrText) as string);
-        preview.innerHTML += `<div class="linked-recipe-instructions">${instrHtml}</div>`;
-        hasContent = true;
-      }
-
-      if (!hasContent) {
-        preview.innerHTML = `<em>No content yet.</em>`;
-      }
-
-      card.appendChild(preview);
-
-      // Click "Open" to navigate
-      const navId = recipeId;
-      summary.querySelector(".linked-recipe-open")!.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        callbacks.onNavigateToRecipe?.(navId);
-      });
-
-      linkedRecipesList.appendChild(card);
-    } catch {
-      // Skip recipes that fail to load
-    }
+  // Hide section if no cards were added (all linked recipes deleted)
+  if (linkedRecipesList.children.length === 0) {
+    linkedRecipesSection.hidden = true;
   }
 }
 

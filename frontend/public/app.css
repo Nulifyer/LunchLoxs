@@ -858,12 +858,14 @@ dialog label+tag-input {
 
 .app-footer {
   grid-column: 1 / -1;
+  grid-row: 2;
   padding: 0.5rem 0.75rem;
   border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
+  min-height: 1.5rem;
 }
 
 .vector-status {
@@ -1118,6 +1120,14 @@ dialog label+tag-input {
 }
 
 .skel-line { height: 0.75rem; }
+
+.linked-recipe-skeleton {
+  position: static;
+  inset: auto;
+  z-index: auto;
+  background: none;
+  padding: 0;
+}
 
 @keyframes skel-shimmer {
   0%   { background-position: 200% 0; }
@@ -1615,43 +1625,8 @@ input.ing-edit.ing-text {
 
 .linked-recipe-preview {
   padding: 0.75rem;
-  font-size: 0.85rem;
   border-top: 1px solid var(--border);
   background: var(--bg);
-}
-
-.linked-recipe-preview .linked-recipe-meta {
-  color: var(--muted);
-  font-size: 0.8rem;
-  margin-bottom: 0.5rem;
-}
-
-.linked-recipe-preview .linked-recipe-description {
-  margin-bottom: 0.5rem;
-}
-
-.linked-recipe-preview .linked-recipe-ingredients {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-  margin-bottom: 0.5rem;
-}
-
-.linked-recipe-preview .linked-recipe-ingredients span {
-  background: var(--bg-hover);
-  border-radius: var(--radius);
-  padding: 0.1em 0.4em;
-  font-size: 0.85em;
-}
-
-.linked-recipe-preview .linked-recipe-instructions {
-  color: var(--subtle);
-  font-size: 0.8rem;
-  line-height: 1.5;
-  max-height: 6rem;
-  overflow: hidden;
-  mask-image: linear-gradient(to bottom, black 70%, transparent);
-  -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent);
 }
 
 /* -- Blob images in preview -- */
