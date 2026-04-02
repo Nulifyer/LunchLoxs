@@ -1,5 +1,16 @@
 # Production docker-compose for LunchLoxs
 #
+# Two deployment modes:
+#
+#   Same-origin (default):
+#     Frontend and backend share DOMAIN. Traefik routes /api and /ws to backend.
+#     Set DOMAIN in .env. Leave BACKEND_URL empty.
+#
+#   Cross-origin:
+#     Frontend and backend on separate domains.
+#     Set DOMAIN (frontend) and BACKEND_URL (e.g. https://api.example.com) in .env.
+#     Add a second Traefik router for the backend domain, or host backend separately.
+#
 # Usage:
 #   1. Copy .env.example to .env and fill in your values
 #   2. Place TLS cert at ./certs/cert.pem and key at ./certs/key.pem
@@ -85,6 +96,8 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
+    environment:
+      BACKEND_URL: ${BACKEND_URL:-}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=Host(`${DOMAIN}`)"

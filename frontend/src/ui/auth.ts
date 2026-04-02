@@ -3,6 +3,7 @@
  */
 
 import { log, warn, error } from "../lib/logger";
+import { getWsUrl } from "../lib/config";
 import {
   deriveKeys, deriveKeysLegacy, deriveUserId, unwrapMasterKey, rewrapMasterKey,
   unwrapPrivateKey, unwrapSigningKey, importBookKey, decrypt,
@@ -137,10 +138,7 @@ export async function login(username: string, passphrase: string) {
     // No cache (first login or new device) -- must wait for server
     log("[login] creating SyncClient...");
     requireSecureContext();
-    const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const isDev = location.hostname === "localhost" && location.port === "5000";
-    const wsHost = isDev ? `${location.hostname}:8000` : location.host;
-    const wsUrl = `${wsProtocol}//${wsHost}/ws`;
+    const wsUrl = getWsUrl();
     const syncClient = createSyncConnection(wsUrl, userId, serverDerived, masterKey, wrappedMasterKey, username);
     setSyncClient(syncClient);
     syncClient.setLastSeqGetter(async (docId) => { const s = getDocMgr()?.get(docId); return s ? s.getLastSeq() : 0; });
@@ -265,10 +263,7 @@ function connectInBackground(
   wrappedMasterKey: Uint8Array | null,
   migrateTo: { authHash: string; wrappingKey: CryptoKey } | null,
 ) {
-  const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
-  const isDev = location.hostname === "localhost" && location.port === "5000";
-  const wsHost = isDev ? `${location.hostname}:8000` : location.host;
-  const wsUrl = `${wsProtocol}//${wsHost}/ws`;
+  const wsUrl = getWsUrl();
   requireSecureContext();
   log("[login] connecting WebSocket in background to", wsUrl);
   setIsSignup(false); // Background connect is always for existing users
@@ -292,15 +287,15 @@ function connectInBackground(
   }
 }
 
-export function logout() {
+export async function logout() {
   log("[logout]");
-  if (isDetailOpen()) deselectRecipe();
+  if (isDetailOpen()) await deselectRecipe();
   getPushQueue()?.stop(); setPushQueue(null);
   getSyncClient()?.disconnect(); setSyncClient(null);
   // Clear offline cache before closing DocMgr (closeAll closes the IDB connection)
   const dm = getDocMgr();
   if (dm) clearLocalCache(dm.getDb()).catch(() => {});
-  dm?.closeAll(); setDocMgr(null);
+  await dm?.closeAll(); setDocMgr(null);
   clearSession(); clearIdentityKeys(); clearIndex();
   import("../lib/vector-search").then(({ clearAll }) => clearAll()).catch(() => {});
   setBooks([]); setActiveBook(null);
@@ -325,7 +320,7 @@ function clearAppUI() {
 }
 
 export async function purgeLocalData() {
-  getDocMgr()?.closeAll(); setDocMgr(null);
+  await getDocMgr()?.closeAll(); setDocMgr(null);
   if (indexedDB.databases) {
     const dbs = await indexedDB.databases();
     for (const db of dbs) { if (db.name) indexedDB.deleteDatabase(db.name); }

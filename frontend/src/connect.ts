@@ -177,7 +177,7 @@ export function createSyncConnection(
             log("[ws] vault removed while offline:", oldBook.vaultId.slice(0, 8));
             const catDocId = `${oldBook.vaultId}/catalog`;
             getSyncClient()?.unsubscribe(catDocId);
-            docMgrCleanup?.close(catDocId);
+            await docMgrCleanup?.close(catDocId);
             removeBookFromIndex(oldBook.vaultId);
           }
         }
@@ -285,7 +285,7 @@ export function createSyncConnection(
       getSyncClient()?.listVaults();
     },
     onVaultInvited: async (vid) => { log("[ws] vault_invited:", vid); getSyncClient()?.listVaults(); },
-    onVaultRemoved: (vid) => {
+    onVaultRemoved: async (vid) => {
       log("[ws] vault_removed:", vid);
       removeBookFromIndex(vid);
       import("./lib/vector-search").then(({ removeBook }) => removeBook(vid)).catch(() => {});
@@ -294,7 +294,7 @@ export function createSyncConnection(
       if (wasActive && getSelectedRecipeId()) {
         const recipeDocId = `${vid}/${getSelectedRecipeId()}`;
         getSyncClient()?.unsubscribe(recipeDocId);
-        getDocMgr()?.close(recipeDocId);
+        await getDocMgr()?.close(recipeDocId);
         setSelectedRecipeId(null);
         closeRecipe();
         const appShell = document.getElementById("app-shell") as HTMLElement;
@@ -303,7 +303,7 @@ export function createSyncConnection(
       // Unsubscribe and close the vault's catalog
       const catDocId = `${vid}/catalog`;
       getSyncClient()?.unsubscribe(catDocId);
-      getDocMgr()?.close(catDocId);
+      await getDocMgr()?.close(catDocId);
       // Remove book from state
       setBooks(getBooks().filter((b) => b.vaultId !== vid));
       if (wasActive) {

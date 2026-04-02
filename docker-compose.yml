@@ -79,6 +79,8 @@ services:
       dockerfile: Dockerfile
     depends_on:
       - backend
+    environment:
+      BACKEND_URL: ${BACKEND_URL:-}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=Host(`localhost`)"

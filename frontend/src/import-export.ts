@@ -70,7 +70,7 @@ export async function importRecipesIntoBook(
   }
 
   // Close recipe stores - dirty flags persist in IndexedDB
-  for (const docId of recipeDocIds) docMgr.close(docId);
+  for (const docId of recipeDocIds) await docMgr.close(docId);
 
   // Kick off background sync (don't await - let the overlay dismiss)
   const pq = getPushQueue();

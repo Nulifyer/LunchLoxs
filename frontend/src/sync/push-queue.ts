@@ -152,13 +152,28 @@ export class PushQueue {
           return;
         }
         if (!this.failedVaults.has(vaultId)) {
-          warn("[push-queue] vault", vaultId.slice(0, 8), "has insufficient permissions -- skipping all its docs");
+          warn("[push-queue] vault", vaultId.slice(0, 8), "has insufficient permissions");
           this.failedVaults.add(vaultId);
-          // Clear dirty flags for all docs in this vault
-          for (const id of [...this.dirtySet]) {
-            if (id.startsWith(vaultId + "/")) {
-              this.dirtySet.delete(id);
-              await clearDirtyFlag(this.db, id);
+          const vaultDirtyIds = [...this.dirtySet].filter((id) => id.startsWith(vaultId + "/"));
+          if (vaultDirtyIds.length > 0) {
+            const discardAll = async () => {
+              for (const id of vaultDirtyIds) {
+                this.dirtySet.delete(id);
+                await clearDirtyFlag(this.db, id);
+              }
+              this.onDirtyChange?.();
+            };
+            try {
+              const { showConfirm } = await import("../lib/dialogs");
+              const discard = await showConfirm(
+                `You have ${vaultDirtyIds.length} unsaved change(s) in a book you no longer have write access to. Discard these changes?`,
+                { title: "Permission Changed", confirmText: "Discard", cancelText: "Keep Locally", danger: true },
+              );
+              if (discard) await discardAll();
+              this.onDirtyChange?.();
+            } catch {
+              // No DOM (tests/headless) — discard silently
+              await discardAll();
             }
           }
         }
@@ -433,6 +448,15 @@ export class PushQueue {
       try {
         store = await this.docMgr.open(docId, (d: any) => {});
         tempOpened = true;
+        // Verify re-opened store actually has changes worth pushing
+        if (store.getAllChanges().length === 0) {
+          warn("[push-queue] re-opened", docId.slice(0, 12), "but no changes, clearing dirty");
+          await clearDirtyFlag(this.db, docId);
+          this.dirtySet.delete(docId);
+          await this.docMgr.close(docId);
+          this.onDirtyChange?.();
+          return "sent";
+        }
       } catch (e) {
         // Can't open (e.g. corrupted data)
         warn("[push-queue] can't open", docId, "skipping (will retry):", e);
@@ -459,7 +483,7 @@ export class PushQueue {
       this.deferredNoKey.add(docId);
     }
 
-    if (tempOpened) this.docMgr.close(docId);
+    if (tempOpened) await this.docMgr.close(docId);
     return result;
   }
 

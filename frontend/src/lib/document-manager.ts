@@ -69,12 +69,19 @@ export class DocumentManager {
   }
 
   /** Close a specific document (frees memory, keeps IndexedDB data). */
-  close(docId: string): void {
-    this.stores.delete(docId);
+  async close(docId: string): Promise<void> {
+    const store = this.stores.get(docId);
+    if (store) {
+      await store.waitForWrite();
+      this.stores.delete(docId);
+    }
   }
 
   /** Close all documents and the database. */
-  closeAll(): void {
+  async closeAll(): Promise<void> {
+    await Promise.all(
+      Array.from(this.stores.values()).map((s) => s.waitForWrite())
+    );
     this.stores.clear();
     this.db.close();
   }

@@ -33,6 +33,7 @@ class MockStore {
   }
 
   save(): Uint8Array { return new Uint8Array([1, 2, 3]); }
+  getAllChanges(): Uint8Array[] { return [new Uint8Array([1])]; }
   getHeads(): string[] { return this.headsVal; }
   setHeads(h: string[]) { this.headsVal = h; }
   async waitForWrite(): Promise<void> {}
@@ -521,7 +522,7 @@ describe("PushQueue integration", () => {
     await store.markDirty();
     // Store exists in docMgr map (simulates open-able) but NOT returned by get()
     const openMock = mock(async () => store);
-    const closeMock = mock(() => {});
+    const closeMock = mock(async () => {});
     const docMgr = {
       get: () => null, // not open
       open: openMock,

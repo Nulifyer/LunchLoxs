@@ -30,7 +30,7 @@ export async function selectRecipe(id: string) {
   if (prevId && prevId !== id) {
     const prevDocId = `${activeBook.vaultId}/${prevId}`;
     getSyncClient()?.unsubscribe(prevDocId);
-    docMgr.close(prevDocId);
+    await docMgr.close(prevDocId);
   }
 
   const accountPage = document.getElementById("account-page") as HTMLElement;
@@ -93,14 +93,14 @@ export async function selectRecipe(id: string) {
   import("../lib/vector-search").then(({ enqueueRecipe }) => enqueueRecipe(activeBook.vaultId, id, "high")).catch(() => {});
 }
 
-export function deselectRecipe() {
+export async function deselectRecipe() {
   const selectedRecipeId = getSelectedRecipeId();
   const syncClient = getSyncClient();
   const activeBook = getActiveBook();
   const docMgr = getDocMgr();
   if (selectedRecipeId && syncClient && activeBook) {
     syncClient.unsubscribe(`${activeBook.vaultId}/${selectedRecipeId}`);
-    docMgr?.close(`${activeBook.vaultId}/${selectedRecipeId}`);
+    await docMgr?.close(`${activeBook.vaultId}/${selectedRecipeId}`);
   }
   setSelectedRecipeId(null);
   closeRecipe();
@@ -295,7 +295,7 @@ export function initRecipes() {
       newStore.ensureInitialized();
       pushSnapshot(`${targetBook.vaultId}/${newId}`);
       pushSnapshot(`${targetBook.vaultId}/catalog`);
-      docMgr.close(`${targetBook.vaultId}/${newId}`);
+      await docMgr.close(`${targetBook.vaultId}/${newId}`);
       toastSuccess(`Copied to "${targetBook.name}"`);
     },
     onSyncCatalogMeta: (title, tags) => {

@@ -12,6 +12,7 @@
 
 import { encrypt, decrypt } from "./crypto";
 import { getSessionKeys } from "./auth";
+import { getApiBase } from "./config";
 
 const IDB_STORE = "docs";
 const BLOB_META_VERSION = 0x02; // v2: encrypted metadata prepended to blob body
@@ -138,10 +139,6 @@ export async function flushDirtyBlobs(
 }
 
 // -- Server communication --
-
-function getApiBase(): string {
-  return window.location.origin;
-}
 
 function getAuthHeaders(): Record<string, string> {
   const session = getSessionKeys();

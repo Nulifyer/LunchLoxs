@@ -2,6 +2,8 @@
   "version": "0.2.0",
   "configurations": [
     {
+      // Same-origin dev: frontend on :5000 auto-discovers backend on :8000
+      // Cross-origin: set FRONTEND_URL to your frontend origin
       "name": "Debug Backend",
       "type": "go",
       "request": "launch",
@@ -15,6 +17,8 @@
       }
     },
     {
+      // Same-origin dev: no backend-url meta tag needed (auto-detected)
+      // Cross-origin: add <meta name="backend-url" content="..."> to index.html
       "name": "Debug Frontend (Brave)",
       "type": "chrome",
       "request": "launch",
