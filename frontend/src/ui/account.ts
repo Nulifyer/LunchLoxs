@@ -46,8 +46,11 @@ function renderThemeGrid() {
   }
 }
 
-export function showAccountPage() {
-  if (isDetailOpen()) deselectRecipe();
+let wasDetailOpen = false;
+
+export async function showAccountPage() {
+  wasDetailOpen = isDetailOpen();
+  if (wasDetailOpen) await deselectRecipe();
   accountUsername.textContent = getStoredUsername() ?? "";
   accountDeviceId.textContent = getDeviceId();
   const emptyState = document.getElementById("empty-state") as HTMLElement;
@@ -74,10 +77,10 @@ export function initAccount() {
 
   accountBackBtn.addEventListener("click", () => {
     accountPage.hidden = true;
-    const emptyState = document.getElementById("empty-state") as HTMLElement;
-    emptyState.hidden = false;
     const appShell = document.getElementById("app-shell") as HTMLElement;
     appShell.classList.remove("detail-open");
+    const emptyState = document.getElementById("empty-state") as HTMLElement;
+    emptyState.hidden = false;
   });
 
   changePwForm.addEventListener("submit", async (e) => {
