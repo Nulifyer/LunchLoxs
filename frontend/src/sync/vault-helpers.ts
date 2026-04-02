@@ -13,7 +13,7 @@ import {
   getDocMgr, getActiveBook, getBooks, getCurrentUsername, getCurrentUserId,
   getSyncClient,
 } from "../state";
-import type { RecipeCatalog } from "../types";
+import type { BookCatalog } from "../types";
 
 // Forward-declared to avoid circular imports -- these are set by ui/books.ts at init time
 let _renderBookSelect: () => void = () => {};
@@ -26,7 +26,7 @@ export function memberName(userId: string, vaultId?: string): string {
   if (!docMgr) return userId.slice(0, 12) + "...";
   const vid = vaultId || activeBook?.vaultId;
   if (!vid) return userId.slice(0, 12) + "...";
-  const catalog = docMgr.get<RecipeCatalog>(`${vid}/catalog`);
+  const catalog = docMgr.get<BookCatalog>(`${vid}/catalog`);
   const doc = catalog?.getDoc();
   const name = doc?.members ? (doc.members as any)[userId] : undefined;
   return name || userId.slice(0, 12) + "...";
@@ -38,7 +38,7 @@ export function writeSelfToCatalog(vaultId: string) {
   const currentUserId = getCurrentUserId();
   const currentUsername = getCurrentUsername();
   if (!docMgr || !currentUserId || !currentUsername) return;
-  const catalog = docMgr.get<RecipeCatalog>(`${vaultId}/catalog`);
+  const catalog = docMgr.get<BookCatalog>(`${vaultId}/catalog`);
   if (!catalog) return;
   const doc = catalog.getDoc();
   const existing = doc.members ? (doc.members as any)[currentUserId] : undefined;
@@ -112,7 +112,7 @@ export function rebuildBookIndex(vaultId: string) {
   if (!docMgr) return;
   const book = books.find((b) => b.vaultId === vaultId);
   if (!book) return;
-  const catalog = docMgr.get<RecipeCatalog>(`${book.vaultId}/catalog`);
+  const catalog = docMgr.get<BookCatalog>(`${book.vaultId}/catalog`);
   if (!catalog) return;
   removeBookFromIndex(vaultId);
   const doc = catalog.getDoc();
@@ -134,7 +134,7 @@ export function refreshBookNameFromCatalog(docId: string) {
   const vaultId = docId.replace(/\/catalog$/, "");
   const book = books.find((b) => b.vaultId === vaultId);
   if (!book || !docMgr) return;
-  const catalog = docMgr.get<RecipeCatalog>(docId);
+  const catalog = docMgr.get<BookCatalog>(docId);
   if (!catalog) return;
   const catDoc = catalog.getDoc();
   log("[catalog] refresh name for", vaultId.slice(0, 8), "catDoc.name:", catDoc.name, "book.name:", book.name, "recipes:", (catDoc.recipes ?? []).length);

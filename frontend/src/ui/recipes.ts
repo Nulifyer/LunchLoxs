@@ -16,7 +16,8 @@ import {
 import { pushSnapshot, renderCatalog, catalogDocId } from "../sync/push";
 import { canEditActiveBook } from "../sync/vault-helpers";
 import { switchBook } from "../ui/books";
-import type { RecipeCatalog, RecipeContent, Book } from "../types";
+import type { BookCatalog, Recipe } from "../types";
+import type { TagInput } from "../components/tag-input";
 
 export async function selectRecipe(id: string) {
   const docMgr = getDocMgr();
@@ -29,21 +30,43 @@ export async function selectRecipe(id: string) {
   setSelectedRecipeId(id);
   appShell.classList.add("detail-open");
   renderCatalog();
-  const contentDocId = `${activeBook.vaultId}/${id}`;
-  const contentStore = await docMgr.open<RecipeContent>(contentDocId, (doc) => {
+  const recipeDocId = `${activeBook.vaultId}/${id}`;
+  const recipeStore = await docMgr.open<Recipe>(recipeDocId, (doc) => {
+    doc.title = ""; doc.tags = []; doc.servings = 4; doc.prepMinutes = 0; doc.cookMinutes = 0;
+    doc.createdAt = Date.now(); doc.updatedAt = Date.now();
     doc.description = ""; doc.ingredients = []; doc.instructions = ""; doc.imageUrls = []; doc.notes = "";
   });
-  getSyncClient()?.subscribe(contentDocId);
-  const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
-  const meta = catalog?.getDoc()?.recipes?.find((r: any) => r.id === id);
-  const title = meta?.title ?? "Untitled";
-  const metaText = [
-    meta?.servings ? `${meta.servings} servings` : "",
-    meta?.prepMinutes ? `${meta.prepMinutes}m prep` : "",
-    meta?.cookMinutes ? `${meta.cookMinutes}m cook` : "",
-    ...(meta?.tags ?? []),
-  ].filter(Boolean).join(" · ");
-  openRecipe(contentStore, title, metaText, canEditActiveBook(), meta?.updatedAt, activeBook?.name, meta?.servings ? parseInt(String(meta.servings)) : undefined);
+  getSyncClient()?.subscribe(recipeDocId);
+
+  // Migration: if recipe doc has no title but catalog has old-format meta, copy it over
+  const recipe = recipeStore.getDoc();
+  const catalog = docMgr.get<BookCatalog>(catalogDocId());
+  const catalogEntry = catalog?.getDoc()?.recipes?.find((r: any) => r.id === id);
+  if (!recipe.title && catalogEntry?.title) {
+    recipeStore.change((doc) => {
+      doc.title = catalogEntry.title;
+      doc.tags = (catalogEntry.tags ?? []) as any;
+      // Copy old-format fields if they exist on the catalog entry
+      const old = catalogEntry as any;
+      if (old.servings) doc.servings = old.servings;
+      if (old.prepMinutes) doc.prepMinutes = old.prepMinutes;
+      if (old.cookMinutes) doc.cookMinutes = old.cookMinutes;
+      if (old.createdAt) doc.createdAt = old.createdAt;
+      if (old.updatedAt) doc.updatedAt = old.updatedAt;
+    });
+    pushSnapshot(recipeDocId);
+  }
+
+  // Reconciliation: if recipe doc title/tags differ from catalog, update catalog
+  if (recipe.title && catalogEntry && (recipe.title !== catalogEntry.title || JSON.stringify(recipe.tags) !== JSON.stringify(catalogEntry.tags))) {
+    catalog?.change((doc) => {
+      const entry = doc.recipes?.find((r: any) => r.id === id);
+      if (entry) { entry.title = recipe.title; entry.tags = recipe.tags as any; }
+    });
+    pushSnapshot(catalogDocId());
+  }
+
+  openRecipe(recipeStore, id, canEditActiveBook(), activeBook?.name, getAllTags());
   // Prioritize this recipe for vector indexing (if stale)
   import("../lib/vector-search").then(({ enqueueRecipe }) => enqueueRecipe(activeBook.vaultId, id, "high")).catch(() => {});
 }
@@ -64,11 +87,23 @@ export function deselectRecipe() {
   renderCatalog();
 }
 
+/** Collect all unique tags from the active book's catalog. */
+function getAllTags(): string[] {
+  const docMgr = getDocMgr();
+  const activeBook = getActiveBook();
+  if (!docMgr || !activeBook) return [];
+  const catalog = docMgr.get<BookCatalog>(catalogDocId());
+  if (!catalog) return [];
+  const recipes = catalog.getDoc()?.recipes ?? [];
+  const set = new Set<string>();
+  for (const r of recipes) for (const t of r.tags ?? []) set.add(t.toLowerCase());
+  return [...set].sort();
+}
+
 export function initRecipes() {
   const addDialog = document.getElementById("add-recipe-dialog") as HTMLDialogElement;
   const addForm = document.getElementById("add-recipe-form") as HTMLFormElement;
-  const editDialog = document.getElementById("edit-recipe-dialog") as HTMLDialogElement;
-  const editForm = document.getElementById("edit-recipe-form") as HTMLFormElement;
+  const newTagInput = document.getElementById("new-tags") as TagInput;
 
   // -- Recipe list callbacks --
   initRecipeList({
@@ -83,65 +118,24 @@ export function initRecipes() {
     onAdd: () => {
       if (!getActiveBook()) { toastWarning("Create a book first."); return; }
       if (!canEditActiveBook()) { toastWarning("You don't have edit access to this book."); return; }
+      newTagInput.suggestions = getAllTags();
       openModal(addDialog);
     },
   });
 
   // -- Recipe detail callbacks --
-  let touchTimer: ReturnType<typeof setTimeout> | null = null;
-  const TOUCH_DEBOUNCE_MS = 5000;
-
-  /** Debounced: update the recipe's updatedAt in the catalog after content edits. */
-  function touchUpdatedAt() {
-    const targetRid = getSelectedRecipeId();
-    if (touchTimer) clearTimeout(touchTimer);
-    touchTimer = setTimeout(() => {
-      touchTimer = null;
-      const rid = getSelectedRecipeId();
-      if (rid !== targetRid) return; // recipe changed during debounce, skip
-      const activeBook = getActiveBook();
-      const docMgr = getDocMgr();
-      if (!rid || !activeBook || !docMgr) return;
-      const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
-      if (!catalog) return;
-      catalog.change((doc) => {
-        const r = doc.recipes?.find((r: any) => r.id === rid);
-        if (r) r.updatedAt = Date.now();
-      });
-      pushSnapshot(catalogDocId());
-    }, TOUCH_DEBOUNCE_MS);
-  }
-
   initRecipeDetail({
-    onBack: () => {
-      // Flush any pending updatedAt before closing
-      if (touchTimer) {
-        clearTimeout(touchTimer);
-        touchTimer = null;
-        const rid = getSelectedRecipeId();
-        const activeBook = getActiveBook();
-        const docMgr = getDocMgr();
-        if (rid && activeBook && docMgr) {
-          const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
-          if (catalog) {
-            catalog.change((doc) => {
-              const r = doc.recipes?.find((r: any) => r.id === rid);
-              if (r) r.updatedAt = Date.now();
-            });
-            pushSnapshot(catalogDocId());
-          }
-        }
-      }
-      deselectRecipe();
-    },
-    onPushSnapshot: () => {
+    onBack: () => deselectRecipe(),
+    onContentChanged: () => {
       const selectedRecipeId = getSelectedRecipeId();
       const activeBook = getActiveBook();
-      if (selectedRecipeId && activeBook) {
+      const docMgr = getDocMgr();
+      if (selectedRecipeId && activeBook && docMgr) {
+        const recipeStore = docMgr.get<Recipe>(`${activeBook.vaultId}/${selectedRecipeId}`);
+        if (recipeStore) recipeStore.change((doc) => { doc.updatedAt = Date.now(); });
         pushSnapshot(`${activeBook.vaultId}/${selectedRecipeId}`);
         import("../lib/vector-search").then(({ invalidateRecipe }) => invalidateRecipe(activeBook.vaultId, selectedRecipeId)).catch(() => {});
       }
-      touchUpdatedAt();
     },
     onSendPresence: (data) => {
       const selectedRecipeId = getSelectedRecipeId();
@@ -158,20 +152,22 @@ export function initRecipes() {
         }
       }
     },
-    onEditRecipe: () => {
+    onMetaChanged: (title, tags) => {
       const selectedRecipeId = getSelectedRecipeId();
       const docMgr = getDocMgr();
       const activeBook = getActiveBook();
       if (!selectedRecipeId || !docMgr || !activeBook) return;
-      const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
-      const recipe = catalog?.getDoc()?.recipes?.find((r: any) => r.id === selectedRecipeId);
-      if (!recipe) return;
-      (document.getElementById("edit-title") as HTMLInputElement).value = recipe.title;
-      (document.getElementById("edit-tags") as HTMLInputElement).value = recipe.tags.join(", ");
-      (document.getElementById("edit-servings") as HTMLInputElement).value = String(recipe.servings);
-      (document.getElementById("edit-prep") as HTMLInputElement).value = String(recipe.prepMinutes);
-      (document.getElementById("edit-cook") as HTMLInputElement).value = String(recipe.cookMinutes);
-      openModal(editDialog);
+      // Push the recipe doc (meta was already written by flushMeta)
+      pushSnapshot(`${activeBook.vaultId}/${selectedRecipeId}`);
+      // Mirror title + tags to catalog for sidebar
+      const catalog = docMgr.get<BookCatalog>(catalogDocId());
+      if (!catalog) return;
+      catalog.change((doc) => {
+        const entry = doc.recipes?.find((r: any) => r.id === selectedRecipeId);
+        if (entry) { entry.title = title; entry.tags = tags as any; }
+      });
+      pushSnapshot(catalogDocId());
+      renderCatalog();
     },
     onDeleteRecipe: async () => {
       const selectedRecipeId = getSelectedRecipeId();
@@ -181,7 +177,7 @@ export function initRecipes() {
       const del = await showConfirm("Delete this recipe? This cannot be undone.", { title: "Delete Recipe", confirmText: "Delete", danger: true });
       if (!del) return;
       const id = selectedRecipeId; deselectRecipe();
-      const catalog = docMgr.get<RecipeCatalog>(catalogDocId()); if (!catalog) return;
+      const catalog = docMgr.get<BookCatalog>(catalogDocId()); if (!catalog) return;
       catalog.change((doc) => { const idx = doc.recipes.findIndex((r: any) => r.id === id); if (idx !== -1) doc.recipes.splice(idx, 1); });
       pushSnapshot(catalogDocId());
     },
@@ -192,16 +188,14 @@ export function initRecipes() {
       if (!selectedRecipeId || !docMgr || !activeBook) return;
       const ok = await showConfirm("Exported files are not encrypted. Anyone with the file can read this recipe.", { title: "Export Warning", confirmText: "Export" });
       if (!ok) return;
-      const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
-      const meta = catalog?.getDoc()?.recipes?.find((r: any) => r.id === selectedRecipeId);
-      if (!meta) return;
-      const contentStore = docMgr.get<RecipeContent>(`${activeBook.vaultId}/${selectedRecipeId}`);
-      const content = contentStore?.getDoc() ?? { description: "", ingredients: [], instructions: "", imageUrls: [], notes: "" };
-      const md = recipeToMarkdown(meta, content);
+      const recipeStore = docMgr.get<Recipe>(`${activeBook.vaultId}/${selectedRecipeId}`);
+      if (!recipeStore) return;
+      const recipe = recipeStore.getDoc();
+      const md = recipeToMarkdown(recipe);
       const blob = new Blob([md], { type: "text/markdown" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${meta.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.md`;
+      a.download = `${recipe.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.md`;
       a.click();
       URL.revokeObjectURL(a.href);
       toastSuccess("Recipe exported as markdown");
@@ -225,28 +219,31 @@ export function initRecipes() {
       const targetBook = otherBooks.find((b) => b.vaultId === pick);
       if (!targetBook) return;
       // Get source recipe
-      const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
-      const meta = catalog?.getDoc()?.recipes?.find((r: any) => r.id === selectedRecipeId);
-      if (!meta) return;
-      const srcContent = docMgr.get<RecipeContent>(`${activeBook.vaultId}/${selectedRecipeId}`);
-      const content = srcContent?.getDoc() ?? { description: "", ingredients: [], instructions: "", imageUrls: [], notes: "" };
+      const srcStore = docMgr.get<Recipe>(`${activeBook.vaultId}/${selectedRecipeId}`);
+      if (!srcStore) return;
+      const src = srcStore.getDoc();
       // Create in target book
       const newId = crypto.randomUUID();
-      const targetCatalog = docMgr.get<RecipeCatalog>(`${targetBook.vaultId}/catalog`);
+      const targetCatalog = docMgr.get<BookCatalog>(`${targetBook.vaultId}/catalog`);
       if (!targetCatalog) { toastWarning("Open the target book first."); return; }
       const now = Date.now();
+      // Add catalog entry
       targetCatalog.change((doc) => {
         if (!doc.recipes) doc.recipes = [];
-        doc.recipes.push({ ...meta, id: newId, createdAt: now, updatedAt: now });
+        doc.recipes.push({ id: newId, title: src.title, tags: [...(src.tags ?? [])] });
       });
-      const contentStore = await docMgr.open<RecipeContent>(`${targetBook.vaultId}/${newId}`, (doc) => {
-        doc.description = content.description ?? "";
-        doc.ingredients = (content.ingredients ?? []) as any;
-        doc.instructions = content.instructions ?? "";
+      // Create full recipe doc
+      const newStore = await docMgr.open<Recipe>(`${targetBook.vaultId}/${newId}`, (doc) => {
+        doc.title = src.title; doc.tags = (src.tags ?? []) as any;
+        doc.servings = src.servings; doc.prepMinutes = src.prepMinutes; doc.cookMinutes = src.cookMinutes;
+        doc.createdAt = now; doc.updatedAt = now;
+        doc.description = src.description ?? "";
+        doc.ingredients = (src.ingredients ?? []) as any;
+        doc.instructions = src.instructions ?? "";
         doc.imageUrls = [];
-        doc.notes = content.notes ?? "";
+        doc.notes = src.notes ?? "";
       });
-      contentStore.ensureInitialized();
+      newStore.ensureInitialized();
       pushSnapshot(`${targetBook.vaultId}/${newId}`);
       pushSnapshot(`${targetBook.vaultId}/catalog`);
       docMgr.close(`${targetBook.vaultId}/${newId}`);
@@ -255,44 +252,43 @@ export function initRecipes() {
   });
 
   // -- Add recipe --
-  addForm.addEventListener("submit", () => {
+  addForm.addEventListener("submit", async () => {
     const docMgr = getDocMgr();
     const activeBook = getActiveBook();
     const ti = document.getElementById("new-title") as HTMLInputElement;
     const title = ti.value.trim(); if (!title || !docMgr || !activeBook) return;
     const id = crypto.randomUUID();
-    const tags = (document.getElementById("new-tags") as HTMLInputElement).value.split(",").map((t) => t.trim()).filter(Boolean);
+    const tags = newTagInput.value;
     const now = Date.now();
-    const catalog = docMgr.get<RecipeCatalog>(catalogDocId()); if (!catalog) return;
+    const servings = parseInt((document.getElementById("new-servings") as HTMLInputElement).value) || 4;
+    const prepMinutes = parseInt((document.getElementById("new-prep") as HTMLInputElement).value) || 0;
+    const cookMinutes = parseInt((document.getElementById("new-cook") as HTMLInputElement).value) || 0;
+    // Add minimal entry to catalog
+    const catalog = docMgr.get<BookCatalog>(catalogDocId()); if (!catalog) return;
     catalog.change((doc) => {
       if (!doc.recipes) doc.recipes = [];
-      doc.recipes.push({ id, title, tags, servings: parseInt((document.getElementById("new-servings") as HTMLInputElement).value) || 4, prepMinutes: parseInt((document.getElementById("new-prep") as HTMLInputElement).value) || 0, cookMinutes: parseInt((document.getElementById("new-cook") as HTMLInputElement).value) || 0, createdAt: now, updatedAt: now });
+      doc.recipes.push({ id, title, tags });
     });
-    pushSnapshot(catalogDocId()); selectRecipe(id);
-  });
-
-  // -- Edit recipe --
-  editForm.addEventListener("submit", () => {
-    const selectedRecipeId = getSelectedRecipeId();
-    const docMgr = getDocMgr();
-    const activeBook = getActiveBook();
-    if (!selectedRecipeId || !docMgr || !activeBook) return;
-    const catalog = docMgr.get<RecipeCatalog>(catalogDocId()); if (!catalog) return;
-    const title = (document.getElementById("edit-title") as HTMLInputElement).value.trim();
-    const tags = (document.getElementById("edit-tags") as HTMLInputElement).value.split(",").map((t) => t.trim()).filter(Boolean);
-    const servings = parseInt((document.getElementById("edit-servings") as HTMLInputElement).value) || 4;
-    const prepMinutes = parseInt((document.getElementById("edit-prep") as HTMLInputElement).value) || 0;
-    const cookMinutes = parseInt((document.getElementById("edit-cook") as HTMLInputElement).value) || 0;
-    const rid = selectedRecipeId;
-    catalog.change((doc) => { const r = doc.recipes.find((r: any) => r.id === rid); if (!r) return; r.title = title; r.tags = tags; r.servings = servings; r.prepMinutes = prepMinutes; r.cookMinutes = cookMinutes; r.updatedAt = Date.now(); });
     pushSnapshot(catalogDocId());
-    (document.getElementById("recipe-title") as HTMLElement).textContent = title;
-    (document.getElementById("recipe-meta") as HTMLElement).textContent = [servings ? `${servings} servings` : "", prepMinutes ? `${prepMinutes}m prep` : "", cookMinutes ? `${cookMinutes}m cook` : "", ...tags].filter(Boolean).join(" · ");
+    // Init full recipe doc with meta + empty content
+    const recipeDocId = `${activeBook.vaultId}/${id}`;
+    const recipeStore = await docMgr.open<Recipe>(recipeDocId, (doc) => {
+      doc.title = title; doc.tags = tags as any; doc.servings = servings;
+      doc.prepMinutes = prepMinutes; doc.cookMinutes = cookMinutes;
+      doc.createdAt = now; doc.updatedAt = now;
+      doc.description = ""; doc.ingredients = []; doc.instructions = ""; doc.imageUrls = []; doc.notes = "";
+    });
+    recipeStore.ensureInitialized();
+    pushSnapshot(recipeDocId);
+    selectRecipe(id);
   });
 
   // Reset all dialog forms on close
   for (const dialog of document.querySelectorAll("dialog")) {
-    dialog.addEventListener("close", () => { for (const form of dialog.querySelectorAll("form")) form.reset(); });
+    dialog.addEventListener("close", () => {
+      for (const form of dialog.querySelectorAll("form")) form.reset();
+      for (const ti of dialog.querySelectorAll("tag-input")) (ti as TagInput).value = [];
+    });
   }
 
   // Forms with method=dialog close the modal on submit

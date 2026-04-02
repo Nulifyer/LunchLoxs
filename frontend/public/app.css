@@ -337,7 +337,8 @@ dialog article>header {
 }
 
 dialog label:not(.sr-only)+input,
-dialog label:not(.sr-only)+select {
+dialog label:not(.sr-only)+select,
+dialog label+tag-input {
   margin-bottom: 0.75rem;
 }
 
@@ -856,6 +857,7 @@ dialog label:not(.sr-only)+select {
   border-radius: 3px;
   font-size: 0.65rem;
   color: var(--text);
+  text-transform: capitalize;
 }
 
 .app-footer {
@@ -1100,6 +1102,36 @@ dialog label:not(.sr-only)+select {
 .detail-title-row h2 {
   flex: 1;
   margin: 0;
+}
+
+.meta-edit-title {
+  flex: 1;
+  font-size: 1.125rem;
+  font-weight: 600;
+  padding: 0.2rem 0.4rem;
+}
+
+.meta-edit {
+  margin-bottom: 0.75rem;
+}
+
+.meta-edit-numbers {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.meta-edit label {
+  margin-bottom: 0.15rem;
+}
+
+.meta-edit input[type="number"] {
+  margin-bottom: 0;
+}
+
+.meta-edit tag-input {
+  margin-bottom: 0;
 }
 
 .section-header {

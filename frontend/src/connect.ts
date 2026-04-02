@@ -23,7 +23,7 @@ import { toBase64, fromBase64 } from "./lib/encoding";
 import { indexRecipe, removeBookFromIndex, clearIndex } from "./lib/search";
 import { handlePresence, updateEditPermission, isOpen as isDetailOpen, closeRecipe } from "./views/recipe-detail";
 import { showAlert } from "./lib/dialogs";
-import type { RecipeCatalog } from "./types";
+import type { BookCatalog } from "./types";
 
 import {
   getDocMgr, setDocMgr, getSyncClient, setSyncClient,
@@ -190,7 +190,7 @@ export function createSyncConnection(
         for (const book of books) {
           const catDocId = `${book.vaultId}/catalog`;
           const alreadyOpen = docMgr.isOpen(catDocId);
-          const catalog = await docMgr.open<RecipeCatalog>(catDocId, (doc) => { doc.name = book.name; doc.recipes = []; });
+          const catalog = await docMgr.open<BookCatalog>(catDocId, (doc) => { doc.name = book.name; doc.recipes = []; });
           const sc = getSyncClient();
           if (sc) await sc.subscribe(catDocId);
           const catDoc = catalog.getDoc();

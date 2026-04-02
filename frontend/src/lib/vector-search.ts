@@ -6,7 +6,7 @@
 
 import { log, warn } from "./logger";
 import type { DocumentManager } from "./document-manager";
-import type { RecipeCatalog, RecipeContent } from "../types";
+import type { BookCatalog, Recipe } from "../types";
 import {
   openEmbeddingDb, loadAll, getHash, putEmbedding,
   removeBook as removeBookFromDb, clearAll as clearAllFromDb, closeEmbeddingDb,
@@ -235,7 +235,7 @@ async function extractRecipeText(docMgr: DocumentManager, vaultId: string, recip
   const key = `${vaultId}/${recipeId}`;
 
   // Get title + tags from catalog
-  const catalog = docMgr.get<RecipeCatalog>(`${vaultId}/catalog`);
+  const catalog = docMgr.get<BookCatalog>(`${vaultId}/catalog`);
   if (!catalog) return null;
   const meta = catalog.getDoc().recipes?.find((r: any) => r.id === recipeId);
   if (!meta) return null;
@@ -247,9 +247,9 @@ async function extractRecipeText(docMgr: DocumentManager, vaultId: string, recip
   let contentText = "";
   let tempOpened = false;
   try {
-    let store = docMgr.get<RecipeContent>(key);
+    let store = docMgr.get<Recipe>(key);
     if (!store) {
-      store = await docMgr.open<RecipeContent>(key, (doc) => {
+      store = await docMgr.open<Recipe>(key, (doc) => {
         doc.description = ""; doc.ingredients = []; doc.instructions = ""; doc.imageUrls = []; doc.notes = "";
       });
       tempOpened = true;
@@ -283,7 +283,7 @@ function buildInitialQueue(): void {
 
   let count = 0;
   for (const book of books) {
-    const catalog = docMgr.get<RecipeCatalog>(`${book.vaultId}/catalog`);
+    const catalog = docMgr.get<BookCatalog>(`${book.vaultId}/catalog`);
     if (!catalog) continue;
     const recipes = catalog.getDoc().recipes ?? [];
     for (const r of recipes) {

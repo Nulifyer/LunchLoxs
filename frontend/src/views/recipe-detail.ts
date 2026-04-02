@@ -2,7 +2,8 @@
  * Recipe detail view with unified edit/preview mode.
  */
 
-import type { RecipeContent } from "../types";
+import type { Recipe } from "../types";
+import type { TagInput } from "../components/tag-input";
 import { AutomergeStore } from "../lib/automerge-store";
 import { createAutomergeMirror } from "../lib/codemirror-automerge";
 import { remoteCursorsExtension, updateRemoteCursors, shortDeviceName, type RemoteCursor } from "../lib/remote-cursors";
@@ -30,7 +31,13 @@ const detailView = document.getElementById("recipe-detail") as HTMLElement;
 const emptyState = document.getElementById("empty-state") as HTMLElement;
 const backBtn = document.getElementById("back-btn") as HTMLButtonElement;
 const titleEl = document.getElementById("recipe-title") as HTMLHeadingElement;
+const titleInput = document.getElementById("recipe-title-input") as HTMLInputElement;
 const metaEl = document.getElementById("recipe-meta") as HTMLElement;
+const metaEditEl = document.getElementById("recipe-meta-edit") as HTMLElement;
+const metaServingsInput = document.getElementById("meta-servings") as HTMLInputElement;
+const metaPrepInput = document.getElementById("meta-prep") as HTMLInputElement;
+const metaCookInput = document.getElementById("meta-cook") as HTMLInputElement;
+const metaTagInput = document.getElementById("meta-tags") as TagInput;
 const pageEditBtn = document.getElementById("page-edit-btn") as HTMLButtonElement;
 const actionsSlot = document.getElementById("recipe-actions-slot") as HTMLElement;
 
@@ -44,7 +51,7 @@ const notesEditorContainer = document.getElementById("notes-editor-container") a
 const notesPreviewContainer = document.getElementById("notes-preview-container") as HTMLElement;
 
 // -- State --
-let store: AutomergeStore<RecipeContent> | null = null;
+let store: AutomergeStore<Recipe> | null = null;
 let instrEditorView: EditorView | null = null;
 let instrBridge: ReturnType<typeof createAutomergeMirror> | null = null;
 let notesEditorView: EditorView | null = null;
@@ -74,6 +81,10 @@ const UNIT_LABELS: Record<UnitSystem, string> = {
   metric: "Metric",
   imperial: "Imperial",
 };
+let currentRecipeId: string | null = null;
+let allTagSuggestions: string[] = [];
+let metaDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+const META_DEBOUNCE_MS = 400;
 let presenceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
@@ -101,9 +112,11 @@ function sendPresenceNow(data: any) {
 
 export interface DetailCallbacks {
   onBack: () => void;
-  onPushSnapshot: () => void;
+  /** Called after content edits (instructions, ingredients, notes). Sets updatedAt + pushes recipe doc. */
+  onContentChanged: () => void;
   onSendPresence: (data: any) => void;
-  onEditRecipe: () => void;
+  /** Mirror title + tags to the catalog for sidebar display, and push both docs. */
+  onMetaChanged: (title: string, tags: string[]) => void;
   onDeleteRecipe: () => void;
   onExportRecipe?: () => void;
   onCopyToBook?: () => void;
@@ -111,13 +124,42 @@ export interface DetailCallbacks {
 
 let callbacks: DetailCallbacks;
 
+function debounceMeta() {
+  if (!pageEditing || !store) return;
+  if (metaDebounceTimer) clearTimeout(metaDebounceTimer);
+  metaDebounceTimer = setTimeout(flushMeta, META_DEBOUNCE_MS);
+}
+
+function flushMeta() {
+  if (metaDebounceTimer) { clearTimeout(metaDebounceTimer); metaDebounceTimer = null; }
+  if (!store) return;
+  const doc = store.getDoc();
+  const title = titleInput.value.trim() || doc.title;
+  const tags = metaTagInput.value;
+  const servings = parseInt(metaServingsInput.value) || 4;
+  const prepMinutes = parseInt(metaPrepInput.value) || 0;
+  const cookMinutes = parseInt(metaCookInput.value) || 0;
+  store.change((d) => {
+    d.title = title; d.tags = tags as any; d.servings = servings;
+    d.prepMinutes = prepMinutes; d.cookMinutes = cookMinutes;
+    d.updatedAt = Date.now();
+  });
+  callbacks.onMetaChanged(title, tags);
+}
+
 export function initRecipeDetail(cb: DetailCallbacks) {
   callbacks = cb;
   backBtn.addEventListener("click", cb.onBack);
-  onPushSnapshot = cb.onPushSnapshot;
+  onPushSnapshot = cb.onContentChanged;
   onSendPresence = cb.onSendPresence;
 
   pageEditBtn.addEventListener("click", () => setPageEditing(!pageEditing));
+
+  titleInput.addEventListener("input", debounceMeta);
+  metaServingsInput.addEventListener("input", debounceMeta);
+  metaPrepInput.addEventListener("input", debounceMeta);
+  metaCookInput.addEventListener("input", debounceMeta);
+  metaTagInput.addEventListener("change", debounceMeta);
 
   instrPreviewContainer.addEventListener("click", () => {
     if (pageEditing) instrEditorView?.focus();
@@ -485,31 +527,57 @@ function timeAgo(ts: number): string {
   return `${years}y ago`;
 }
 
-export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: string, meta: string, editable = true, updatedAt?: number, bookName?: string, servings?: number) {
+function renderMetaDisplay() {
+  if (!store) return;
+  const doc = store.getDoc();
+  metaEl.innerHTML = "";
+
+  // Tags line
+  const tags = doc.tags ?? [];
+  if (tags.length > 0) {
+    const tagLine = document.createElement("div");
+    tagLine.className = "meta-tags-line";
+    tagLine.innerHTML = tags.map((t: string) => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
+    metaEl.appendChild(tagLine);
+  }
+
+  // Stats line: servings · prep · cook · updated
+  const stats = [
+    doc.servings ? `${doc.servings} servings` : "",
+    doc.prepMinutes ? `${doc.prepMinutes}m prep` : "",
+    doc.cookMinutes ? `${doc.cookMinutes}m cook` : "",
+  ].filter(Boolean);
+  if (doc.updatedAt && doc.updatedAt > 0) {
+    stats.push("updated " + timeAgo(doc.updatedAt));
+  }
+  if (stats.length > 0) {
+    const statsLine = document.createElement("div");
+    statsLine.className = "meta-stats-line";
+    statsLine.textContent = stats.join(" · ");
+    if (doc.updatedAt && doc.updatedAt > 0) {
+      statsLine.title = new Date(doc.updatedAt).toLocaleString();
+    }
+    metaEl.appendChild(statsLine);
+  }
+}
+
+export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string, editable = true, bookName?: string, tagSuggestions: string[] = []) {
   closeRecipe();
+  store = recipeStore;
+  currentRecipeId = recipeId;
+  allTagSuggestions = tagSuggestions;
+  const meta = store.getDoc();
   // Reset ingredient UI state
   checkedIngredients.clear();
   unitOverrides.clear();
-  baseServings = servings || 4;
+  baseServings = meta.servings || 4;
   currentServings = baseServings;
   scaleFactor = 1;
-  store = recipeStore;
-  titleEl.textContent = title;
+  titleEl.textContent = meta.title;
   // Update breadcrumb
   const breadcrumbBookName = document.getElementById("breadcrumb-book-name") as HTMLElement;
   if (breadcrumbBookName) breadcrumbBookName.textContent = bookName ?? "";
-  metaEl.innerHTML = "";
-  const metaText = document.createElement("span");
-  metaText.textContent = meta;
-  metaEl.appendChild(metaText);
-  if (updatedAt && updatedAt > 0) {
-    if (meta) metaEl.appendChild(document.createTextNode(" · "));
-    const ago = document.createElement("span");
-    ago.textContent = "updated " + timeAgo(updatedAt);
-    ago.title = new Date(updatedAt).toLocaleString();
-    ago.style.cursor = "default";
-    metaEl.appendChild(ago);
-  }
+  renderMetaDisplay();
   canEdit = editable;
   emptyState.hidden = true;
   detailView.hidden = false;
@@ -519,9 +587,6 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
   // Build actions dropdown
   actionsSlot.innerHTML = "";
   const menuItems = [];
-  if (canEdit) {
-    menuItems.push({ label: "Settings", action: () => callbacks.onEditRecipe() });
-  }
   if (callbacks.onExportRecipe) {
     menuItems.push({ label: "Export as .md", action: () => callbacks.onExportRecipe!() });
   }
@@ -537,7 +602,7 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
 
   const doc = store.getDoc();
 
-  const iBridge = createAutomergeMirror<RecipeContent>({
+  const iBridge = createAutomergeMirror<Recipe>({
     getDoc: () => store!.getDoc(),
     getText: (d) => d.instructions ?? "",
     spliceText: (from, del, ins) => {
@@ -580,7 +645,7 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
   });
   iBridge.setView(instrEditorView);
 
-  const nBridge = createAutomergeMirror<RecipeContent>({
+  const nBridge = createAutomergeMirror<Recipe>({
     getDoc: () => store!.getDoc(),
     getText: (d) => d.notes ?? "",
     spliceText: (from, del, ins) => {
@@ -625,6 +690,10 @@ export function openRecipe(recipeStore: AutomergeStore<RecipeContent>, title: st
   setPageEditing(false);
 
   store.onChange((doc) => {
+    // Update meta display from recipe doc
+    titleEl.textContent = doc.title;
+    baseServings = doc.servings || 4;
+    if (!pageEditing) renderMetaDisplay();
     renderIngredients(doc);
     if (pageEditing) {
       instrBridge?.applyRemoteText();
@@ -668,7 +737,9 @@ export function closeRecipe() {
   notesEditorView?.destroy();
   notesEditorView = null;
   notesBridge = null;
+  if (metaDebounceTimer) flushMeta();
   store = null;
+  currentRecipeId = null;
   pageEditing = false;
   instrCursors.clear();
   notesCursors.clear();
@@ -678,6 +749,10 @@ export function closeRecipe() {
   scaleBar.hidden = true;
   detailView.hidden = true;
   emptyState.hidden = false;
+  titleEl.hidden = false;
+  titleInput.hidden = true;
+  metaEl.hidden = false;
+  metaEditEl.hidden = true;
 }
 
 export function handlePresence(deviceId: string, data: any, senderUserId?: string) {
@@ -739,13 +814,37 @@ export function updateEditPermission(editable: boolean) {
   }
 }
 
+/** Get the recipe ID currently displayed in the detail view. */
+export function getOpenRecipeId(): string | null {
+  return currentRecipeId;
+}
+
 // -- Page-level edit/preview toggle --
 
 function setPageEditing(editing: boolean) {
   if (!canEdit && editing) return;
+  const wasEditing = pageEditing;
   pageEditing = editing;
   detailView.classList.toggle("editing", editing);
   pageEditBtn.textContent = editing ? "Done" : "Edit";
+
+  // Toggle inline title editing
+  titleEl.hidden = editing;
+  titleInput.hidden = !editing;
+  if (editing && store) {
+    const doc = store.getDoc();
+    titleInput.value = doc.title;
+    metaServingsInput.value = String(doc.servings || 4);
+    metaPrepInput.value = String(doc.prepMinutes || 0);
+    metaCookInput.value = String(doc.cookMinutes || 0);
+    metaTagInput.suggestions = allTagSuggestions;
+    metaTagInput.value = doc.tags ?? [];
+  }
+  metaEl.hidden = editing;
+  metaEditEl.hidden = !editing;
+
+  // On "Done" — flush any pending debounce
+  if (wasEditing && !editing) flushMeta();
 
   // Scale bar: show in view mode, hide in edit mode
   scaleBar.hidden = editing;
@@ -775,7 +874,7 @@ function setPageEditing(editing: boolean) {
     notesBridge?.applyRemoteText();
   }
 
-  renderIngredients(store?.getDoc() ?? { description: "", ingredients: [], instructions: "", imageUrls: [], notes: "" });
+  renderIngredients(store?.getDoc() ?? { title: "", tags: [], servings: 4, prepMinutes: 0, cookMinutes: 0, createdAt: 0, updatedAt: 0, description: "", ingredients: [], instructions: "", imageUrls: [], notes: "" });
 }
 
 // -- Render --
@@ -806,7 +905,7 @@ function updateScaleDisplay() {
 }
 
 
-function renderIngredients(doc: RecipeContent) {
+function renderIngredients(doc: Recipe) {
   const ingredients = doc.ingredients ?? [];
 
   if (pageEditing) {

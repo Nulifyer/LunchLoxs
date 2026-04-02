@@ -9,12 +9,12 @@ import { toastSuccess, toastWarning, toastError } from "./lib/toast";
 import { getDocMgr, getBooks, getPushQueue } from "./state";
 import { renderCatalog } from "./sync/push";
 import { createBook, renderBookManageList } from "./ui/books";
-import type { Book, RecipeCatalog, RecipeContent, RecipeMeta } from "./types";
+import type { Book, BookCatalog, Recipe, RecipeMeta } from "./types";
 
 export async function handleExportBook(book: Book) {
   const docMgr = getDocMgr();
   if (!docMgr) return;
-  const catalog = docMgr.get<RecipeCatalog>(`${book.vaultId}/catalog`);
+  const catalog = docMgr.get<BookCatalog>(`${book.vaultId}/catalog`);
   if (!catalog) { toastWarning("Open this book first."); return; }
   const recipes = catalog.getDoc().recipes ?? [];
   if (recipes.length === 0) { toastWarning("No recipes to export."); return; }
@@ -30,12 +30,12 @@ export async function handleExportBook(book: Book) {
 /** Import parsed recipes into a specific book. Returns count imported. */
 export async function importRecipesIntoBook(
   book: Book,
-  recipes: Array<{ meta: Partial<RecipeMeta>; content: Partial<RecipeContent> }>,
+  recipes: Array<{ meta: Partial<RecipeMeta>; content: Partial<Recipe> }>,
   onProgress?: (current: number, total: number) => void,
 ): Promise<number> {
   const docMgr = getDocMgr();
   if (!docMgr) return 0;
-  const catalog = docMgr.get<RecipeCatalog>(`${book.vaultId}/catalog`);
+  const catalog = docMgr.get<BookCatalog>(`${book.vaultId}/catalog`);
   if (!catalog) return 0;
 
   // Prepare recipe entries with IDs
@@ -45,34 +45,38 @@ export async function importRecipesIntoBook(
 
   // Batch all catalog additions into a single change (avoids N onChange fires)
   catalog.change((doc) => {
-    // Ensure book name is persisted (guards against initFn race during import)
     if (!doc.name) doc.name = book.name;
     if (!doc.recipes) doc.recipes = [];
-    for (const { id, now, meta } of entries) {
-      doc.recipes.push({ id, title: meta.title ?? "Imported", tags: meta.tags ?? [], servings: meta.servings ?? 4, prepMinutes: meta.prepMinutes ?? 0, cookMinutes: meta.cookMinutes ?? 0, createdAt: meta.createdAt ?? now, updatedAt: meta.updatedAt ?? now });
+    for (const { id, meta } of entries) {
+      doc.recipes.push({ id, title: meta.title ?? "Imported", tags: (meta.tags ?? []).map((t: string) => t.toLowerCase()) });
     }
   });
 
-  // Build content docs
-  const contentDocIds: string[] = [];
+  // Build full recipe docs (meta + content in one doc)
+  const recipeDocIds: string[] = [];
   for (let i = 0; i < entries.length; i++) {
-    const { id, content } = entries[i]!;
-    const contentDocId = `${book.vaultId}/${id}`;
-    const cs = await docMgr.open<RecipeContent>(contentDocId, (d) => { d.description = content.description ?? ""; d.ingredients = (content.ingredients ?? []) as any; d.instructions = content.instructions ?? ""; d.imageUrls = []; d.notes = content.notes ?? ""; });
-    cs.ensureInitialized();
-    contentDocIds.push(contentDocId);
+    const { id, now, meta, content } = entries[i]!;
+    const recipeDocId = `${book.vaultId}/${id}`;
+    const rs = await docMgr.open<Recipe>(recipeDocId, (d) => {
+      d.title = meta.title ?? "Imported"; d.tags = (meta.tags ?? []).map((t: string) => t.toLowerCase()) as any;
+      d.servings = meta.servings ?? 4; d.prepMinutes = meta.prepMinutes ?? 0; d.cookMinutes = meta.cookMinutes ?? 0;
+      d.createdAt = meta.createdAt ?? now; d.updatedAt = meta.updatedAt ?? now;
+      d.description = content.description ?? ""; d.ingredients = (content.ingredients ?? []) as any;
+      d.instructions = content.instructions ?? ""; d.imageUrls = []; d.notes = content.notes ?? "";
+    });
+    rs.ensureInitialized();
+    recipeDocIds.push(recipeDocId);
     onProgress?.(i + 1, entries.length);
   }
 
-  // Close content stores - dirty flags persist in IndexedDB.
-  // The push queue will pick them up and sync in the background.
-  for (const docId of contentDocIds) docMgr.close(docId);
+  // Close recipe stores - dirty flags persist in IndexedDB
+  for (const docId of recipeDocIds) docMgr.close(docId);
 
   // Kick off background sync (don't await - let the overlay dismiss)
   const pq = getPushQueue();
   if (pq) pq.flushAllDirty();
 
-  return contentDocIds.length;
+  return recipeDocIds.length;
 }
 
 /**

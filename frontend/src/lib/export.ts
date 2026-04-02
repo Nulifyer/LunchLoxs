@@ -9,7 +9,7 @@
  */
 
 import JSZip from "jszip";
-import type { RecipeMeta, RecipeContent } from "../types";
+import type { CatalogEntry, Recipe, RecipeMeta, RecipeContent } from "../types";
 import type { AutomergeStore } from "./automerge-store";
 import type { DocumentManager } from "./document-manager";
 
@@ -80,37 +80,37 @@ function parseIngredientTable(text: string): Ingredient[] {
   return ingredients;
 }
 
-export function recipeToMarkdown(meta: RecipeMeta, content: RecipeContent): string {
+export function recipeToMarkdown(recipe: Recipe): string {
   const frontmatter = [
     "---",
-    `title: "${meta.title.replace(/"/g, '\\"')}"`,
-    `tags: [${meta.tags.map((t) => `"${t.replace(/"/g, '\\"')}"`).join(", ")}]`,
-    `servings: ${meta.servings}`,
-    `prepMinutes: ${meta.prepMinutes}`,
-    `cookMinutes: ${meta.cookMinutes}`,
-    `createdAt: ${new Date(meta.createdAt).toISOString()}`,
-    `updatedAt: ${new Date(meta.updatedAt).toISOString()}`,
+    `title: "${recipe.title.replace(/"/g, '\\"')}"`,
+    `tags: [${(recipe.tags ?? []).map((t) => `"${t.replace(/"/g, '\\"')}"`).join(", ")}]`,
+    `servings: ${recipe.servings ?? 4}`,
+    `prepMinutes: ${recipe.prepMinutes ?? 0}`,
+    `cookMinutes: ${recipe.cookMinutes ?? 0}`,
+    `createdAt: ${new Date(recipe.createdAt || 0).toISOString()}`,
+    `updatedAt: ${new Date(recipe.updatedAt || 0).toISOString()}`,
     "---",
   ].join("\n");
 
   const sections: string[] = [frontmatter, ""];
 
-  if (content.description) {
-    sections.push(content.description, "");
+  if (recipe.description) {
+    sections.push(recipe.description, "");
   }
 
-  const ingredients = content.ingredients ?? [];
+  const ingredients = recipe.ingredients ?? [];
   if (ingredients.length > 0) {
     sections.push("## Ingredients", "");
     sections.push(buildIngredientTable(ingredients), "");
   }
 
-  const instructions = (content.instructions ?? "").trim();
+  const instructions = (recipe.instructions ?? "").trim();
   if (instructions) {
     sections.push("## Instructions", "", instructions, "");
   }
 
-  const notes = (content.notes ?? "").trim();
+  const notes = (recipe.notes ?? "").trim();
   if (notes) {
     sections.push("## Notes", "", notes, "");
   }
@@ -121,7 +121,7 @@ export function recipeToMarkdown(meta: RecipeMeta, content: RecipeContent): stri
 export async function exportBook(
   bookName: string,
   vaultId: string,
-  recipes: RecipeMeta[],
+  entries: CatalogEntry[],
   docMgr: DocumentManager,
 ): Promise<Blob> {
   const zip = new JSZip();
@@ -131,14 +131,14 @@ export async function exportBook(
     `name: "${bookName.replace(/"/g, '\\"')}"`,
     `exportedAt: "${new Date().toISOString()}"`,
     `format: "recipepwa-v1"`,
-    `recipeCount: ${recipes.length}`,
+    `recipeCount: ${entries.length}`,
   ].join("\n");
   folder.file("_book.yaml", bookMeta);
 
   const usedNames = new Set<string>();
 
-  for (const meta of recipes) {
-    let baseName = slugify(meta.title);
+  for (const entry of entries) {
+    let baseName = slugify(entry.title);
     let fileName = baseName;
     let counter = 1;
     while (usedNames.has(fileName)) {
@@ -146,36 +146,27 @@ export async function exportBook(
     }
     usedNames.add(fileName);
 
-    const contentDocId = `${vaultId}/${meta.id}`;
-    let contentStore = docMgr.get<RecipeContent>(contentDocId);
+    const recipeDocId = `${vaultId}/${entry.id}`;
+    let recipeStore = docMgr.get<Recipe>(recipeDocId);
     let needsClose = false;
-    if (!contentStore) {
+    if (!recipeStore) {
       try {
-        contentStore = await docMgr.open<RecipeContent>(contentDocId, (doc) => {
-          doc.description = "";
-          doc.ingredients = [];
-          doc.instructions = "";
-          doc.imageUrls = [];
-          doc.notes = "";
+        recipeStore = await docMgr.open<Recipe>(recipeDocId, (doc) => {
+          doc.title = entry.title; doc.tags = [] as any; doc.servings = 4;
+          doc.prepMinutes = 0; doc.cookMinutes = 0; doc.createdAt = 0; doc.updatedAt = 0;
+          doc.description = ""; doc.ingredients = []; doc.instructions = "";
+          doc.imageUrls = []; doc.notes = "";
         });
         needsClose = true;
       } catch {
-        contentStore = null;
+        recipeStore = null;
       }
     }
 
-    const content: RecipeContent = contentStore?.getDoc() ?? {
-      description: "",
-      ingredients: [],
-      instructions: "",
-      imageUrls: [],
-      notes: "",
-    };
-
-    folder.file(`${fileName}.md`, recipeToMarkdown(meta, content));
-
-    if (needsClose) {
-      docMgr.close(contentDocId);
+    if (recipeStore) {
+      const recipe = recipeStore.getDoc();
+      folder.file(`${fileName}.md`, recipeToMarkdown(recipe));
+      if (needsClose) docMgr.close(recipeDocId);
     }
   }
 

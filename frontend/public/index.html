@@ -193,10 +193,22 @@
             </div>
             <div class="detail-title-row">
               <h2 id="recipe-title"></h2>
+              <input type="text" id="recipe-title-input" class="meta-edit-title" hidden />
               <button id="page-edit-btn" class="sm">Edit</button>
               <div id="recipe-actions-slot" style="display:flex"></div>
             </div>
             <div id="recipe-meta" class="meta"></div>
+            <div id="recipe-meta-edit" class="meta-edit" hidden>
+              <div>
+                <label>Tags</label>
+                <tag-input id="meta-tags" placeholder="Add a tag…"></tag-input>
+              </div>
+              <div class="meta-edit-numbers">
+                <div><label for="meta-servings">Servings</label><input type="number" id="meta-servings" min="1" /></div>
+                <div><label for="meta-prep">Prep (min)</label><input type="number" id="meta-prep" min="0" /></div>
+                <div><label for="meta-cook">Cook (min)</label><input type="number" id="meta-cook" min="0" /></div>
+              </div>
+            </div>
           </header>
 
           <div class="section-header">
@@ -243,8 +255,8 @@
       <form id="add-recipe-form" method="dialog">
         <label for="new-title">Title</label>
         <input type="text" id="new-title" required />
-        <label for="new-tags">Tags (comma separated)</label>
-        <input type="text" id="new-tags" placeholder="italian, pasta, quick" />
+        <label>Tags</label>
+        <tag-input id="new-tags" placeholder="Add a tag…"></tag-input>
         <div class="dialog-grid-3">
           <div><label for="new-servings">Servings</label><input type="number" id="new-servings" value="4" min="1" /></div>
           <div><label for="new-prep">Prep (min)</label><input type="number" id="new-prep" value="0" min="0" /></div>
@@ -258,27 +270,6 @@
     </article>
   </dialog>
 
-  <!-- Edit recipe dialog -->
-  <dialog id="edit-recipe-dialog" aria-label="Edit recipe">
-    <article>
-      <header><strong>Edit Recipe</strong></header>
-      <form id="edit-recipe-form" method="dialog">
-        <label for="edit-title">Title</label>
-        <input type="text" id="edit-title" required />
-        <label for="edit-tags">Tags (comma separated)</label>
-        <input type="text" id="edit-tags" />
-        <div class="dialog-grid-3">
-          <div><label for="edit-servings">Servings</label><input type="number" id="edit-servings" min="1" /></div>
-          <div><label for="edit-prep">Prep (min)</label><input type="number" id="edit-prep" min="0" /></div>
-          <div><label for="edit-cook">Cook (min)</label><input type="number" id="edit-cook" min="0" /></div>
-        </div>
-        <footer class="dialog-footer">
-          <button type="button" class="dialog-close-btn">Cancel</button>
-          <button type="submit">Save</button>
-        </footer>
-      </form>
-    </article>
-  </dialog>
 
   <!-- Manage books dialog -->
   <dialog id="manage-books-dialog" aria-label="Manage books">

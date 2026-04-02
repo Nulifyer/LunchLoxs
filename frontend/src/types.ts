@@ -6,9 +6,24 @@ export interface Book {
   encKey?: CryptoKey;
 }
 
-/** Recipe catalog entry -- stored in the shared catalog Automerge doc */
-export interface RecipeMeta {
+/** Lightweight catalog entry for sidebar display and search */
+export interface CatalogEntry {
   id: string;
+  title: string;
+  tags: string[];
+}
+
+/** Book catalog Automerge document -- minimal, just IDs + display data */
+export interface BookCatalog {
+  name: string;
+  recipes: CatalogEntry[];
+  /** userId -> display name (username), shared among vault members */
+  members?: Record<string, string>;
+}
+
+/** Unified recipe Automerge document -- meta + content in one doc */
+export interface Recipe {
+  // Meta
   title: string;
   tags: string[];
   servings: number;
@@ -16,18 +31,7 @@ export interface RecipeMeta {
   cookMinutes: number;
   createdAt: number;
   updatedAt: number;
-}
-
-/** Recipe catalog Automerge document */
-export interface RecipeCatalog {
-  name: string;
-  recipes: RecipeMeta[];
-  /** userId -> display name (username), shared among vault members */
-  members?: Record<string, string>;
-}
-
-/** Recipe content -- stored in its own Automerge doc (doc_id = recipe.id) */
-export interface RecipeContent {
+  // Content
   description: string;
   ingredients: Array<{
     item: string;
@@ -38,3 +42,27 @@ export interface RecipeContent {
   imageUrls: string[];
   notes: string;
 }
+
+// -- Backward-compatible aliases for migration --
+/** @deprecated Use CatalogEntry */
+export type RecipeMeta = CatalogEntry & {
+  servings: number;
+  prepMinutes: number;
+  cookMinutes: number;
+  createdAt: number;
+  updatedAt: number;
+};
+/** @deprecated Use BookCatalog */
+export type RecipeCatalog = {
+  name: string;
+  recipes: RecipeMeta[];
+  members?: Record<string, string>;
+};
+/** @deprecated Use Recipe */
+export type RecipeContent = {
+  description: string;
+  ingredients: Array<{ item: string; quantity: string; unit: string }>;
+  instructions: string;
+  imageUrls: string[];
+  notes: string;
+};

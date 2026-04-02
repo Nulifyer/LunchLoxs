@@ -25,10 +25,10 @@ export function getStoredUsername(): string | null {
 }
 
 export function getDeviceId(): string {
-  let id = localStorage.getItem(STORAGE_KEY_DEVICE_ID);
+  let id = sessionStorage.getItem(STORAGE_KEY_DEVICE_ID);
   if (!id) {
     id = crypto.randomUUID();
-    localStorage.setItem(STORAGE_KEY_DEVICE_ID, id);
+    sessionStorage.setItem(STORAGE_KEY_DEVICE_ID, id);
   }
   return id;
 }

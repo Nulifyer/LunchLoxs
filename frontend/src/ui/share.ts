@@ -16,7 +16,7 @@ import { toastSuccess, toastError } from "../lib/toast";
 import { getDocMgr, getSyncClient } from "../state";
 import { pushSnapshot, catalogDocId } from "../sync/push";
 import { memberName, rotateVaultKey } from "../sync/vault-helpers";
-import type { Book, RecipeCatalog } from "../types";
+import type { Book, BookCatalog } from "../types";
 
 let sharingBook: Book | null = null;
 let shareBookDialog: HTMLDialogElement;
@@ -110,7 +110,7 @@ export function initShare() {
       syncClient.inviteToVault(sharingBook.vaultId, tuid, toBase64(enc), toBase64(pub), "viewer");
       // Write their username into the catalog member map
       const catDocId = `${sharingBook.vaultId}/catalog`;
-      const catalog = docMgr.get<RecipeCatalog>(catDocId);
+      const catalog = docMgr.get<BookCatalog>(catDocId);
       if (catalog) {
         catalog.change((d) => {
           if (!d.members) d.members = {} as any;

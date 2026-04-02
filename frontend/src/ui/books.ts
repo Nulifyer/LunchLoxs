@@ -22,7 +22,7 @@ import { openShareDialog } from "../ui/share";
 import { handleExportBook, handleImportToBook, handleZipImport, importRecipesIntoBook } from "../import-export";
 import { deselectRecipe } from "../ui/recipes";
 import { on as onSyncEvent } from "../sync/sync-events";
-import type { Book, RecipeCatalog, RecipeContent } from "../types";
+import type { Book, BookCatalog, Recipe } from "../types";
 
 let bookListView: HTMLElement;
 let recipeListView: HTMLElement;
@@ -165,7 +165,7 @@ export async function createBook(name: string): Promise<Book | null> {
     }).catch((e) => warn("[createBook] cache update failed:", e));
   }
   const catDocId = `${vaultId}/catalog`;
-  const catalog = await docMgr.open<RecipeCatalog>(catDocId, (doc) => {
+  const catalog = await docMgr.open<BookCatalog>(catDocId, (doc) => {
     doc.name = name;
     doc.recipes = [];
     doc.members = {} as any;
@@ -173,7 +173,11 @@ export async function createBook(name: string): Promise<Book | null> {
   });
   // Apply init immediately so the name is set before any imports add recipes
   catalog.ensureInitialized();
-  catalog.onChange(() => { refreshBookNameFromCatalog(catDocId); rebuildBookIndex(vaultId); if (getActiveBook()?.vaultId === vaultId) renderCatalog(); });
+  catalog.onChange(() => {
+    refreshBookNameFromCatalog(catDocId);
+    rebuildBookIndex(vaultId);
+    if (getActiveBook()?.vaultId === vaultId) renderCatalog();
+  });
   pushSnapshot(catDocId);
   if (syncClient) await syncClient.subscribe(catDocId);
   renderBookSelect();
@@ -245,7 +249,7 @@ export function renderBookManageList() {
           const n = await showPrompt("New name for this book:", { title: "Rename Book", defaultValue: book.name });
           if (!n?.trim() || !docMgr) return;
           book.name = n.trim();
-          const c = docMgr.get<RecipeCatalog>(`${book.vaultId}/catalog`);
+          const c = docMgr.get<BookCatalog>(`${book.vaultId}/catalog`);
           if (c) { c.change((d) => { d.name = n.trim(); }); pushSnapshot(`${book.vaultId}/catalog`); }
           renderBookSelect(); renderBookManageList();
           toastSuccess(`Renamed to "${n.trim()}"`);
@@ -309,6 +313,7 @@ export function initBooks() {
   // Update sync dots when dirty state changes
   onSyncEvent("dirty-change", () => {
     renderBookSelect();
+    renderCatalog();
     if (manageBooksDialog.open) renderBookManageList();
   });
 
@@ -352,7 +357,7 @@ export function initBooks() {
       for (const vid of selectedBookIds) {
         const book = books.find((b) => b.vaultId === vid);
         if (!book || !docMgr) continue;
-        const catalog = docMgr.get<RecipeCatalog>(`${book.vaultId}/catalog`);
+        const catalog = docMgr.get<BookCatalog>(`${book.vaultId}/catalog`);
         if (!catalog) continue;
         const recipes = catalog.getDoc().recipes ?? [];
         const folder = zip.folder(book.name)!;
@@ -373,13 +378,15 @@ export function initBooks() {
           while (usedNames.has(slug)) slug = `${base}-${counter++}`;
           usedNames.add(slug);
 
-          const contentDocId = `${book.vaultId}/${meta.id}`;
-          let cs = docMgr.get<RecipeContent>(contentDocId);
+          const recipeDocId = `${book.vaultId}/${meta.id}`;
+          let rs = docMgr.get<Recipe>(recipeDocId);
           let needsClose = false;
-          if (!cs) { try { cs = await docMgr.open<RecipeContent>(contentDocId, (d) => { d.description = ""; d.ingredients = []; d.instructions = ""; d.imageUrls = []; d.notes = ""; }); needsClose = true; } catch { cs = null; } }
-          const content = cs?.getDoc() ?? { description: "", ingredients: [], instructions: "", imageUrls: [], notes: "" };
-          folder.file(`${slug}.md`, recipeToMarkdown(meta, content));
-          if (needsClose) docMgr.close(contentDocId);
+          if (!rs) { try { rs = await docMgr.open<Recipe>(recipeDocId, (d) => { d.title = meta.title; d.tags = [] as any; d.servings = 4; d.prepMinutes = 0; d.cookMinutes = 0; d.createdAt = 0; d.updatedAt = 0; d.description = ""; d.ingredients = []; d.instructions = ""; d.imageUrls = []; d.notes = ""; }); needsClose = true; } catch { rs = null; } }
+          if (rs) {
+            const recipe = rs.getDoc();
+            folder.file(`${slug}.md`, recipeToMarkdown(recipe));
+          }
+          if (needsClose) docMgr.close(recipeDocId);
           totalRecipes++;
         }
       }

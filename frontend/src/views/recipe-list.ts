@@ -2,7 +2,7 @@
  * Recipe list sidebar view + floating cross-book search.
  */
 
-import type { RecipeMeta } from "../types";
+import type { CatalogEntry } from "../types";
 import { escapeHtml } from "../lib/html";
 import { search, hybridSearch, getIndexSize, type SearchResult } from "../lib/search";
 import { getPushQueue, getActiveBook } from "../state";
@@ -166,14 +166,12 @@ function getMatchSnippet(_query: string, result: SearchResult): string {
   return "";
 }
 
-export function renderRecipeList(recipes: RecipeMeta[], selectedId: string | null) {
+export function renderRecipeList(recipes: CatalogEntry[], selectedId: string | null) {
   container.innerHTML = "";
   const sorted = [...recipes].sort((a, b) => a.title.localeCompare(b.title));
   const pq = getPushQueue();
   const activeBook = getActiveBook();
   const vaultId = activeBook?.vaultId;
-  // Catalog dirty means the book itself has unsynced changes
-  const catalogDirty = vaultId ? pq?.isDirty(`${vaultId}/catalog`) ?? false : false;
 
   for (const recipe of sorted) {
     const li = document.createElement("li");
@@ -187,23 +185,19 @@ export function renderRecipeList(recipes: RecipeMeta[], selectedId: string | nul
     strong.textContent = recipe.title;
     titleRow.appendChild(strong);
 
-    // Sync status dot
+    // Sync status dot (per-recipe content only)
     const recipeDirty = vaultId ? pq?.isDirty(`${vaultId}/${recipe.id}`) ?? false : false;
     const dot = document.createElement("span");
-    const isDirty = recipeDirty || catalogDirty;
     dot.className = "sync-dot pending";
-    dot.hidden = !isDirty;
-    dot.title = isDirty ? "Unsynced changes" : "";
+    dot.hidden = !recipeDirty;
+    dot.title = recipeDirty ? "Unsynced changes" : "";
     titleRow.appendChild(dot);
 
     li.appendChild(titleRow);
 
     const small = document.createElement("small");
-    const tagHtml = recipe.tags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
-    const timeStr = recipe.prepMinutes + recipe.cookMinutes > 0
-      ? ` ${recipe.prepMinutes + recipe.cookMinutes}m`
-      : "";
-    small.innerHTML = tagHtml + timeStr;
+    const tagHtml = (recipe.tags ?? []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
+    small.innerHTML = tagHtml;
     li.appendChild(small);
 
     container.appendChild(li);

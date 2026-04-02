@@ -32,7 +32,7 @@ import { on as onSyncEvent, emit as syncEmit } from "../sync/sync-events";
 import { updateSyncBadge } from "../ui/sync-status";
 import { refreshBookNameFromCatalog, rebuildBookIndex } from "../sync/vault-helpers";
 import { PushQueue, type SignFn } from "../sync/push-queue";
-import type { Book, RecipeCatalog } from "../types";
+import type { Book, BookCatalog } from "../types";
 
 // DOM refs (grabbed at init time)
 let loginSection: HTMLElement;
@@ -188,7 +188,7 @@ async function localBoot(
   clearIndex();
   for (const book of books) {
     const catDocId = `${book.vaultId}/catalog`;
-    const catalog = await docMgr.open<RecipeCatalog>(catDocId, (doc) => { doc.name = book.name; doc.recipes = []; });
+    const catalog = await docMgr.open<BookCatalog>(catDocId, (doc) => { doc.name = book.name; doc.recipes = []; });
     const catDoc = catalog.getDoc();
     if (catDoc.name && catDoc.name !== book.name && catDoc.name !== book.vaultId.slice(0, 8)) {
       book.name = catDoc.name;

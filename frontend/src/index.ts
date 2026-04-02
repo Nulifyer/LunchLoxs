@@ -1,6 +1,7 @@
 import { log } from "./lib/logger";
 log("[boot] index.ts loading");
 
+import "./components/tag-input";
 import { initTheme } from "./lib/themes";
 import { initAuth } from "./ui/auth";
 import { initAccount } from "./ui/account";

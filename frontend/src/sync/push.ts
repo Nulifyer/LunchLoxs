@@ -7,7 +7,7 @@ import {
   getDocMgr, getActiveBook,
   getSelectedRecipeId, getPushQueue,
 } from "../state";
-import type { RecipeCatalog } from "../types";
+import type { BookCatalog } from "../types";
 import { canEditActiveBook } from "../sync/vault-helpers";
 
 // Re-export for backward compatibility during migration
@@ -39,7 +39,7 @@ export function renderCatalog() {
     if (recipeCount) recipeCount.textContent = "";
     return;
   }
-  const catalog = docMgr.get<RecipeCatalog>(catalogDocId());
+  const catalog = docMgr.get<BookCatalog>(catalogDocId());
   if (!catalog) return;
   const doc = catalog.getDoc();
   const recipes = doc.recipes ?? [];
