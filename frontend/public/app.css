@@ -1455,6 +1455,23 @@ input.ing-edit.ing-text {
   background: var(--bg-surface);
 }
 
+/* -- Ingredient references in instructions/notes -- */
+.ing-ref {
+  display: inline;
+  background: var(--bg-hover);
+  border-radius: var(--radius);
+  padding: 0.1em 0.4em;
+  font-size: 0.9em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ing-ref-broken {
+  opacity: 0.5;
+  text-decoration: line-through;
+  font-weight: 400;
+}
+
 /* -- Empty state -- */
 #ingredients-list li.ing-empty {
   border: none;

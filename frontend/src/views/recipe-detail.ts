@@ -19,6 +19,7 @@ import { createDropdown } from "../lib/dropdown";
 import { parseQty, formatQty, scaleQty } from "../lib/quantity";
 import { convertIngredient, convertToUnit, resolveUnit, getConversionTargets, isDecimalUnit, canonicalUnitName, type UnitSystem } from "../lib/units";
 import { findDensity, convertViaDensity, WEIGHT_UNITS, VOLUME_UNITS } from "../lib/densities";
+import { ingredientCompletions } from "../lib/cm-ingredient-completions";
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
@@ -388,6 +389,26 @@ export function initRecipeDetail(cb: DetailCallbacks) {
 
     const idx = parseInt(target.dataset.ingIdx ?? "-1");
     if (idx < 0) return;
+
+    // Auto-rename ingredient references in instructions/notes
+    if (field === "item") {
+      const oldName = store.getDoc().ingredients?.[idx]?.item ?? "";
+      if (oldName && value && oldName.toLowerCase() !== value.toLowerCase()) {
+        const pattern = new RegExp(`@\\[${oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]`, "gi");
+        store.change((doc) => {
+          if (doc.ingredients && idx >= 0 && idx < doc.ingredients.length) {
+            doc.ingredients[idx]![field] = value;
+          }
+          if (doc.instructions) doc.instructions = doc.instructions.replace(pattern, `@[${value}]`);
+          if (doc.notes) doc.notes = doc.notes.replace(pattern, `@[${value}]`);
+        });
+        instrBridge?.applyRemoteText();
+        notesBridge?.applyRemoteText();
+        onPushSnapshot?.();
+        return;
+      }
+    }
+
     store.change((doc) => {
       if (doc.ingredients && idx >= 0 && idx < doc.ingredients.length) {
         doc.ingredients[idx]![field] = value;
@@ -681,6 +702,10 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
       keymap.of([...defaultKeymap, ...historyKeymap]), history(),
       markdown(), appTheme, appSyntaxHighlighting, drawSelection(), highlightActiveLine(),
       EditorView.lineWrapping, iBridge.extension, remoteCursorsExtension,
+      ingredientCompletions(() => {
+        const d = store?.getDoc();
+        return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];
+      }),
       EditorView.updateListener.of((update) => {
         if (update.selectionSet || update.docChanged) {
           const sel = update.state.selection.main;
@@ -724,6 +749,10 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
       keymap.of([...defaultKeymap, ...historyKeymap]), history(),
       markdown(), appTheme, appSyntaxHighlighting, drawSelection(), highlightActiveLine(),
       EditorView.lineWrapping, nBridge.extension, remoteCursorsExtension,
+      ingredientCompletions(() => {
+        const d = store?.getDoc();
+        return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];
+      }),
       EditorView.updateListener.of((update) => {
         if (update.selectionSet || update.docChanged) {
           const sel = update.state.selection.main;
@@ -1084,13 +1113,50 @@ function renderIngredients(doc: Recipe) {
   }
 }
 
+/** Resolve `@[name]` ingredient references in markdown source before rendering. */
+function resolveIngredientRefs(md: string, doc: Recipe): string {
+  const ingredients = doc.ingredients ?? [];
+  return md.replace(/@\[([^\]]+)\]/g, (_match, name: string) => {
+    const ing = ingredients.find((i) => i.item.toLowerCase() === name.toLowerCase());
+    if (!ing) {
+      return `<span class="ing-ref ing-ref-broken">${escapeHtml(name)}</span>`;
+    }
+    const scaledRaw = scaleQty(ing.quantity, scaleFactor);
+    const scaledNum = parseQty(scaledRaw);
+    let displayQty = escapeHtml(scaledRaw);
+    let displayUnit = escapeHtml(ing.unit);
+    if (scaledNum !== null) {
+      const idx = ingredients.indexOf(ing);
+      const overrideUnit = unitOverrides.get(idx);
+      let result: { qty: number; unit: string } | null = null;
+      if (overrideUnit?.startsWith("~")) {
+        const targetUnit = overrideUnit.slice(1);
+        const ud = resolveUnit(ing.unit);
+        const den = findDensity(ing.item);
+        if (ud && den) result = convertViaDensity(scaledNum, ud.toBase, ud.dimension, targetUnit, den);
+      } else if (overrideUnit) {
+        result = convertToUnit(scaledNum, ing.unit, overrideUnit);
+      } else if (unitSystem !== "original") {
+        const sys = convertIngredient(scaledNum, ing.unit, unitSystem);
+        if (sys.unit !== ing.unit) result = sys;
+      }
+      if (result) {
+        displayQty = escapeHtml(formatQty(result.qty, isDecimalUnit(result.unit)));
+        displayUnit = escapeHtml(result.unit);
+      }
+    }
+    const parts = [displayQty, displayUnit, escapeHtml(ing.item)].filter(Boolean);
+    return `<span class="ing-ref">${parts.join(" ")}</span>`;
+  });
+}
+
 function renderPreviews() {
   if (!store) return;
   const doc = store.getDoc();
-  const instrMd = doc.instructions ?? "";
+  const instrMd = resolveIngredientRefs(doc.instructions ?? "", doc);
   const instrHtml = DOMPurify.sanitize(marked.parse(instrMd) as string);
   instrPreviewContainer.innerHTML = instrHtml || "<em>No instructions yet.</em>";
-  const notesMd = doc.notes ?? "";
+  const notesMd = resolveIngredientRefs(doc.notes ?? "", doc);
   const notesHtml = DOMPurify.sanitize(marked.parse(notesMd) as string);
   notesPreviewContainer.innerHTML = notesHtml || "<em>No notes yet.</em>";
 }
