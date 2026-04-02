@@ -789,7 +789,8 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
     extensions: [
       keymap.of([...defaultKeymap, ...historyKeymap]), history(),
       markdown(), appTheme, appSyntaxHighlighting, drawSelection(), highlightActiveLine(),
-      EditorView.lineWrapping, iBridge.extension, remoteCursorsExtension,
+      EditorView.lineWrapping, EditorView.contentAttributes.of({ spellcheck: "true" }),
+      iBridge.extension, remoteCursorsExtension,
       ingredientCompletions(() => {
         const d = store?.getDoc();
         return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];
@@ -798,7 +799,6 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
         if (update.selectionSet || update.docChanged) {
           const sel = update.state.selection.main;
           queuePresence({ field: "instructions", head: sel.head, anchor: sel.anchor });
-          // Doc change means a push is coming -- it will carry the cursor, so kill the fallback
           if (update.docChanged && presenceFallbackTimer) {
             clearTimeout(presenceFallbackTimer);
             presenceFallbackTimer = null;
@@ -837,7 +837,8 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
     extensions: [
       keymap.of([...defaultKeymap, ...historyKeymap]), history(),
       markdown(), appTheme, appSyntaxHighlighting, drawSelection(), highlightActiveLine(),
-      EditorView.lineWrapping, nBridge.extension, remoteCursorsExtension,
+      EditorView.lineWrapping, EditorView.contentAttributes.of({ spellcheck: "true" }),
+      nBridge.extension, remoteCursorsExtension,
       ingredientCompletions(() => {
         const d = store?.getDoc();
         return d?.ingredients?.map((ing: { item: string }) => ing.item).filter(Boolean) ?? [];

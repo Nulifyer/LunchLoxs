@@ -57,15 +57,6 @@ export async function selectRecipe(id: string) {
     pushSnapshot(recipeDocId);
   }
 
-  // Reconciliation: if recipe doc title/tags differ from catalog, update catalog
-  if (recipe.title && catalogEntry && (recipe.title !== catalogEntry.title || JSON.stringify(recipe.tags) !== JSON.stringify(catalogEntry.tags))) {
-    catalog?.change((doc) => {
-      const entry = doc.recipes?.find((r: any) => r.id === id);
-      if (entry) { entry.title = recipe.title; entry.tags = recipe.tags as any; }
-    });
-    pushSnapshot(catalogDocId());
-  }
-
   openRecipe(recipeStore, id, canEditActiveBook(), activeBook?.name, getAllTags());
   // Load ingredient suggestions in background (don't block rendering or onChange registration)
   getAllIngredientNames().then((names) => setIngredientSuggestions(names)).catch(() => {});

@@ -193,7 +193,7 @@
             </div>
             <div class="detail-title-row">
               <h2 id="recipe-title"></h2>
-              <input type="text" id="recipe-title-input" class="meta-edit-title" hidden />
+              <input type="text" id="recipe-title-input" class="meta-edit-title" spellcheck="true" hidden />
               <button id="page-edit-btn" class="sm">Edit</button>
               <div id="recipe-actions-slot" style="display:flex"></div>
             </div>
@@ -254,7 +254,7 @@
       <header><strong>New Recipe</strong></header>
       <form id="add-recipe-form" method="dialog">
         <label for="new-title">Title</label>
-        <input type="text" id="new-title" required />
+        <input type="text" id="new-title" spellcheck="true" required />
         <label>Tags</label>
         <tag-input id="new-tags" placeholder="Add a tag…"></tag-input>
         <div class="dialog-grid-3">
@@ -295,7 +295,7 @@
 
       <form id="create-book-form" style="margin-top:0.75rem">
         <label for="new-book-name" class="sr-only">New book name</label>
-        <input type="text" id="new-book-name" placeholder="New book name" required />
+        <input type="text" id="new-book-name" placeholder="New book name" spellcheck="true" required />
         <button type="submit" style="width:100%;margin-top:0.4rem">Create Book</button>
       </form>
     </article>

@@ -340,7 +340,11 @@ export function initBooks() {
 
   // Back button
   (document.getElementById("back-to-books") as HTMLButtonElement).addEventListener("click", showBookList);
-  manageBooksBtn.addEventListener("click", () => { renderBookManageList(); openModal(manageBooksDialog); });
+  manageBooksBtn.addEventListener("click", () => {
+    renderBookManageList();
+    openModal(manageBooksDialog);
+    (document.getElementById("new-book-name") as HTMLInputElement).focus();
+  });
 
   // Bulk actions
   (document.getElementById("book-bulk-export") as HTMLButtonElement).addEventListener("click", async () => {

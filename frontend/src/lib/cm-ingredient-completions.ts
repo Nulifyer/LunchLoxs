@@ -50,5 +50,6 @@ export function ingredientCompletions(getNames: () => string[]) {
   return autocompletion({
     override: [complete],
     activateOnTyping: true,
+    closeOnBlur: false,
   });
 }

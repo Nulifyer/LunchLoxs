@@ -8,7 +8,7 @@
       "mode": "debug",
       "program": "${workspaceFolder}/backend/cmd/server",
       "env": {
-        "DATABASE_URL": "postgres://postgres:postgres@localhost:5432/todos?sslmode=disable",
+        "DATABASE_URL": "postgres://postgres:postgres@localhost:5432/localdb?sslmode=disable",
         "PORT": "8000",
         "FRONTEND_URL": "http://localhost:5000",
         "BIND_HOST": "127.0.0.1"

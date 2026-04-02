@@ -74,7 +74,7 @@ TEMPLATE.innerHTML = `
     background: var(--bg-hover);
   }
 </style>
-<input type="text" autocomplete="off" />
+<input type="text" autocomplete="off" spellcheck="true" />
 <div class="dropdown"></div>
 `;
 
@@ -222,7 +222,7 @@ export class AutocompleteInput extends HTMLElement {
       }
       // If no active option, let Enter propagate (e.g. for ghost row commit)
     } else if (e.key === "Tab") {
-      if (dropdownOpen && count > 0) {
+      if (dropdownOpen && count > 0 && this.input.value.trim()) {
         e.preventDefault();
         const filtered = this._filteredOptions();
         // Accept the highlighted option, or the first one if none highlighted
