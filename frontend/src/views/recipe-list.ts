@@ -3,7 +3,7 @@
  */
 
 import type { CatalogEntry } from "../types";
-import { escapeHtml } from "../lib/html";
+
 import { search, hybridSearch, getIndexSize, type SearchResult } from "../lib/search";
 import { getPushQueue, getActiveBook } from "../state";
 import { createDropdown } from "../lib/dropdown";
@@ -211,12 +211,6 @@ export function renderRecipeList(recipes: CatalogEntry[], selectedId: string | n
     titleRow.appendChild(dot);
 
     li.appendChild(titleRow);
-
-    const small = document.createElement("small");
-    const tagHtml = (recipe.tags ?? []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
-    small.innerHTML = tagHtml;
-    li.appendChild(small);
-
     container.appendChild(li);
   }
 }
