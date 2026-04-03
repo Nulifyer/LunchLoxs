@@ -4,7 +4,7 @@
     {
       "label": "infra",
       "type": "shell",
-      "command": "podman compose up -d postgres migrate pgadmin",
+      "command": "podman compose up -d postgres migrate pgadmin browserless",
       "problemMatcher": [],
       "group": "build"
     },

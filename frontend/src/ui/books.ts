@@ -8,6 +8,7 @@ import { openModal, closeModal } from "../lib/modal";
 import { createDropdown } from "../lib/dropdown";
 import { removeBookFromIndex } from "../lib/search";
 import { onCatalogChanged } from "../views/recipe-detail";
+import { setRecipeActionsEnabled } from "../views/recipe-list";
 import { toastSuccess, toastWarning, toastError } from "../lib/toast";
 import { parseRecipeMarkdown } from "../lib/export";
 import {
@@ -94,8 +95,7 @@ function showRecipeView() {
 
 export function renderBookSelect() {
   const activeBook = getActiveBook();
-  const addRecipeBtn = document.getElementById("add-recipe-btn") as HTMLButtonElement;
-  addRecipeBtn.disabled = !activeBook;
+  setRecipeActionsEnabled(!!activeBook);
   const pq = getPushQueue();
 
   if (activeBook) {

@@ -34,7 +34,25 @@ func securityHeaders(next http.Handler, frontendURL string) http.Handler {
 	})
 }
 
-func NewMux(queries *db.Queries, frontendURL string, rateConfig syncpkg.RateConfig) http.Handler {
+type muxConfig struct {
+	browserlessEndpoint string
+	browserlessToken    string
+}
+
+// MuxOption configures optional NewMux behaviour.
+type MuxOption func(*muxConfig)
+
+// WithBrowserless sets the Browserless endpoint for JS-rendered page fetching.
+func WithBrowserless(endpoint, token string) MuxOption {
+	return func(c *muxConfig) { c.browserlessEndpoint = endpoint; c.browserlessToken = token }
+}
+
+func NewMux(queries *db.Queries, frontendURL string, rateConfig syncpkg.RateConfig, opts ...MuxOption) http.Handler {
+	cfg := muxConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	hub := syncpkg.NewHub()
 	mux := http.NewServeMux()
 
@@ -143,7 +161,10 @@ func NewMux(queries *db.Queries, frontendURL string, rateConfig syncpkg.RateConf
 		w.Write(data)
 	})
 
-	// CORS preflight for blob endpoints
+	// -- Proxy endpoint (recipe URL import) --
+	mux.HandleFunc("POST /api/proxy/fetch", proxyFetchHandler(queries, corsOrigin, cfg.browserlessEndpoint, cfg.browserlessToken))
+
+	// CORS preflight for API endpoints
 	mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {
 		setCORSHeaders(w, corsOrigin)
 		w.WriteHeader(http.StatusNoContent)
@@ -176,7 +197,7 @@ func authenticateHTTP(r *http.Request, queries *db.Queries, w http.ResponseWrite
 
 func setCORSHeaders(w http.ResponseWriter, origin string) {
 	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "X-User-ID, X-Auth-Hash, Content-Type")
 }
 

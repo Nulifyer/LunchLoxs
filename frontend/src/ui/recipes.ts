@@ -8,6 +8,8 @@ import { initRecipeDetail, openRecipe, closeRecipe, setIngredientSuggestions } f
 import { recipeToMarkdown, extractBlobChecksums, mimeToExt } from "../lib/export";
 import { loadBlobDecrypted } from "../lib/blob-client";
 import { showConfirm, showSelect } from "../lib/dialogs";
+import { handleImportFromUrl } from "../lib/url-import";
+import { handleImportToBook } from "../import-export";
 import { openModal, closeModal } from "../lib/modal";
 import { toastSuccess, toastWarning, toastError } from "../lib/toast";
 import {
@@ -170,6 +172,18 @@ export function initRecipes() {
       if (!canEditActiveBook()) { toastWarning("You don't have edit access to this book."); return; }
       newTagInput.suggestions = getAllTags();
       openModal(addDialog);
+    },
+    onImportUrl: () => {
+      const book = getActiveBook();
+      if (!book) { toastWarning("Create a book first."); return; }
+      if (!canEditActiveBook()) { toastWarning("You don't have edit access to this book."); return; }
+      handleImportFromUrl(book);
+    },
+    onImportFile: () => {
+      const book = getActiveBook();
+      if (!book) { toastWarning("Create a book first."); return; }
+      if (!canEditActiveBook()) { toastWarning("You don't have edit access to this book."); return; }
+      handleImportToBook(book);
     },
   });
 

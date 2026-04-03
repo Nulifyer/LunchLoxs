@@ -38,6 +38,4 @@ pgdata/
 .claude/
 
 # Dev Data
-dev-data/*.zip
-dev-data/*.jpg
-dev-data/*.png
+dev-data/*

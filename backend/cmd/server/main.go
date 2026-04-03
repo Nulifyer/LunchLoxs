@@ -80,7 +80,14 @@ func main() {
 	slog.Info("rate limiting", "per_sec", rateConfig.PerSec, "burst", rateConfig.Burst)
 
 	queries := db.New(pool)
-	mux := server.NewMux(queries, frontendURL, rateConfig)
+
+	var muxOpts []server.MuxOption
+	if browserlessEndpoint := os.Getenv("BROWSERLESS_ENDPOINT"); browserlessEndpoint != "" {
+		token := os.Getenv("BROWSERLESS_TOKEN")
+		slog.Info("Browserless JS rendering enabled", "endpoint", browserlessEndpoint)
+		muxOpts = append(muxOpts, server.WithBrowserless(browserlessEndpoint, token))
+	}
+	mux := server.NewMux(queries, frontendURL, rateConfig, muxOpts...)
 
 	addr := fmt.Sprintf("%s:%s", bindHost, port)
 	srv := &http.Server{

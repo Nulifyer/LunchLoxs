@@ -3,6 +3,7 @@ declare const self: ServiceWorkerGlobalScope;
 
 const CACHE_NAME = "recipes-v1";
 const MODEL_CACHE = "transformers-cache";
+const BLOB_CACHE = "blob-cache-v1";
 const VERSION_CHECK_INTERVAL = 60 * 1000;
 const STATIC_FALLBACK = ["/", "/index.html", "/index.js", "/app.css"];
 
@@ -29,7 +30,7 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
       try {
-        const res = await fetch("/asset-manifest.json");
+        const res = await fetch("/asset-manifest.json", { cache: "no-store" });
         const manifest = await res.json();
         await cache.addAll(manifest.assets);
       } catch {
@@ -40,16 +41,15 @@ self.addEventListener("install", (event) => {
   self.skipWaiting();
 });
 
-// Activate -- clean old caches
+// Activate -- clean old caches, preserve blobs and model cache
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME && k !== MODEL_CACHE && k !== "blob-cache-v1").map((k) => caches.delete(k)))
+      Promise.all(keys.filter((k) => k !== CACHE_NAME && k !== MODEL_CACHE && k !== BLOB_CACHE).map((k) => caches.delete(k)))
     )
   );
   self.clients.claim();
-  // Only poll for version changes in production
-  if (!isDev) startVersionCheck();
+  startVersionCheck();
 });
 
 // Critical app assets that must be fresh when online
@@ -73,7 +73,7 @@ self.addEventListener("fetch", (event) => {
         return fetch(request).then((response) => {
           if (response.ok) {
             const clone = response.clone();
-            caches.open("blob-cache-v1").then((cache) => cache.put(request, clone));
+            caches.open(BLOB_CACHE).then((cache) => cache.put(request, clone));
           }
           return response;
         }).catch(() => new Response("Offline", { status: 503 }));
@@ -147,7 +147,8 @@ self.addEventListener("message", (event) => {
 
 function startVersionCheck() {
   checkForUpdate();
-  setInterval(checkForUpdate, VERSION_CHECK_INTERVAL);
+  const interval = isDev ? 10 * 1000 : VERSION_CHECK_INTERVAL;
+  setInterval(checkForUpdate, interval);
 }
 
 async function checkForUpdate() {
@@ -164,9 +165,12 @@ async function checkForUpdate() {
 
     if (version !== local) {
       knownVersion = version;
-      const keys = await caches.keys();
-      await Promise.all(keys.filter((k) => k !== MODEL_CACHE).map((k) => caches.delete(k)));
 
+      // Clear app caches but preserve immutable blob cache and model cache
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((k) => k !== MODEL_CACHE && k !== BLOB_CACHE).map((k) => caches.delete(k)));
+
+      // Pre-cache new assets before notifying clients
       try {
         const manifestRes = await fetch("/asset-manifest.json", { cache: "no-store" });
         const manifest = await manifestRes.json();
@@ -177,6 +181,7 @@ async function checkForUpdate() {
         await cache.addAll(STATIC_FALLBACK);
       }
 
+      // Notify clients only after new assets are cached and ready
       const clients = await self.clients.matchAll({ type: "window" });
       for (const client of clients) {
         client.postMessage({ type: "update-available", version });

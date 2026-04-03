@@ -6,24 +6,37 @@ import type { CatalogEntry } from "../types";
 import { escapeHtml } from "../lib/html";
 import { search, hybridSearch, getIndexSize, type SearchResult } from "../lib/search";
 import { getPushQueue, getActiveBook } from "../state";
+import { createDropdown } from "../lib/dropdown";
 
 export interface RecipeListCallbacks {
   onSelect: (id: string, vaultId?: string) => void;
   onAdd: () => void;
+  onImportUrl?: () => void;
+  onImportFile?: () => void;
 }
 
-const container = document.getElementById("recipe-list") as HTMLUListElement;
-const searchInput = document.getElementById("search-input") as HTMLInputElement;
-const searchResults = document.getElementById("search-results") as HTMLUListElement;
-const addBtn = document.getElementById("add-recipe-btn") as HTMLButtonElement;
+let container: HTMLUListElement;
+let searchInput: HTMLInputElement;
+let searchResults: HTMLUListElement;
 
+let recipeDropdownBtn: HTMLButtonElement;
 let callbacks: RecipeListCallbacks;
 let currentSearch = "";
 let activeIdx = -1;
 
 export function initRecipeList(cb: RecipeListCallbacks) {
   callbacks = cb;
-  addBtn.addEventListener("click", () => callbacks.onAdd());
+  container = document.getElementById("recipe-list") as HTMLUListElement;
+  searchInput = document.getElementById("search-input") as HTMLInputElement;
+  searchResults = document.getElementById("search-results") as HTMLUListElement;
+
+  recipeDropdownBtn = createDropdown([
+    { label: "New Recipe", action: () => callbacks.onAdd() },
+    { label: "", action: () => {}, separator: true },
+    { label: "Import from URL", action: () => callbacks.onImportUrl?.() },
+    { label: "Import File", action: () => callbacks.onImportFile?.() },
+  ], { label: "New +", className: "sm" });
+  document.getElementById("recipe-actions")?.appendChild(recipeDropdownBtn);
 
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   searchInput.addEventListener("input", () => {
@@ -164,6 +177,10 @@ function getMatchSnippet(_query: string, result: SearchResult): string {
       break;
   }
   return "";
+}
+
+export function setRecipeActionsEnabled(enabled: boolean) {
+  if (recipeDropdownBtn) recipeDropdownBtn.disabled = !enabled;
 }
 
 export function renderRecipeList(recipes: CatalogEntry[], selectedId: string | null) {

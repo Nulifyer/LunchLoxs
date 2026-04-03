@@ -70,6 +70,17 @@ services:
     networks:
       - app
 
+  browserless:
+    image: ghcr.io/browserless/chromium
+    restart: unless-stopped
+    profiles: ["scrape"]
+    environment:
+      TOKEN: ${BROWSERLESS_TOKEN:-}
+      CONCURRENT: "10"
+      TIMEOUT: "30000"
+    networks:
+      - app
+
   backend:
     image: ghcr.io/nulifyer/lunchloxs-backend:latest
     restart: unless-stopped
@@ -82,6 +93,8 @@ services:
       FRONTEND_HOST: ${FRONTEND_HOST:?Set FRONTEND_HOST in .env}
       FRONTEND_HTTPS: ${FRONTEND_HTTPS:-}
       BIND_HOST: "0.0.0.0"
+      BROWSERLESS_ENDPOINT: ${BROWSERLESS_ENDPOINT:-}
+      BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.backend.rule=Host(`${FRONTEND_HOST}`) && (PathPrefix(`/api`) || PathPrefix(`/ws`))"

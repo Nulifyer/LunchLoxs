@@ -2,7 +2,7 @@
  * Push / sync helpers -- delegates to PushQueue, plus catalog rendering.
  */
 
-import { renderRecipeList } from "../views/recipe-list";
+import { renderRecipeList, setRecipeActionsEnabled } from "../views/recipe-list";
 import {
   getDocMgr, getActiveBook,
   getSelectedRecipeId, getPushQueue,
@@ -64,5 +64,5 @@ export function renderCatalog(force = false) {
   renderRecipeList(recipes, selectedRecipeId);
   const recipeCount = document.getElementById("recipe-count") as HTMLElement;
   if (recipeCount) recipeCount.textContent = `${recipes.length} recipe${recipes.length !== 1 ? "s" : ""}`;
-  (document.getElementById("add-recipe-btn") as HTMLButtonElement).disabled = !canEditActiveBook();
+  setRecipeActionsEnabled(canEditActiveBook());
 }

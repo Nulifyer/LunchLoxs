@@ -52,6 +52,17 @@ services:
     networks:
       - app
 
+  browserless:
+    image: ghcr.io/browserless/chromium
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      TOKEN: dev-token
+      CONCURRENT: "5"
+      TIMEOUT: "30000"
+    networks:
+      - app
+
   backend:
     build:
       context: .
@@ -65,6 +76,8 @@ services:
       FRONTEND_HOST: localhost:5000
       FRONTEND_HTTPS: "true"
       BIND_HOST: "0.0.0.0"
+      BROWSERLESS_ENDPOINT: http://browserless:3000
+      BROWSERLESS_TOKEN: dev-token
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.backend.rule=Host(`localhost`)"

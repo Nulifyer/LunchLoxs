@@ -52,42 +52,52 @@ document.addEventListener("keydown", (e) => {
 
 // -- Service worker --
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/service-worker.js").then((reg) => {
-    // When a new SW is found and installed, trigger a version check
-    reg.addEventListener("updatefound", () => {
-      const installing = reg.installing;
-      if (!installing) return;
-      installing.addEventListener("statechange", () => {
-        if (installing.state === "activated") {
-          installing.postMessage("check-update");
-        }
-      });
+  const isDev = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+
+  if (isDev) {
+    // Dev mode: unregister any existing SW so dev server controls caching via HTTP headers.
+    // Offline testing can be done via DevTools → Application → Service Worker → "Offline" checkbox.
+    navigator.serviceWorker.getRegistrations().then((regs) => {
+      for (const reg of regs) reg.unregister();
     });
-    // Check on first load once the SW is active
-    if (reg.active) reg.active.postMessage("check-update");
-  }).catch(console.error);
+  } else {
+    navigator.serviceWorker.register("/service-worker.js").then((reg) => {
+      // When a new SW is found and installed, trigger a version check
+      reg.addEventListener("updatefound", () => {
+        const installing = reg.installing;
+        if (!installing) return;
+        installing.addEventListener("statechange", () => {
+          if (installing.state === "activated") {
+            installing.postMessage("check-update");
+          }
+        });
+      });
+      // Check on first load once the SW is active
+      if (reg.active) reg.active.postMessage("check-update");
+    }).catch(console.error);
 
-  navigator.serviceWorker.addEventListener("message", (event) => {
-    if (event.data?.type === "update-available") {
-      if (!getSessionKeys()) {
-        // Not logged in — safe to auto-reload
-        location.reload();
-        return;
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      if (event.data?.type === "update-available") {
+        if (!getSessionKeys()) {
+          // Not logged in — safe to auto-reload
+          location.reload();
+          return;
+        }
+        // Logged in — show banner so user can reload when ready
+        if (document.querySelector(".update-banner")) return;
+        const banner = document.createElement("div"); banner.className = "update-banner";
+        banner.textContent = "New version ready. ";
+        const btn = document.createElement("button"); btn.textContent = "Refresh"; btn.addEventListener("click", () => location.reload());
+        banner.appendChild(btn); document.body.prepend(banner);
       }
-      // Logged in — show banner so user can reload when ready
-      if (document.querySelector(".update-banner")) return;
-      const banner = document.createElement("div"); banner.className = "update-banner";
-      banner.textContent = "New version available. ";
-      const btn = document.createElement("button"); btn.textContent = "Refresh"; btn.addEventListener("click", () => location.reload());
-      banner.appendChild(btn); document.body.prepend(banner);
-    }
-  });
+    });
 
-  // Check for updates when the user returns to the tab/app
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") {
-      navigator.serviceWorker.controller?.postMessage("visibility-visible");
-      navigator.serviceWorker.getRegistration().then((reg) => reg?.update());
-    }
-  });
+    // Check for updates when the user returns to the tab/app
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        navigator.serviceWorker.controller?.postMessage("visibility-visible");
+        navigator.serviceWorker.getRegistration().then((reg) => reg?.update());
+      }
+    });
+  }
 }
