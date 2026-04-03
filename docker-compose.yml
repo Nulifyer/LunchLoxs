@@ -52,6 +52,16 @@ services:
     networks:
       - app
 
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    command: ["--model", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "8192", "--n-predict", "4096", "--threads", "8"]
+    volumes:
+      - ./dev-data/models/Qwen3-8B-Q4_K_M.gguf:/models/model.gguf:ro
+    ports:
+      - "127.0.0.1:8081:8080"
+    networks:
+      - app
+
   browserless:
     image: ghcr.io/browserless/chromium
     ports:
@@ -76,6 +86,7 @@ services:
       FRONTEND_HOST: localhost:5000
       FRONTEND_HTTPS: "true"
       BIND_HOST: "0.0.0.0"
+      LLM_ENDPOINT: http://llama:8080
       BROWSERLESS_ENDPOINT: http://browserless:3000
       BROWSERLESS_TOKEN: dev-token
     labels:

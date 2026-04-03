@@ -31,6 +31,46 @@ export function extractRecipeFromHtml(html: string, sourceUrl: string): ScrapedR
   return extractFromJsonLd(doc) ?? extractFromMicrodata(doc) ?? null;
 }
 
+/** Extract raw JSON-LD recipe object from HTML (for LLM enhancement).
+ *  Returns trimmed JSON string, or null if no recipe JSON-LD found. */
+export function extractRawJsonLd(html: string): string | null {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
+  for (const script of scripts) {
+    try {
+      const data = JSON.parse(script.textContent ?? "");
+      const recipe = findRecipeInJsonLd(data);
+      if (recipe) {
+        // Strip non-essential fields to reduce token count
+        const trimmed = { ...recipe };
+        for (const key of ["@context", "video", "publisher", "review", "aggregateRating",
+          "mainEntityOfPage", "datePublished", "dateModified", "author", "nutrition"]) {
+          delete trimmed[key];
+        }
+        return JSON.stringify(trimmed);
+      }
+    } catch {
+      // Skip invalid JSON
+    }
+  }
+  return null;
+}
+
+/** Clean HTML to plain text for LLM extraction (non-JSON-LD sites). */
+export function cleanHtmlForLlm(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const title = doc.querySelector("title")?.textContent?.trim() ?? "";
+  for (const tag of ["script", "style", "nav", "footer", "header", "aside", "iframe", "svg"]) {
+    doc.querySelectorAll(tag).forEach((el) => el.remove());
+  }
+  let text = doc.body?.textContent ?? "";
+  text = text.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  let result = "";
+  if (title) result += `Title: ${title}\n\n`;
+  result += text;
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // JSON-LD extraction
 // ---------------------------------------------------------------------------
@@ -239,6 +279,20 @@ export function parseRecipeYield(val: any): number {
   return match ? parseInt(match[1]!, 10) : 4; // default to 4 servings
 }
 
+/** Extract first image URL from various Schema.org image formats. */
+function extractStepImageUrl(image: any): string | undefined {
+  if (!image) return undefined;
+  if (typeof image === "string") return image;
+  if (image.url) return String(image.url);
+  if (Array.isArray(image)) {
+    for (const item of image) {
+      if (typeof item === "string") return item;
+      if (item?.url) return String(item.url);
+    }
+  }
+  return undefined;
+}
+
 /** Normalize various instruction formats to numbered markdown text.
  *  Embeds [IMAGE: url] markers inline when HowToStep has an image field. */
 function normalizeInstructions(data: any): { text: string; stepImageUrls: string[] } {
@@ -270,10 +324,10 @@ function normalizeInstructions(data: any): { text: string; stepImageUrls: string
       } else if (item && typeof item === "object") {
         // HowToStep
         if (item.text) {
-          const imgUrl = typeof item.image === "string" ? item.image : item.image?.url;
+          const imgUrl = extractStepImageUrl(item.image);
           addStep(stripHtml(String(item.text)), imgUrl);
         } else if (item.name && !item.itemListElement) {
-          const imgUrl = typeof item.image === "string" ? item.image : item.image?.url;
+          const imgUrl = extractStepImageUrl(item.image);
           addStep(stripHtml(String(item.name)), imgUrl);
         }
         // HowToSection
@@ -282,7 +336,7 @@ function normalizeInstructions(data: any): { text: string; stepImageUrls: string
             if (typeof subItem === "string") {
               addStep(stripHtml(subItem));
             } else if (subItem?.text) {
-              const imgUrl = typeof subItem.image === "string" ? subItem.image : subItem.image?.url;
+              const imgUrl = extractStepImageUrl(subItem.image);
               addStep(stripHtml(String(subItem.text)), imgUrl);
             }
           }

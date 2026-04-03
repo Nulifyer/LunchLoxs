@@ -12,6 +12,7 @@
         "PORT": "8000",
         "FRONTEND_HOST": "localhost:5000",
         "BIND_HOST": "127.0.0.1",
+        "LLM_ENDPOINT": "http://localhost:8081",
         "BROWSERLESS_ENDPOINT": "http://localhost:3000",
         "BROWSERLESS_TOKEN": "dev-token"
       }

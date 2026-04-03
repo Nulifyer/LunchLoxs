@@ -18,11 +18,13 @@ import (
 )
 
 const (
-	proxyTimeout    = 15 * time.Second
-	proxyMaxBody    = 5 << 20 // 5 MB
-	proxyMaxURL     = 2048
-	proxyRateLimit  = 10 // requests per minute per user
-	proxyRateWindow = time.Minute
+	proxyTimeout      = 15 * time.Second
+	proxyMaxBody      = 5 << 20  // 5 MB
+	proxyMaxURL       = 2048
+	proxyRateLimit    = 10 // requests per minute per user
+	proxyRateWindow   = time.Minute
+	llmTimeout        = 10 * time.Minute
+	llmMaxRequestBody = 200 << 10 // 200 KB
 )
 
 var chromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -267,4 +269,187 @@ func fetchViaBrowserless(ctx context.Context, client *http.Client, endpoint, tok
 	}
 
 	return data, resp.Header.Get("Content-Type"), nil
+}
+
+// proxyExtractHandler handles POST /api/proxy/extract.
+// Forwards recipe data to an OpenAI-compatible LLM endpoint for enhanced extraction.
+// Returns 501 if no LLM endpoint is configured.
+func proxyExtractHandler(queries *db.Queries, corsOrigin string, llmEndpoint string) http.HandlerFunc {
+	if llmEndpoint == "" {
+		return func(w http.ResponseWriter, r *http.Request) {
+			setCORSHeaders(w, corsOrigin)
+			http.Error(w, "LLM extraction not configured", http.StatusNotImplemented)
+		}
+	}
+
+	llmURL := strings.TrimRight(llmEndpoint, "/") + "/v1/chat/completions"
+	client := &http.Client{Timeout: llmTimeout}
+
+	extractPrompt := `You are a recipe data processor. You receive either raw JSON-LD recipe data or cleaned HTML text from a recipe page. Produce clean structured JSON.
+
+Return ONLY valid JSON with this exact structure:
+{
+  "title": "Recipe Name",
+  "description": "Brief description",
+  "servings": 4,
+  "prepMinutes": 15,
+  "cookMinutes": 30,
+  "ingredients": [
+    {"quantity": "2", "unit": "cup", "item": "all-purpose flour"},
+    {"quantity": "1", "unit": "tsp", "item": "salt"},
+    {"quantity": "3", "unit": "", "item": "large eggs"}
+  ],
+  "instructions": "1. First step\n[IMAGE: https://example.com/step1.jpg]\n2. Second step",
+  "tags": ["mexican", "quick"]
+}
+
+Rules:
+- ingredients: Parse each ingredient string into separate quantity, unit, and item fields. quantity is just the number as a string (e.g. "2", "1/2", "1 1/2"). unit is the measurement word, lowercase singular (e.g. "cup", "tbsp", "tsp", "oz", "lb", "g", "ml"). item is the ingredient name with any prep notes (e.g. "onion, diced"). If the source text does not specify a quantity, try to infer a reasonable default from context or common cooking knowledge (e.g. "salt" -> "1", "tsp"; "large flour tortillas" -> "2", ""). Use empty string only if truly unknown.
+- instructions: Numbered steps as a single string. After each step that has an associated image, add the image URL on its own line as [IMAGE: url]. Use the first image URL from each step if multiple are provided.
+- tags: Combine recipeCategory, recipeCuisine, and keywords into a flat lowercase list. Remove duplicates.
+- Do NOT invent instructions or ingredients not present in the source. You MAY infer reasonable quantities for ingredients that lack them.
+- Return ONLY the JSON object. No markdown fencing, no explanation.`
+
+	enhancePrompt := `You are a recipe text enhancer. You receive a JSON recipe with an ingredients array and an instructions string. Your job is to tag ingredient references in the instructions.
+
+For every mention of an ingredient in the instructions text, wrap it with @[item name] where "item name" matches the ingredient's "item" field exactly (case-insensitive match, use the exact item field value).
+
+Example input ingredients: [{"item": "olive oil"}, {"item": "flour tortillas"}, {"item": "grated cheese"}]
+Example input instructions: "1. Heat oil in a pan. Place a tortilla in the pan.\n2. Sprinkle cheese on top."
+Example output instructions: "1. Heat @[olive oil] in a pan. Place a @[flour tortillas] in the pan.\n2. Sprinkle @[grated cheese] on top."
+
+Rules:
+- Only tag ingredients that appear in the ingredients list. Do not invent tags.
+- Match ingredient names flexibly (e.g. "cheese" matches item "grated cheese", "tortilla" matches "flour tortillas").
+- Do NOT modify anything else — keep all step numbers, [IMAGE: url] markers, and text exactly as-is.
+- Return ONLY the modified instructions string. No JSON wrapping, no explanation, no markdown.`
+
+	// callLLM sends a system+user prompt and returns the raw content string.
+	callLLM := func(ctx context.Context, system, user string) (string, error) {
+		llmReq := map[string]any{
+			"messages": []map[string]string{
+				{"role": "system", "content": system},
+				{"role": "user", "content": "/no_think\n" + user},
+			},
+			"temperature": 0,
+			"max_tokens":  4096,
+		}
+		llmBody, err := json.Marshal(llmReq)
+		if err != nil {
+			return "", err
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", llmURL, bytes.NewReader(llmBody))
+		if err != nil {
+			return "", err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			return "", fmt.Errorf("LLM request failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("LLM returned %d", resp.StatusCode)
+		}
+
+		var llmResp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, proxyMaxBody)).Decode(&llmResp); err != nil {
+			return "", fmt.Errorf("failed to parse LLM response: %w", err)
+		}
+		if len(llmResp.Choices) == 0 {
+			return "", fmt.Errorf("LLM returned no choices")
+		}
+
+		content := strings.TrimSpace(llmResp.Choices[0].Message.Content)
+		// Strip markdown fences
+		if strings.HasPrefix(content, "```") {
+			lines := strings.Split(content, "\n")
+			if len(lines) >= 3 {
+				content = strings.Join(lines[1:len(lines)-1], "\n")
+			}
+		}
+		return content, nil
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORSHeaders(w, corsOrigin)
+
+		userID, ok := authenticateHTTP(r, queries, w)
+		if !ok {
+			return
+		}
+
+		if !getUserBucket(userID).allow() {
+			http.Error(w, "rate limit exceeded, try again later", http.StatusTooManyRequests)
+			return
+		}
+
+		var req struct {
+			Text string `json:"text"`
+		}
+		body := http.MaxBytesReader(w, r.Body, llmMaxRequestBody)
+		if err := json.NewDecoder(body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if len(req.Text) < 20 {
+			http.Error(w, "text too short", http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), llmTimeout)
+		defer cancel()
+
+		// Pass 1: Extract structured recipe data
+		extracted, err := callLLM(ctx, extractPrompt, "Process this recipe data:\n\n"+req.Text)
+		if err != nil {
+			slog.Error("proxy: LLM extract failed", "error", err)
+			http.Error(w, "LLM extraction failed", http.StatusBadGateway)
+			return
+		}
+
+		// Validate extracted JSON
+		var recipe map[string]any
+		if err := json.Unmarshal([]byte(extracted), &recipe); err != nil {
+			slog.Error("proxy: LLM returned invalid JSON", "error", err, "content", extracted[:min(len(extracted), 200)])
+			http.Error(w, "LLM returned invalid data", http.StatusBadGateway)
+			return
+		}
+		title, _ := recipe["title"].(string)
+		if title == "" {
+			http.Error(w, "LLM could not extract a recipe", http.StatusUnprocessableEntity)
+			return
+		}
+
+		// Pass 2: Enhance instructions with ingredient tagging
+		instructions, _ := recipe["instructions"].(string)
+		ingredients, _ := recipe["ingredients"].([]any)
+		if instructions != "" && len(ingredients) > 0 {
+			ingredientJSON, _ := json.Marshal(ingredients)
+			enhanceInput := "Ingredients:\n" + string(ingredientJSON) + "\n\nInstructions:\n" + instructions
+			enhanced, err := callLLM(ctx, enhancePrompt, enhanceInput)
+			if err == nil && len(enhanced) > 20 {
+				recipe["instructions"] = enhanced
+				// Re-serialize
+				extracted, _ = func() (string, error) {
+					b, e := json.Marshal(recipe)
+					return string(b), e
+				}()
+			} else {
+				slog.Debug("proxy: LLM enhance skipped", "error", err)
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(extracted))
+	}
 }

@@ -35,12 +35,18 @@ func securityHeaders(next http.Handler, frontendURL string) http.Handler {
 }
 
 type muxConfig struct {
+	llmEndpoint         string
 	browserlessEndpoint string
 	browserlessToken    string
 }
 
 // MuxOption configures optional NewMux behaviour.
 type MuxOption func(*muxConfig)
+
+// WithLLMEndpoint sets an OpenAI-compatible endpoint for LLM-enhanced recipe extraction.
+func WithLLMEndpoint(endpoint string) MuxOption {
+	return func(c *muxConfig) { c.llmEndpoint = endpoint }
+}
 
 // WithBrowserless sets the Browserless endpoint for JS-rendered page fetching.
 func WithBrowserless(endpoint, token string) MuxOption {
@@ -161,8 +167,9 @@ func NewMux(queries *db.Queries, frontendURL string, rateConfig syncpkg.RateConf
 		w.Write(data)
 	})
 
-	// -- Proxy endpoint (recipe URL import) --
+	// -- Proxy endpoints (recipe URL import) --
 	mux.HandleFunc("POST /api/proxy/fetch", proxyFetchHandler(queries, corsOrigin, cfg.browserlessEndpoint, cfg.browserlessToken))
+	mux.HandleFunc("POST /api/proxy/extract", proxyExtractHandler(queries, corsOrigin, cfg.llmEndpoint))
 
 	// CORS preflight for API endpoints
 	mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {

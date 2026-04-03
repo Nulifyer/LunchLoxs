@@ -17,6 +17,21 @@
 #   4. Run: docker compose -f docker-compose.prod.yml up -d
 #
 # Images are pulled from GHCR. To pin a version, replace :latest with a tag (e.g. :v0.1.0)
+#
+# Optional: Recipe URL Import with LLM enhancement
+#   Enables "Import from URL" with AI-powered ingredient parsing and step image placement.
+#   Requires the "scrape" profile and optionally the "llm" profile.
+#
+#   Without LLM (basic JSON-LD extraction only):
+#     docker compose -f docker-compose.prod.yml --profile scrape up -d
+#
+#   With LLM (enhanced extraction via Qwen3-8B):
+#     docker compose -f docker-compose.prod.yml --profile scrape --profile llm up -d
+#     Set LLM_ENDPOINT=http://llama:8080 in .env
+#
+#   The recommended model is Qwen3-8B-Q4_K_M (~5GB, needs ~6GB RAM).
+#   Build: docker build -t lunchloxs-llama docker/llama
+#   Any OpenAI-compatible endpoint works (e.g. Ollama, vLLM, or a remote API).
 
 services:
   traefik:
@@ -70,6 +85,14 @@ services:
     networks:
       - app
 
+  llama:
+    build:
+      context: docker/llama
+    restart: unless-stopped
+    profiles: ["llm"]
+    networks:
+      - app
+
   browserless:
     image: ghcr.io/browserless/chromium
     restart: unless-stopped
@@ -93,6 +116,7 @@ services:
       FRONTEND_HOST: ${FRONTEND_HOST:?Set FRONTEND_HOST in .env}
       FRONTEND_HTTPS: ${FRONTEND_HTTPS:-}
       BIND_HOST: "0.0.0.0"
+      LLM_ENDPOINT: ${LLM_ENDPOINT:-}
       BROWSERLESS_ENDPOINT: ${BROWSERLESS_ENDPOINT:-}
       BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-}
     labels:

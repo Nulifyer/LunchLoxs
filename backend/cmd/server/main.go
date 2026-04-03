@@ -82,6 +82,10 @@ func main() {
 	queries := db.New(pool)
 
 	var muxOpts []server.MuxOption
+	if llmEndpoint := os.Getenv("LLM_ENDPOINT"); llmEndpoint != "" {
+		slog.Info("LLM recipe enhancement enabled", "endpoint", llmEndpoint)
+		muxOpts = append(muxOpts, server.WithLLMEndpoint(llmEndpoint))
+	}
 	if browserlessEndpoint := os.Getenv("BROWSERLESS_ENDPOINT"); browserlessEndpoint != "" {
 		token := os.Getenv("BROWSERLESS_TOKEN")
 		slog.Info("Browserless JS rendering enabled", "endpoint", browserlessEndpoint)

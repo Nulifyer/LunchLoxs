@@ -1,12 +1,16 @@
 /**
  * Import a recipe from a URL.
  *
- * Flow: prompt URL → fetch via proxy → extract JSON-LD
- * → (optional) re-fetch with Browserless for JS-rendered pages
- * → download images → import into book.
+ * Flow:
+ *   1. Fetch HTML via proxy
+ *   2. Try JSON-LD / microdata extraction
+ *   3. If no JSON-LD, re-fetch with Browserless (JS rendering)
+ *   4. If LLM configured: send JSON-LD or cleaned HTML to LLM for enhanced extraction
+ *   5. If LLM not configured: use JSON-LD extraction as-is
+ *   6. Download step images, import into book
  */
 
-import { extractRecipeFromHtml } from "./recipe-scraper";
+import { extractRecipeFromHtml, extractRawJsonLd, cleanHtmlForLlm, type ScrapedRecipe } from "./recipe-scraper";
 import { processAsset } from "./asset-processing";
 import { storeBlob } from "./blob-client";
 import { getSessionKeys } from "./auth";
@@ -29,16 +33,65 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 async function proxyFetch(url: string, render = false): Promise<Response> {
-  const resp = await fetch(`${getApiBase()}/api/proxy/fetch`, {
+  return fetch(`${getApiBase()}/api/proxy/fetch`, {
     method: "POST",
     headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ url, render }),
   });
-  return resp;
+}
+
+/** Send text to LLM extract endpoint. Returns parsed recipe JSON or null. */
+async function llmExtract(text: string): Promise<ScrapedRecipe | null> {
+  try {
+    const resp = await fetch(`${getApiBase()}/api/proxy/extract`, {
+      method: "POST",
+      headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (resp.status === 501) return null; // LLM not configured
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return llmResponseToRecipe(data);
+  } catch {
+    return null;
+  }
+}
+
+/** Map LLM JSON response to ScrapedRecipe, extracting [IMAGE:] markers from instructions. */
+function llmResponseToRecipe(data: any): ScrapedRecipe {
+  const ingredients = Array.isArray(data.ingredients)
+    ? data.ingredients.map((ing: any) => ({
+        quantity: String(ing.quantity ?? ""),
+        unit: String(ing.unit ?? ""),
+        item: String(ing.item ?? ""),
+      }))
+    : [];
+
+  const imageUrls: string[] = [];
+  let instructions = String(data.instructions ?? "");
+
+  // Collect image URLs from [IMAGE:] markers in instructions
+  for (const match of instructions.matchAll(/\[IMAGE:\s*(.+?)\]/g)) {
+    const url = match[1]!;
+    if (!imageUrls.includes(url)) imageUrls.push(url);
+  }
+
+  const tags = Array.isArray(data.tags) ? data.tags.map((t: any) => String(t).toLowerCase()) : [];
+
+  return {
+    title: String(data.title ?? "Imported Recipe"),
+    description: String(data.description ?? ""),
+    servings: Number(data.servings) || 4,
+    prepMinutes: Number(data.prepMinutes) || 0,
+    cookMinutes: Number(data.cookMinutes) || 0,
+    ingredients,
+    instructions,
+    tags,
+    imageUrls,
+  };
 }
 
 export async function handleImportFromUrl(book: Book): Promise<void> {
-  // 1. Prompt for URL
   const url = await showPrompt("Paste a recipe URL:", {
     title: "Import from URL",
     placeholder: "https://www.example.com/recipe/...",
@@ -46,7 +99,6 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
   });
   if (!url) return;
 
-  // Validate URL
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
@@ -60,35 +112,53 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
 
   const loading = showLoading("Fetching recipe...", 0);
   try {
-    // 2. Fetch HTML through proxy
+    // 1. Fetch static HTML
     const resp = await proxyFetch(url);
     if (!resp.ok) {
       const status = resp.status;
       if (status === 403 || status === 429) {
         toastError("This site blocked the request. Try a different URL.");
       } else if (status === 400) {
-        const text = await resp.text();
-        toastError(text || "Invalid URL.");
+        toastError((await resp.text()) || "Invalid URL.");
       } else {
         toastError("Could not reach the URL. Please check it and try again.");
       }
       return;
     }
 
-    const html = await resp.text();
+    let html = await resp.text();
+    let rawJsonLd = extractRawJsonLd(html);
 
-    // 3. Try JSON-LD / microdata extraction on static HTML
-    loading.update("Extracting recipe...");
-    let recipe = extractRecipeFromHtml(html, url);
-
-    // 4. If no structured data, re-fetch with JS rendering (Browserless)
-    if (!recipe || !recipe.title) {
+    // 2. If no JSON-LD in static HTML, try Browserless rendering
+    if (!rawJsonLd) {
       loading.update("Rendering page...");
       const renderResp = await proxyFetch(url, true);
       if (renderResp.ok) {
-        const renderedHtml = await renderResp.text();
-        recipe = extractRecipeFromHtml(renderedHtml, url);
+        html = await renderResp.text();
+        rawJsonLd = extractRawJsonLd(html);
       }
+    }
+
+    // 3. Try LLM-enhanced extraction
+    let recipe: ScrapedRecipe | null = null;
+
+    if (rawJsonLd) {
+      // We have JSON-LD — try LLM enhancement first (better ingredient parsing, image placement)
+      loading.update("Enhancing recipe data...");
+      recipe = await llmExtract(rawJsonLd);
+    }
+
+    if (!recipe && !rawJsonLd) {
+      // No JSON-LD at all — try LLM on cleaned HTML as last resort
+      loading.update("Extracting recipe...");
+      const cleaned = cleanHtmlForLlm(html);
+      recipe = await llmExtract(cleaned);
+    }
+
+    // 4. Fall back to basic JSON-LD extraction (no LLM configured, or LLM failed)
+    if (!recipe) {
+      loading.update("Extracting recipe...");
+      recipe = extractRecipeFromHtml(html, url);
     }
 
     // 5. Check if we got anything
@@ -97,16 +167,14 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
       return;
     }
 
-    // 6. Download and process images, build url→blob checksum map
-    const imageUrls = recipe.imageUrls;
+    // 6. Download and process images
     const urlToChecksum = new Map<string, string>();
-
-    if (imageUrls.length > 0 && book.encKey) {
+    if (recipe.imageUrls.length > 0 && book.encKey) {
       loading.update("Downloading images...");
       const docMgrForBlobs = getDocMgr();
       if (docMgrForBlobs) {
         const db = docMgrForBlobs.getDb();
-        for (const imgUrl of imageUrls.slice(0, MAX_IMAGES)) {
+        for (const imgUrl of recipe.imageUrls.slice(0, MAX_IMAGES)) {
           try {
             const imgResp = await proxyFetch(imgUrl);
             if (!imgResp.ok) continue;
@@ -126,12 +194,11 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
       }
     }
 
-    // 7. Replace [IMAGE: url] markers in instructions with blob references
+    // 7. Replace [IMAGE: url] markers with blob references
     let instructions = recipe.instructions;
     for (const [imgUrl, checksum] of urlToChecksum) {
       instructions = instructions.replaceAll(`[IMAGE: ${imgUrl}]`, `![](blob:${checksum})`);
     }
-    // Remove any [IMAGE:] markers that weren't downloaded
     instructions = instructions.replace(/\[IMAGE: [^\]]+\]\n?/g, "");
 
     // 8. Import into book
@@ -158,7 +225,6 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
       toastSuccess(`Imported "${recipe.title}"`);
       renderCatalog();
 
-      // Select the newly imported recipe
       const docMgr = getDocMgr();
       if (docMgr) {
         const catalog = docMgr.get<BookCatalog>(`${book.vaultId}/catalog`);
