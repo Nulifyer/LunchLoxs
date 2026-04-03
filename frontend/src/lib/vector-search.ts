@@ -20,6 +20,7 @@ let worker: Worker | null = null;
 let embeddingDb: IDBDatabase | null = null;
 let modelReady = false;
 let indexingComplete = false;
+let hasShownReadyToast = false;
 let msgId = 0;
 const pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>();
 
@@ -228,7 +229,10 @@ async function processQueue(): Promise<void> {
   if (queue.length === 0 && !indexingComplete) {
     indexingComplete = true;
     log("[vector] indexing complete:", totalProcessed, "recipes");
-    if (totalProcessed > 0) toastSuccess("Smart search ready");
+    if (totalProcessed > 0 && !hasShownReadyToast) {
+      hasShownReadyToast = true;
+      toastSuccess("Smart search ready");
+    }
     totalQueued = 0;
     totalProcessed = 0;
     indexingStartTime = 0;
