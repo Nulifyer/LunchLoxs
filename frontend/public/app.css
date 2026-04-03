@@ -1469,6 +1469,39 @@ input.ing-edit.ing-text {
   flex: 1;
 }
 
+/* -- Optional checkbox (edit mode) -- */
+.ing-optional-check {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 1rem;
+  height: 1rem;
+  min-width: 1rem;
+  margin: 0 0.25rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  border: 1.5px solid var(--muted);
+  border-radius: 3px;
+  background: transparent;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ing-optional-check:hover {
+  border-color: var(--accent);
+}
+
+.ing-optional-check:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* -- Optional label (view mode) -- */
+.ing-optional {
+  color: var(--muted);
+  font-size: 0.85em;
+  font-style: italic;
+  margin-left: 0.3rem;
+}
+
 /* -- Drag handle -- */
 .ing-drag-handle {
   cursor: grab;

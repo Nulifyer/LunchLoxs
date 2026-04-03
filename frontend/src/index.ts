@@ -13,6 +13,7 @@ import { initBooks } from "./ui/books";
 import { initShare } from "./ui/share";
 import { initRecipes } from "./ui/recipes";
 import { initSyncStatus } from "./ui/sync-status";
+import { getSessionKeys } from "./lib/auth";
 import { showAccountPage } from "./ui/account";
 import { logout } from "./ui/auth";
 
@@ -51,25 +52,42 @@ document.addEventListener("keydown", (e) => {
 
 // -- Service worker --
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/service-worker.js").catch(console.error);
+  navigator.serviceWorker.register("/service-worker.js").then((reg) => {
+    // When a new SW is found and installed, trigger a version check
+    reg.addEventListener("updatefound", () => {
+      const installing = reg.installing;
+      if (!installing) return;
+      installing.addEventListener("statechange", () => {
+        if (installing.state === "activated") {
+          installing.postMessage("check-update");
+        }
+      });
+    });
+    // Check on first load once the SW is active
+    if (reg.active) reg.active.postMessage("check-update");
+  }).catch(console.error);
+
   navigator.serviceWorker.addEventListener("message", (event) => {
     if (event.data?.type === "update-available") {
+      if (!getSessionKeys()) {
+        // Not logged in — safe to auto-reload
+        location.reload();
+        return;
+      }
+      // Logged in — show banner so user can reload when ready
+      if (document.querySelector(".update-banner")) return;
       const banner = document.createElement("div"); banner.className = "update-banner";
       banner.textContent = "New version available. ";
       const btn = document.createElement("button"); btn.textContent = "Refresh"; btn.addEventListener("click", () => location.reload());
       banner.appendChild(btn); document.body.prepend(banner);
     }
   });
+
   // Check for updates when the user returns to the tab/app
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       navigator.serviceWorker.controller?.postMessage("visibility-visible");
-      // Also trigger the browser's built-in SW update check
       navigator.serviceWorker.getRegistration().then((reg) => reg?.update());
     }
-  });
-  // Check on first load once the SW is ready
-  navigator.serviceWorker.ready.then((reg) => {
-    reg.active?.postMessage("check-update");
   });
 }

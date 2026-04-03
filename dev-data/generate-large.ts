@@ -26,18 +26,26 @@ function pickN<T>(arr: T[], n: number): T[] {
 }
 function rand(min: number, max: number): number { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
-function ingredientTable(ings: Array<{ qty: string; unit: string; item: string }>): string {
+function ingredientTable(ings: Array<{ qty: string; unit: string; item: string; optional?: boolean }>): string {
+  const hasOptional = ings.some((i) => i.optional);
   const qw = Math.max(3, ...ings.map((i) => i.qty.length));
   const uw = Math.max(4, ...ings.map((i) => i.unit.length));
   const iw = Math.max(10, ...ings.map((i) => i.item.length));
   const pad = (s: string, w: number) => s + " ".repeat(Math.max(0, w - s.length));
+  if (hasOptional) {
+    const ow = 8;
+    const h = `| ${pad("Qty", qw)} | ${pad("Unit", uw)} | ${pad("Ingredient", iw)} | ${pad("Optional", ow)} |`;
+    const sep = `| ${"-".repeat(qw)} | ${"-".repeat(uw)} | ${"-".repeat(iw)} | ${"-".repeat(ow)} |`;
+    const rows = ings.map((i) => `| ${pad(i.qty, qw)} | ${pad(i.unit, uw)} | ${pad(i.item, iw)} | ${pad(i.optional ? "yes" : "", ow)} |`);
+    return [h, sep, ...rows].join("\n");
+  }
   const h = `| ${pad("Qty", qw)} | ${pad("Unit", uw)} | ${pad("Ingredient", iw)} |`;
   const sep = `| ${"-".repeat(qw)} | ${"-".repeat(uw)} | ${"-".repeat(iw)} |`;
   const rows = ings.map((i) => `| ${pad(i.qty, qw)} | ${pad(i.unit, uw)} | ${pad(i.item, iw)} |`);
   return [h, sep, ...rows].join("\n");
 }
 
-function toMarkdown(r: { title: string; tags: string[]; servings: number; prepMinutes: number; cookMinutes: number; ingredients: Array<{ qty: string; unit: string; item: string }>; instructions: string; notes?: string }): string {
+function toMarkdown(r: { title: string; tags: string[]; servings: number; prepMinutes: number; cookMinutes: number; ingredients: Array<{ qty: string; unit: string; item: string; optional?: boolean }>; instructions: string; notes?: string }): string {
   const now = new Date().toISOString();
   const lines = [
     "---", `title: "${r.title}"`,
@@ -199,12 +207,12 @@ const dishTypes: Record<string, string[]> = {
   seafood: ["Grilled Salmon", "Fish and Chips", "Lobster Thermidor", "Shrimp Scampi", "Crab Cakes", "Clam Linguine", "Seared Scallops", "Fish Tacos", "Cioppino", "Mussels Mariniere", "Coconut Shrimp", "Tuna Poke", "Ceviche", "Grilled Swordfish", "Baked Cod", "Calamari", "Paella", "Bouillabaisse", "Shrimp and Grits", "Lobster Roll", "Oysters Rockefeller", "Smoked Salmon Platter", "Prawn Curry", "Fish Pie", "Salmon Teriyaki", "Blackened Catfish", "Ahi Tuna Steak", "Garlic Butter Crab", "Stuffed Squid", "Seafood Chowder", "Pan-Seared Trout", "Thai Fish Cakes"],
 };
 
-function generateRecipe(dishName: string, cuisine: string): { title: string; tags: string[]; servings: number; prepMinutes: number; cookMinutes: number; ingredients: Array<{ qty: string; unit: string; item: string }>; instructions: string; notes?: string } {
+function generateRecipe(dishName: string, cuisine: string): { title: string; tags: string[]; servings: number; prepMinutes: number; cookMinutes: number; ingredients: Array<{ qty: string; unit: string; item: string; optional?: boolean }>; instructions: string; notes?: string } {
   const theme = bookThemes.find((b) => b.cuisine === cuisine) ?? bookThemes[0];
   const tags = pickN(theme.tags, rand(2, 3));
 
   const numIngs = rand(4, 9);
-  const ingredients: Array<{ qty: string; unit: string; item: string }> = [];
+  const ingredients: Array<{ qty: string; unit: string; item: string; optional?: boolean }> = [];
 
   // Add protein
   const pool = proteins[cuisine] ?? proteins.italian;
@@ -218,6 +226,11 @@ function generateRecipe(dishName: string, cuisine: string): { title: string; tag
   // Fill rest from pantry
   while (ingredients.length < numIngs) {
     ingredients.push({ qty: pick(quantities), unit: pick(units), item: pick(pantry) });
+  }
+
+  // Randomly mark ~20% of ingredients as optional (skip the first/protein)
+  for (let i = 1; i < ingredients.length; i++) {
+    if (Math.random() < 0.2) ingredients[i].optional = true;
   }
 
   // Build instructions

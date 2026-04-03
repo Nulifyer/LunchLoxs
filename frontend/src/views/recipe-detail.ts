@@ -356,9 +356,10 @@ export function initRecipeDetail(cb: DetailCallbacks) {
 
   ingredientsList.addEventListener("input", (e) => {
     const target = e.target as HTMLElement;
-    const field = target.dataset.ingField as "quantity" | "unit" | "item" | undefined;
+    const rawField = target.dataset.ingField;
     const store = getStore();
-    if (!field || !store) return;
+    if (!rawField || rawField === "optional" || !store) return;
+    const field = rawField as "quantity" | "unit" | "item";
 
     // Read value from either a plain input or an autocomplete-input
     const value = (target as any).value as string;
@@ -402,6 +403,23 @@ export function initRecipeDetail(cb: DetailCallbacks) {
     store.change((doc) => {
       if (doc.ingredients && idx >= 0 && idx < doc.ingredients.length) {
         doc.ingredients[idx]![field] = value;
+      }
+    });
+    getPushSnapshotFn()?.();
+  });
+
+  // Optional checkbox toggle
+  ingredientsList.addEventListener("change", (e) => {
+    const target = e.target as HTMLInputElement;
+    if (target.dataset.ingField !== "optional") return;
+    if (target.dataset.ghost) return;
+    const store = getStore();
+    if (!store) return;
+    const idx = parseInt(target.dataset.ingIdx ?? "-1");
+    if (idx < 0) return;
+    store.change((doc) => {
+      if (doc.ingredients && idx >= 0 && idx < doc.ingredients.length) {
+        doc.ingredients[idx]!.optional = target.checked;
       }
     });
     getPushSnapshotFn()?.();

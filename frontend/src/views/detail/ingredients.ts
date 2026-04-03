@@ -54,13 +54,15 @@ export function commitGhostRow() {
   if (!ghostLi) return;
   const qtyIn = ghostLi.querySelector("[data-ing-field='quantity']") as HTMLInputElement;
   const unitIn = ghostLi.querySelector("[data-ing-field='unit']") as HTMLInputElement;
+  const optIn = ghostLi.querySelector("[data-ing-field='optional']") as HTMLInputElement;
   const itemIn = ghostLi.querySelector("[data-ing-field='item']") as AutocompleteInput;
   const item = itemIn?.value?.trim();
   if (!item) return;
   store.change((doc) => {
     if (!doc.ingredients) doc.ingredients = [];
     const unit = canonicalUnitName(unitIn?.value ?? "") ?? unitIn?.value.trim() ?? "";
-    doc.ingredients.push({ item, quantity: qtyIn?.value.trim() ?? "", unit });
+    const optional = optIn?.checked || false;
+    doc.ingredients.push({ item, quantity: qtyIn?.value.trim() ?? "", unit, ...(optional ? { optional } : {}) });
   });
   getPushSnapshotFn()?.();
   // Re-render will create a fresh ghost row; focus its item field
@@ -100,6 +102,7 @@ export function renderIngredients(doc: Recipe) {
           <span class="ing-drag-handle">&#x283F;</span>
           <input class="ing-edit ing-qty" data-ing-idx="${i}" data-ing-field="quantity" value="${escapeAttr(ing.quantity)}" placeholder="qty" />
           <input class="ing-edit ing-unit" data-ing-idx="${i}" data-ing-field="unit" value="${escapeAttr(ing.unit)}" placeholder="unit" />
+          <input type="checkbox" class="ing-optional-check" data-ing-idx="${i}" data-ing-field="optional" ${ing.optional ? "checked" : ""} title="Optional" />
           <autocomplete-input class="ing-edit ing-text" data-ing-idx="${i}" data-ing-field="item" value="${escapeAttr(ing.item)}" placeholder="ingredient"></autocomplete-input>
           <button data-delete-ing="${i}" title="Remove">&times;</button>
         </li>`)
@@ -110,6 +113,7 @@ export function renderIngredients(doc: Recipe) {
       <span class="ing-drag-handle" style="visibility:hidden">&#x283F;</span>
       <input class="ing-edit ing-qty" data-ghost="true" data-ing-field="quantity" value="" placeholder="qty" />
       <input class="ing-edit ing-unit" data-ghost="true" data-ing-field="unit" value="" placeholder="unit" />
+      <input type="checkbox" class="ing-optional-check" data-ghost="true" data-ing-field="optional" title="Optional" />
       <autocomplete-input class="ing-edit ing-text" data-ghost="true" data-ing-field="item" placeholder="add ingredient..."></autocomplete-input>
     </li>`;
     ingredientsList.innerHTML = html;
@@ -124,10 +128,10 @@ export function renderIngredients(doc: Recipe) {
     if (focusKey) {
       const [idx, field] = focusKey.split(":");
       const el = ingredientsList.querySelector(`[data-ing-idx="${idx}"][data-ing-field="${field}"]:not([data-ghost])`) as HTMLElement;
-      if (el) { el.focus(); (el as any).setSelectionRange?.(focusPos, focusPos); }
+      if (el) { el.focus(); if ((el as HTMLInputElement).type !== "checkbox") (el as any).setSelectionRange?.(focusPos, focusPos); }
     } else if (ghostFocusField) {
       const el = ingredientsList.querySelector(`.ing-ghost [data-ing-field="${ghostFocusField}"]`) as HTMLElement;
-      if (el) { el.focus(); (el as any).setSelectionRange?.(focusPos, focusPos); }
+      if (el) { el.focus(); if ((el as HTMLInputElement).type !== "checkbox") (el as any).setSelectionRange?.(focusPos, focusPos); }
     }
   } else {
     // View mode with check-off, scaling, and unit conversion
@@ -168,11 +172,12 @@ export function renderIngredients(doc: Recipe) {
           }
           const convertible = resolveUnit(ing.unit) !== null;
           const unitClass = "ing-unit" + (converted ? " ing-converted" : "") + (convertible ? " ing-convertible" : "");
+          const optionalLabel = ing.optional ? ' <span class="ing-optional">(optional)</span>' : "";
           return `<li data-ing-idx="${i}" data-orig-unit="${escapeAttr(ing.unit)}" class="${checked ? "ing-checked" : ""}">
             <span class="ing-check"></span>
             <span class="ing-qty">${displayQty}</span>
             <span class="${unitClass}">${displayUnit}</span>
-            <span class="ing-text">${escapeHtml(ing.item)}</span>
+            <span class="ing-text">${escapeHtml(ing.item)}</span>${optionalLabel}
           </li>`;
         })
         .join("");

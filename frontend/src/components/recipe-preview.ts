@@ -24,6 +24,7 @@ interface Ingredient {
   item: string;
   quantity: string;
   unit: string;
+  optional?: boolean;
 }
 
 interface RecipeData {
@@ -312,11 +313,12 @@ export class RecipePreview extends HTMLElement {
 
       const convertible = resolveUnit(ing.unit) !== null;
       const unitClass = "ing-unit" + (converted ? " ing-converted" : "") + (convertible ? " ing-convertible" : "");
+      const optionalLabel = ing.optional ? ' <span class="ing-optional">(optional)</span>' : "";
       return `<li data-ing-idx="${i}" data-orig-unit="${escapeAttr(ing.unit)}" class="${checked ? "ing-checked" : ""}">
         <span class="ing-check"></span>
         <span class="ing-qty">${displayQty}</span>
         <span class="${unitClass}">${displayUnit}</span>
-        <span class="ing-text">${escapeHtml(ing.item)}</span>
+        <span class="ing-text">${escapeHtml(ing.item)}</span>${optionalLabel}
       </li>`;
     }).join("")}</ul>`;
 
@@ -402,7 +404,8 @@ export class RecipePreview extends HTMLElement {
       }
 
       const parts = [displayQty, displayUnit, escapeHtml(ing.item)].filter(Boolean);
-      return `<span class="ing-ref">${parts.join(" ")}</span>`;
+      const suffix = ing.optional ? " (if adding)" : "";
+      return `<span class="ing-ref">${parts.join(" ")}${suffix}</span>`;
     });
   }
 

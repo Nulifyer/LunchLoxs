@@ -37,6 +37,7 @@ export interface Recipe {
     item: string;
     quantity: string;
     unit: string;
+    optional?: boolean;
   }>;
   instructions: string;
   imageUrls: string[];
@@ -61,7 +62,7 @@ export type RecipeCatalog = {
 /** @deprecated Use Recipe */
 export type RecipeContent = {
   description: string;
-  ingredients: Array<{ item: string; quantity: string; unit: string }>;
+  ingredients: Array<{ item: string; quantity: string; unit: string; optional?: boolean }>;
   instructions: string;
   imageUrls: string[];
   notes: string;

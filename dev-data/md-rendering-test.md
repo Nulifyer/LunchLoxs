@@ -12,11 +12,13 @@ A recipe to test all markdown rendering in the preview and notes sections.
 
 ## Ingredients
 
-| Qty | Unit | Item |
-| --- | --- | --- |
-| 2 | cups | flour |
-| 1 | tsp | salt |
-| 3 | tbsp | olive oil |
+| Qty | Unit | Ingredient | Optional |
+| --- | --- | --- | --- |
+| 2 | cups | flour |  |
+| 1 | tsp | salt |  |
+| 3 | tbsp | olive oil |  |
+| 1 | tsp | baking powder | yes |
+| 1/2 | cup | walnuts | yes |
 
 ## Instructions
 
@@ -30,6 +32,8 @@ A recipe to test all markdown rendering in the preview and notes sections.
    - sub-item three
 6. Another step after the nested list.
 7. A step with **bold** and *italic* and `code` all together.
+8. Mix in @[flour] and @[salt] until combined.
+9. Fold in @[baking powder] and @[walnuts] if desired.
 
 Here is an unordered list outside of numbered steps:
 

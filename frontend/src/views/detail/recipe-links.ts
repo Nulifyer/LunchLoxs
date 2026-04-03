@@ -106,7 +106,8 @@ export function resolveIngredientRefs(md: string, doc: Recipe): string {
       }
     }
     const parts = [displayQty, displayUnit, escapeHtml(ing.item)].filter(Boolean);
-    return `<span class="ing-ref">${parts.join(" ")}</span>`;
+    const suffix = ing.optional ? " (if adding)" : "";
+    return `<span class="ing-ref">${parts.join(" ")}${suffix}</span>`;
   });
 }
 

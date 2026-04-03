@@ -3,9 +3,10 @@
  * Import from a ZIP back into a book.
  *
  * Ingredients use a pipe-delimited markdown table for lossless round-trip:
- *   | Qty   | Unit  | Ingredient       |
- *   |-------|-------|------------------|
- *   | 2 1/4 | cups  | all-purpose flour|
+ *   | Qty   | Unit  | Ingredient       | Optional |
+ *   |-------|-------|------------------|----------|
+ *   | 2 1/4 | cups  | all-purpose flour|          |
+ * The Optional column is only included when at least one ingredient is optional.
  *
  * ZIP structure:
  *   BookName/
@@ -39,10 +40,12 @@ function sanitizeFilename(title: string): string {
   return title.replace(/[<>:"/\\|?*]/g, "").trim() || "untitled";
 }
 
-type Ingredient = { quantity: string; unit: string; item: string };
+type Ingredient = { quantity: string; unit: string; item: string; optional?: boolean };
 
 function buildIngredientTable(ingredients: Ingredient[]): string {
   if (ingredients.length === 0) return "";
+
+  const hasOptional = ingredients.some((i) => i.optional);
 
   // Calculate column widths for alignment
   const qw = Math.max(3, ...ingredients.map((i) => i.quantity.length));
@@ -50,6 +53,16 @@ function buildIngredientTable(ingredients: Ingredient[]): string {
   const iw = Math.max(10, ...ingredients.map((i) => i.item.length));
 
   const pad = (s: string, w: number) => s + " ".repeat(Math.max(0, w - s.length));
+
+  if (hasOptional) {
+    const ow = 8; // "Optional".length
+    const header = `| ${pad("Qty", qw)} | ${pad("Unit", uw)} | ${pad("Ingredient", iw)} | ${pad("Optional", ow)} |`;
+    const sep = `| ${"-".repeat(qw)} | ${"-".repeat(uw)} | ${"-".repeat(iw)} | ${"-".repeat(ow)} |`;
+    const rows = ingredients.map((i) =>
+      `| ${pad(i.quantity, qw)} | ${pad(i.unit, uw)} | ${pad(i.item, iw)} | ${pad(i.optional ? "yes" : "", ow)} |`
+    );
+    return [header, sep, ...rows].join("\n");
+  }
 
   const header = `| ${pad("Qty", qw)} | ${pad("Unit", uw)} | ${pad("Ingredient", iw)} |`;
   const sep = `| ${"-".repeat(qw)} | ${"-".repeat(uw)} | ${"-".repeat(iw)} |`;
@@ -64,6 +77,12 @@ function parseIngredientTable(text: string): Ingredient[] {
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   const ingredients: Ingredient[] = [];
 
+  // Detect if the table has an Optional column via the header row
+  let hasOptionalCol = false;
+  for (const line of lines) {
+    if (/\|\s*Optional\s*\|/i.test(line)) { hasOptionalCol = true; break; }
+  }
+
   for (const line of lines) {
     // Skip header and separator rows
     if (!line.startsWith("|")) continue;
@@ -72,7 +91,8 @@ function parseIngredientTable(text: string): Ingredient[] {
 
     const cells = line.split("|").map((c) => c.trim()).filter(Boolean);
     if (cells.length >= 3) {
-      ingredients.push({ quantity: cells[0]!, unit: cells[1]!, item: cells[2]! });
+      const optional = hasOptionalCol && cells.length >= 4 && /^(yes|true|optional)$/i.test(cells[3]!);
+      ingredients.push({ quantity: cells[0]!, unit: cells[1]!, item: cells[2]!, ...(optional ? { optional } : {}) });
     } else if (cells.length === 2) {
       ingredients.push({ quantity: cells[0]!, unit: "", item: cells[1]! });
     } else if (cells.length === 1) {

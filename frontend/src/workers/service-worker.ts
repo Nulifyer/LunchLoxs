@@ -52,7 +52,11 @@ self.addEventListener("activate", (event) => {
   if (!isDev) startVersionCheck();
 });
 
-// Fetch -- stale-while-revalidate for static assets
+// Critical app assets that must be fresh when online
+const CRITICAL_ASSETS = new Set(["/", "/index.html", "/index.js", "/app.css", "/theme-loader.js"]);
+const NETWORK_TIMEOUT_MS = 3000;
+
+// Fetch handler
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
@@ -78,23 +82,45 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // In dev, always go to network first so changes are picked up immediately
+  // Dev mode: always network, no caching of app assets
   if (isDev) {
     event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
-          }
-          return response;
-        })
-        .catch(() => caches.match(request).then((cached) => cached || new Response("Offline", { status: 503 })))
+      fetch(request).catch(() =>
+        caches.match(request).then((cached) => cached || new Response("Offline", { status: 503 }))
+      )
     );
     return;
   }
 
-  // Production: stale-while-revalidate
+  // Production critical assets: network-first with timeout, fall back to cache
+  if (CRITICAL_ASSETS.has(url.pathname)) {
+    event.respondWith(
+      new Promise<Response>((resolve) => {
+        const timer = setTimeout(() => {
+          caches.match(request).then((cached) =>
+            resolve(cached || new Response("Offline", { status: 503 }))
+          );
+        }, NETWORK_TIMEOUT_MS);
+
+        fetch(request).then((response) => {
+          clearTimeout(timer);
+          if (response.ok) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          resolve(response);
+        }).catch(() => {
+          clearTimeout(timer);
+          caches.match(request).then((cached) =>
+            resolve(cached || new Response("Offline", { status: 503 }))
+          );
+        });
+      })
+    );
+    return;
+  }
+
+  // Production non-critical: stale-while-revalidate
   event.respondWith(
     caches.match(request).then((cached) => {
       const fetched = fetch(request).then((response) => {
