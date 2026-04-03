@@ -31,29 +31,161 @@ export function extractRecipeFromHtml(html: string, sourceUrl: string): ScrapedR
   return extractFromJsonLd(doc) ?? extractFromMicrodata(doc) ?? null;
 }
 
-/** Extract raw JSON-LD recipe object from HTML (for LLM enhancement).
- *  Returns trimmed JSON string, or null if no recipe JSON-LD found. */
-export function extractRawJsonLd(html: string): string | null {
+/** Check if the HTML contains JSON-LD recipe data. */
+export function hasJsonLdRecipe(html: string): boolean {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
-  for (const script of scripts) {
+  for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
     try {
       const data = JSON.parse(script.textContent ?? "");
-      const recipe = findRecipeInJsonLd(data);
-      if (recipe) {
-        // Strip non-essential fields to reduce token count
-        const trimmed = { ...recipe };
-        for (const key of ["@context", "video", "publisher", "review", "aggregateRating",
-          "mainEntityOfPage", "datePublished", "dateModified", "author", "nutrition"]) {
-          delete trimmed[key];
-        }
-        return JSON.stringify(trimmed);
-      }
-    } catch {
-      // Skip invalid JSON
+      if (findRecipeInJsonLd(data)) return true;
+    } catch { /* skip */ }
+  }
+  return false;
+}
+
+/**
+ * Build a simple text format from JSON-LD recipe data + page images.
+ * This pre-processes the structured data into a token-efficient format
+ * that preserves full verbatim instruction text and image alt text.
+ * Returns null if no JSON-LD recipe found.
+ */
+export function buildSimpleFormat(html: string, pageImages?: string[]): string | null {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  let recipe: any = null;
+  for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
+    try {
+      const data = JSON.parse(script.textContent ?? "");
+      recipe = findRecipeInJsonLd(data);
+      if (recipe) break;
+    } catch { /* skip */ }
+  }
+  if (!recipe) return null;
+
+  const lines: string[] = [];
+
+  // Header
+  lines.push(`TITLE: ${str(recipe.name)}`);
+  lines.push(`DESC: ${stripHtml(str(recipe.description))}`);
+  lines.push(`SERVINGS: ${parseRecipeYield(recipe.recipeYield)}`);
+  lines.push(`PREP: ${parseISO8601Duration(str(recipe.prepTime))}`);
+  lines.push(`COOK: ${parseISO8601Duration(str(recipe.cookTime))}`);
+
+  // Tags
+  const tags = parseTags(recipe.recipeCategory, recipe.keywords);
+  if (recipe.recipeCuisine) {
+    const cuisines = Array.isArray(recipe.recipeCuisine) ? recipe.recipeCuisine : [recipe.recipeCuisine];
+    for (const c of cuisines) {
+      const t = String(c).toLowerCase().trim();
+      if (t && !tags.includes(t)) tags.push(t);
     }
   }
-  return null;
+  lines.push(`TAGS: ${tags.join(", ")}`);
+
+  // Ingredients
+  lines.push("");
+  lines.push("INGREDIENTS:");
+  const ingredients = Array.isArray(recipe.recipeIngredient) ? recipe.recipeIngredient : [];
+  for (const ing of ingredients) {
+    if (typeof ing !== "string") continue;
+    const parsed = parseIngredientString(ing);
+    lines.push(`${parsed.quantity} | ${parsed.unit} | ${parsed.item}`);
+  }
+
+  // Instructions with images
+  lines.push("");
+  lines.push("INSTRUCTIONS:");
+  const instructions = recipe.recipeInstructions;
+  const usedImageUrls = new Set<string>();
+
+  if (Array.isArray(instructions)) {
+    let stepNum = 1;
+    for (const item of instructions) {
+      if (typeof item === "string") {
+        lines.push(`${stepNum}. ${stripHtml(item)}`);
+        stepNum++;
+      } else if (item && typeof item === "object") {
+        // HowToStep — use full "text" field, fall back to "name"
+        const text = item.text ? stripHtml(String(item.text)) : (item.name ? stripHtml(String(item.name)) : "");
+        if (text) {
+          lines.push(`${stepNum}. ${text}`);
+          stepNum++;
+        }
+        // Step image with alt text from step name
+        const imgUrl = extractStepImageUrl(item.image);
+        if (imgUrl) {
+          const alt = item.name ? stripHtml(String(item.name)) : "";
+          lines.push(`![${alt}](${imgUrl})`);
+          usedImageUrls.add(imgUrl);
+        }
+        // HowToSection
+        if (Array.isArray(item.itemListElement)) {
+          for (const sub of item.itemListElement) {
+            const subText = sub?.text ? stripHtml(String(sub.text)) : (sub?.name ? stripHtml(String(sub.name)) : "");
+            if (subText) {
+              lines.push(`${stepNum}. ${subText}`);
+              stepNum++;
+            }
+            const subImg = extractStepImageUrl(sub?.image);
+            if (subImg) {
+              const subAlt = sub?.name ? stripHtml(String(sub.name)) : "";
+              lines.push(`![${subAlt}](${subImg})`);
+              usedImageUrls.add(subImg);
+            }
+          }
+        }
+      }
+    }
+  } else if (typeof instructions === "string") {
+    lines.push(stripHtml(instructions));
+  }
+
+  // Append page images not already used in steps
+  if (pageImages && pageImages.length > 0) {
+    const unused = pageImages.filter((img) => {
+      // Extract URL from ![alt](url) format
+      const m = img.match(/\]\((.+)\)$/);
+      return m ? !usedImageUrls.has(m[1]!) : true;
+    });
+    if (unused.length > 0) {
+      lines.push("");
+      lines.push("ADDITIONAL IMAGES:");
+      for (const img of unused) lines.push(img);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+/** Extract content images from HTML as markdown-style references with alt text. */
+export function extractHtmlImages(html: string): string[] {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const images: string[] = [];
+  const seen = new Set<string>();
+
+  // OG image
+  const ogImage = doc.querySelector<HTMLMetaElement>('meta[property="og:image"]')?.content;
+  if (ogImage) {
+    const ogTitle = doc.querySelector<HTMLMetaElement>('meta[property="og:title"]')?.content ?? "";
+    images.push(`![${ogTitle}](${ogImage})`);
+    seen.add(ogImage);
+  }
+
+  // Content images — skip tiny/logo/icon
+  for (const img of doc.querySelectorAll<HTMLImageElement>("img[src]")) {
+    const src = img.getAttribute("src") ?? "";
+    if (!src || src.startsWith("data:") || seen.has(src)) continue;
+    const lower = src.toLowerCase();
+    if (lower.includes("logo") || lower.includes("icon") || lower.includes("avatar") || lower.includes("badge")) continue;
+    const w = parseInt(img.getAttribute("width") ?? "0", 10);
+    const h = parseInt(img.getAttribute("height") ?? "0", 10);
+    if ((w > 0 && w < 100) || (h > 0 && h < 100)) continue;
+    const alt = img.getAttribute("alt") ?? "";
+    images.push(`![${alt}](${src})`);
+    seen.add(src);
+    if (images.length >= 15) break;
+  }
+
+  return images;
 }
 
 /** Clean HTML to plain text for LLM extraction (non-JSON-LD sites). */

@@ -285,44 +285,73 @@ func proxyExtractHandler(queries *db.Queries, corsOrigin string, llmEndpoint str
 	llmURL := strings.TrimRight(llmEndpoint, "/") + "/v1/chat/completions"
 	client := &http.Client{Timeout: llmTimeout}
 
-	extractPrompt := `You are a recipe data processor. You receive either raw JSON-LD recipe data or cleaned HTML text from a recipe page. Produce clean structured JSON.
+	extractPrompt := `You are a recipe data enhancer. You receive recipe data in a simple text format. Clean it up and output the SAME format back.
 
-Return ONLY valid JSON with this exact structure:
-{
-  "title": "Recipe Name",
-  "description": "Brief description",
-  "servings": 4,
-  "prepMinutes": 15,
-  "cookMinutes": 30,
-  "ingredients": [
-    {"quantity": "2", "unit": "cup", "item": "all-purpose flour"},
-    {"quantity": "1", "unit": "tsp", "item": "salt"},
-    {"quantity": "3", "unit": "", "item": "large eggs"}
-  ],
-  "instructions": "1. First step\n[IMAGE: https://example.com/step1.jpg]\n2. Second step",
-  "tags": ["mexican", "quick"]
-}
+Example input/output format:
+TITLE: Recipe Name
+DESC: Brief description
+SERVINGS: 4
+PREP: 15
+COOK: 30
+TAGS: mexican, quick, easy
+
+INGREDIENTS:
+2 | cup | all-purpose flour
+1 | tsp | salt
+3 | | large eggs
+
+INSTRUCTIONS:
+1. Full step text here.
+![Step 1 photo](https://example.com/step1.jpg)
+2. Another full step here.
+
+Your job:
+- Fix any ingredients missing quantities by inferring reasonable defaults (e.g. "salt" → "1 | tsp | salt", "large flour tortillas" → "2 | | large flour tortillas").
+- Keep units lowercase singular (cup, tsp, tbsp, oz, lb, g, ml).
+- CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten, summarize, or paraphrase any step.
+- Keep ALL images exactly where they are. Do NOT remove or move any ![alt](url) lines.
+- If there is an ADDITIONAL IMAGES section, try to place relevant cooking/dish images into the instructions near the most relevant step. Remove the ADDITIONAL IMAGES section after placing them.
+- Output ONLY the same plain text format. No JSON, no markdown fencing, no explanation.`
+
+	enhancePrompt := `You are a recipe text enhancer. You receive a recipe in simple text format. Your ONLY job is to tag ingredient mentions in the INSTRUCTIONS section using the format @[item name] (at-sign, open square bracket, the exact item name from INGREDIENTS, close square bracket).
+
+Example input:
+INGREDIENTS:
+1/2 | tsp | olive oil
+2 | | flour tortillas
+1 | cup | grated cheese
+8 | oz | egg noodles
+
+INSTRUCTIONS:
+1. Heat oil in a pan. Place a tortilla in the pan.
+2. Sprinkle cheese on top.
+3. Cook the noodles separately.
+
+Example output:
+INGREDIENTS:
+1/2 | tsp | olive oil
+2 | | flour tortillas
+1 | cup | grated cheese
+8 | oz | egg noodles
+
+INSTRUCTIONS:
+1. Heat @[olive oil] in a pan. Place a @[flour tortillas] in the pan.
+2. Sprinkle @[grated cheese] on top.
+3. Cook the @[egg noodles] separately.
+
+Notice how partial words are matched to the full ingredient name:
+- "oil" -> @[olive oil]
+- "tortilla" -> @[flour tortillas]
+- "cheese" -> @[grated cheese]
+- "noodles" -> @[egg noodles]
+In a recipe, when the instructions mention a word like "noodles", "broth", "oil", etc., it refers to the ingredient in the INGREDIENTS list. Always tag it with the FULL ingredient item name.
 
 Rules:
-- ingredients: Parse each ingredient string into separate quantity, unit, and item fields. quantity is just the number as a string (e.g. "2", "1/2", "1 1/2"). unit is the measurement word, lowercase singular (e.g. "cup", "tbsp", "tsp", "oz", "lb", "g", "ml"). item is the ingredient name with any prep notes (e.g. "onion, diced"). If the source text does not specify a quantity, try to infer a reasonable default from context or common cooking knowledge (e.g. "salt" -> "1", "tsp"; "large flour tortillas" -> "2", ""). Use empty string only if truly unknown.
-- instructions: Numbered steps as a single string. After each step that has an associated image, add the image URL on its own line as [IMAGE: url]. Use the first image URL from each step if multiple are provided.
-- tags: Combine recipeCategory, recipeCuisine, and keywords into a flat lowercase list. Remove duplicates.
-- Do NOT invent instructions or ingredients not present in the source. You MAY infer reasonable quantities for ingredients that lack them.
-- Return ONLY the JSON object. No markdown fencing, no explanation.`
-
-	enhancePrompt := `You are a recipe text enhancer. You receive a JSON recipe with an ingredients array and an instructions string. Your job is to tag ingredient references in the instructions.
-
-For every mention of an ingredient in the instructions text, wrap it with @[item name] where "item name" matches the ingredient's "item" field exactly (case-insensitive match, use the exact item field value).
-
-Example input ingredients: [{"item": "olive oil"}, {"item": "flour tortillas"}, {"item": "grated cheese"}]
-Example input instructions: "1. Heat oil in a pan. Place a tortilla in the pan.\n2. Sprinkle cheese on top."
-Example output instructions: "1. Heat @[olive oil] in a pan. Place a @[flour tortillas] in the pan.\n2. Sprinkle @[grated cheese] on top."
-
-Rules:
-- Only tag ingredients that appear in the ingredients list. Do not invent tags.
-- Match ingredient names flexibly (e.g. "cheese" matches item "grated cheese", "tortilla" matches "flour tortillas").
-- Do NOT modify anything else — keep all step numbers, [IMAGE: url] markers, and text exactly as-is.
-- Return ONLY the modified instructions string. No JSON wrapping, no explanation, no markdown.`
+- The tag format is @[item name] — the @ sign, then [ then the ingredient item name, then ]. Example: @[bok choy]
+- Match aggressively: any word in the instructions that refers to an ingredient should be tagged. "noodles" matches "wonton noodles", "broth" matches "chicken broth", "oil" matches "olive oil".
+- Match to the MOST SPECIFIC ingredient. If the list has both "wontons" and "wonton noodles", then "wontons" in the text matches @[wontons], and "noodles" matches @[wonton noodles]. Do not confuse similar ingredients.
+- ONLY add @[] tags. Do NOT change, shorten, or remove ANY other text, images, or step numbers.
+- Output the COMPLETE recipe in the same format (all sections: TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS).`
 
 	// callLLM sends a system+user prompt and returns the raw content string.
 	callLLM := func(ctx context.Context, system, user string) (string, error) {
@@ -395,6 +424,7 @@ Rules:
 
 		var req struct {
 			Text string `json:"text"`
+			Pass string `json:"pass"` // "extract" or "enhance"
 		}
 		body := http.MaxBytesReader(w, r.Body, llmMaxRequestBody)
 		if err := json.NewDecoder(body).Decode(&req); err != nil {
@@ -409,47 +439,27 @@ Rules:
 		ctx, cancel := context.WithTimeout(r.Context(), llmTimeout)
 		defer cancel()
 
-		// Pass 1: Extract structured recipe data
-		extracted, err := callLLM(ctx, extractPrompt, "Process this recipe data:\n\n"+req.Text)
+		// Select prompt based on pass
+		prompt := extractPrompt
+		if req.Pass == "enhance" {
+			prompt = enhancePrompt
+		}
+
+		result, err := callLLM(ctx, prompt, req.Text)
 		if err != nil {
-			slog.Error("proxy: LLM extract failed", "error", err)
-			http.Error(w, "LLM extraction failed", http.StatusBadGateway)
+			slog.Error("proxy: LLM call failed", "pass", req.Pass, "error", err)
+			http.Error(w, "LLM processing failed", http.StatusBadGateway)
 			return
 		}
 
-		// Validate extracted JSON
-		var recipe map[string]any
-		if err := json.Unmarshal([]byte(extracted), &recipe); err != nil {
-			slog.Error("proxy: LLM returned invalid JSON", "error", err, "content", extracted[:min(len(extracted), 200)])
-			http.Error(w, "LLM returned invalid data", http.StatusBadGateway)
-			return
-		}
-		title, _ := recipe["title"].(string)
-		if title == "" {
-			http.Error(w, "LLM could not extract a recipe", http.StatusUnprocessableEntity)
+		// Basic validation — check for TITLE: in the output
+		if !strings.Contains(result, "TITLE:") && !strings.Contains(result, "INGREDIENTS:") {
+			slog.Error("proxy: LLM returned unexpected format", "content", result[:min(len(result), 200)])
+			http.Error(w, "LLM returned unexpected format", http.StatusBadGateway)
 			return
 		}
 
-		// Pass 2: Enhance instructions with ingredient tagging
-		instructions, _ := recipe["instructions"].(string)
-		ingredients, _ := recipe["ingredients"].([]any)
-		if instructions != "" && len(ingredients) > 0 {
-			ingredientJSON, _ := json.Marshal(ingredients)
-			enhanceInput := "Ingredients:\n" + string(ingredientJSON) + "\n\nInstructions:\n" + instructions
-			enhanced, err := callLLM(ctx, enhancePrompt, enhanceInput)
-			if err == nil && len(enhanced) > 20 {
-				recipe["instructions"] = enhanced
-				// Re-serialize
-				extracted, _ = func() (string, error) {
-					b, e := json.Marshal(recipe)
-					return string(b), e
-				}()
-			} else {
-				slog.Debug("proxy: LLM enhance skipped", "error", err)
-			}
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(extracted))
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte(result))
 	}
 }

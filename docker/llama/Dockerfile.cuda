@@ -1,0 +1,33 @@
+# Custom llama.cpp server with CUDA 12.8 + Blackwell (sm_120) support
+# Required for RTX 5080/5090 GPUs
+# NOTE: CUDA 12.8 is recommended over 13.x for Blackwell — avoids MMQ segfault
+
+FROM nvidia/cuda:12.8.0-devel-ubuntu24.04 AS build
+
+RUN apt-get update && apt-get install -y git cmake build-essential && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /build
+
+WORKDIR /build
+RUN cmake -B build \
+  -DGGML_CUDA=ON \
+  -DCMAKE_CUDA_ARCHITECTURES="120" \
+  -DGGML_CUDA_FORCE_CUBLAS=OFF \
+  -DLLAMA_CURL=OFF \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs" \
+  -DCMAKE_SHARED_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs" && \
+  cmake --build build --target llama-server -j$(nproc)
+
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+
+COPY --from=build /build/build/bin/llama-server /app/llama-server
+COPY --from=build /build/build/src/libllama.so* /app/
+COPY --from=build /build/build/ggml/src/libggml*.so* /app/
+
+ENV LD_LIBRARY_PATH=/app
+WORKDIR /app
+
+EXPOSE 8080
+ENTRYPOINT ["/app/llama-server"]
+CMD ["--model", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "8192", "--n-predict", "4096", "--threads", "12", "--gpu-layers", "99", "--reasoning-budget", "1024"]

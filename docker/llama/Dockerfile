@@ -8,9 +8,10 @@
 #
 # Any OpenAI-compatible endpoint works as an alternative (Ollama, vLLM, remote API).
 
-FROM ghcr.io/ggml-org/llama.cpp:server
+# Use server-cuda for GPU acceleration, or server for CPU-only
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda
 
 EXPOSE 8080
 
 ENTRYPOINT ["/app/llama-server"]
-CMD ["--model", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "8192", "--n-predict", "4096", "--threads", "8"]
+CMD ["--model", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8080", "--ctx-size", "8192", "--n-predict", "4096", "--threads", "12", "--reasoning-budget", "1024"]

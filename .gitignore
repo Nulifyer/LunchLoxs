@@ -37,5 +37,9 @@ pgdata/
 
 .claude/
 
-# Dev Data
-dev-data/*
+# Dev Data — ignore generated data and models, keep scripts
+dev-data/models/
+dev-data/node_modules/
+dev-data/bun.lock
+dev-data/*.zip
+dev-data/llm-test/0*
