@@ -7,12 +7,9 @@
  * so it never disrupts the trigger's layout or parent flex containers.
  */
 
-export interface DropdownItem {
-  label: string;
-  action: () => void;
-  danger?: boolean;
-  separator?: boolean;
-}
+export type DropdownItem =
+  | { label: string; action: () => void; danger?: boolean; separator?: false }
+  | { separator: true };
 
 let activeMenu: { menu: HTMLElement; trigger: HTMLElement; cleanup: () => void } | null = null;
 

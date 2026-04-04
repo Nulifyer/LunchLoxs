@@ -32,7 +32,7 @@ export function initRecipeList(cb: RecipeListCallbacks) {
 
   recipeDropdownBtn = createDropdown([
     { label: "New Recipe", action: () => callbacks.onAdd() },
-    { label: "", action: () => {}, separator: true },
+    { separator: true },
     { label: "Import from URL", action: () => callbacks.onImportUrl?.() },
     { label: "Import File", action: () => callbacks.onImportFile?.() },
   ], { label: "New +", className: "sm" });

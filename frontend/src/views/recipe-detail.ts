@@ -13,7 +13,7 @@ import { appTheme, appSyntaxHighlighting } from "../lib/cm-theme";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { createDropdown } from "../lib/dropdown";
+import { createDropdown, type DropdownItem } from "../lib/dropdown";
 import { parseQty, formatQty, scaleQty } from "../lib/quantity";
 import { convertToUnit, resolveUnit, getConversionTargets, isDecimalUnit, canonicalUnitName } from "../lib/units";
 import { findDensity, convertViaDensity, WEIGHT_UNITS, VOLUME_UNITS } from "../lib/densities";
@@ -644,7 +644,7 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
 
   // Build actions dropdown
   actionsSlot.innerHTML = "";
-  const menuItems = [];
+  const menuItems: DropdownItem[] = [];
   if (callbacks.onExportRecipe) {
     menuItems.push({ label: "Export as .md", action: () => callbacks.onExportRecipe!() });
   }
@@ -652,7 +652,8 @@ export function openRecipe(recipeStore: AutomergeStore<Recipe>, recipeId: string
     menuItems.push({ label: "Copy to Book...", action: () => callbacks.onCopyToBook!() });
   }
   if (getCanEdit()) {
-    menuItems.push({ label: "Delete", action: () => callbacks.onDeleteRecipe(), danger: true, separator: true });
+    if (menuItems.length > 0) menuItems.push({ separator: true });
+    menuItems.push({ label: "Delete", action: () => callbacks.onDeleteRecipe(), danger: true });
   }
   if (menuItems.length > 0) {
     actionsSlot.appendChild(createDropdown(menuItems));

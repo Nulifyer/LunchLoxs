@@ -5,7 +5,7 @@
 import { log, warn, error } from "../lib/logger";
 import { showConfirm, showPrompt } from "../lib/dialogs";
 import { openModal, closeModal } from "../lib/modal";
-import { createDropdown } from "../lib/dropdown";
+import { createDropdown, type DropdownItem } from "../lib/dropdown";
 import { removeBookFromIndex } from "../lib/search";
 import { onCatalogChanged } from "../views/recipe-detail";
 import { setRecipeActionsEnabled } from "../views/recipe-list";
@@ -243,7 +243,7 @@ export function renderBookManageList() {
     }
 
     // ... menu for other actions
-    const menuItems: Array<{ label: string; action: () => void; danger?: boolean; separator?: boolean }> = [];
+    const menuItems: DropdownItem[] = [];
 
     if (book.role === "owner" || book.role === "editor") {
       menuItems.push({
@@ -274,10 +274,10 @@ export function renderBookManageList() {
     }
 
     if (book.role === "owner") {
+      if (menuItems.length > 0) menuItems.push({ separator: true });
       menuItems.push({
         label: "Delete",
         danger: true,
-        separator: true,
         action: async () => {
           const syncClient = getSyncClient();
           const ok = await showConfirm(`Delete "${book.name}"? All recipes will be lost.`, { title: "Delete Book", confirmText: "Delete", danger: true });
