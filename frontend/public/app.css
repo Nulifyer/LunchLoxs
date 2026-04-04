@@ -4,7 +4,7 @@
   --bg-hover: #1c2128;
   --bg-input: #0d1117;
   --border: #30363d;
-  --muted: #484f58;
+  --muted: #555d68;
   --text: #e6edf3;
   --subtle: #8b949e;
   --accent: #58a6ff;
@@ -1255,6 +1255,16 @@ dialog label+tag-input {
   padding-left: 1.5em;
   margin: 0.25em 0;
 }
+
+.preview-wrap blockquote {
+  margin: 0.2em 0 0.5em 0;
+  padding: 0.2em 0 0.2em 0.75em;
+  border-left: 2px solid var(--muted);
+  color: var(--muted);
+  font-style: italic;
+  font-size: 0.92em;
+}
+.preview-wrap blockquote p { margin: 0; }
 
 .editing .preview-clickable {
   cursor: pointer;

@@ -68,9 +68,26 @@ const ALIAS_MAP: Record<string, string[]> = {
   kg:     ["kilogram", "kilograms", "kg."],
 };
 
+// Non-dimensional counting units (no conversions, but valid unit names)
+const COUNT_ALIASES: Record<string, string[]> = {
+  piece:  ["pieces", "pc", "pcs"],
+  clove:  ["cloves"],
+  can:    ["cans"],
+  bunch:  ["bunches"],
+  stalk:  ["stalks"],
+  sprig:  ["sprigs"],
+  slice:  ["slices"],
+  head:   ["heads"],
+  whole:  [],
+};
+
 // Flatten into a fast lookup: alias -> canonical
 const ALIASES: Record<string, string> = {};
 for (const [canonical, aliases] of Object.entries(ALIAS_MAP)) {
+  ALIASES[canonical] = canonical;
+  for (const alias of aliases) ALIASES[alias] = canonical;
+}
+for (const [canonical, aliases] of Object.entries(COUNT_ALIASES)) {
   ALIASES[canonical] = canonical;
   for (const alias of aliases) ALIASES[alias] = canonical;
 }

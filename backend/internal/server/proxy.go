@@ -411,12 +411,22 @@ Your job:
 - CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten, summarize, or paraphrase any step.
 - Keep ALL images exactly where they are. Do NOT remove or move any ![alt](url) lines.
 - Decode any HTML entities in the text (e.g. &#8217; -> ', &frac14; -> 1/4, &frac12; -> 1/2, &frac34; -> 3/4).
+- NON-ENGLISH: If the recipe text is not in English:
+  - Keep ALL original non-English text in the original form. Do NOT replace it with English. Instead do the following:
+  - For ingredient items: append "(english name)" e.g. "Arroz bomba" -> "Arroz bomba (bomba rice)"
+  - For each instruction step, keep the original non-english text, then add an English translation on the NEXT line starting with "> ". Example:
+    1. Freír el pollo en aceite.
+    > Fry the chicken in oil.
+    2. Añadir el agua.
+    > Add the water.
+  - DESC and TAGS should be in English.
+  - If translations already exist, preserve them. Do NOT duplicate steps.
 - Output ONLY the same plain text format. No JSON, no markdown fencing, no explanation.`
 
 	processPrompt := `You are a recipe data processor. You receive recipe data in a simple text format. You have TWO jobs:
 
 JOB 1 — Clean up ingredient names:
-Strip parenthetical sizes, verbose qualifiers, and prep notes from ingredient item names. Keep the name short and recognizable.
+Strip parenthetical sizes, verbose qualifiers, and prep notes from ingredient item names. Keep the name short and recognizable. Do NOT strip English translation parentheses from non-English ingredients (e.g. keep "Arroz bomba (bomba rice)" as-is).
 
 Examples:
 - "large can (28 ounces) diced tomatoes" -> "diced tomatoes"
@@ -460,10 +470,11 @@ Notice: "Author Kate" was removed (unrelated). Each cooking image was placed aft
 Rules:
 - CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten or paraphrase.
 - CRITICAL: Ingredients MUST stay in pipe-delimited format: quantity | unit | item. Do NOT drop the pipes.
+- NON-ENGLISH: Preserve any existing translations (parenthetical English names on ingredients, "> " translation lines after instructions). If translations are missing, add them.
 - Output the COMPLETE recipe in the same format (TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS).
 - No JSON, no markdown fencing, no explanation.`
 
-	tagPrompt := `You are a recipe text tagger. You receive a recipe in simple text format. Your ONLY job is to tag ingredient mentions in the INSTRUCTIONS section using the format @[item name] (at-sign, open square bracket, the exact item name from INGREDIENTS, close square bracket).
+	tagPrompt := `You are a recipe text tagger. You receive a recipe in simple text format. Your ONLY job is to tag ingredient mentions in the INSTRUCTIONS section using the format @[item name] (at-sign, open square bracket, the EXACT and COMPLETE item name from the INGREDIENTS list including any parenthetical translations, close square bracket).
 
 Example input:
 TITLE: Simple Pasta
@@ -514,7 +525,8 @@ Rules:
 - Match to the MOST SPECIFIC ingredient. If the list has both "wontons" and "wonton noodles", then "wontons" matches @[wontons] and "noodles" matches @[wonton noodles].
 - Tag EVERY mention of an ingredient throughout the instructions, not just the first occurrence.
 - Do NOT tag inside image alt text (inside ![...] brackets). Only tag in instruction step text.
-- ONLY add @[] tags. Do NOT change, shorten, or remove ANY other text, images, or step numbers.
+- ONLY add @[] tags. Do NOT wrap them in backticks or code formatting. Do NOT change, shorten, or remove ANY other text, images, or step numbers.
+- NON-ENGLISH: Preserve any existing translations (parenthetical English names on ingredients, "> " translation lines after instructions). Tag ingredient mentions in BOTH the original language lines AND the "> " translation lines.
 - IMPORTANT: Output the COMPLETE recipe starting from TITLE through the end. Include ALL sections: TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS. Do not skip the header.`
 
 	// ── LLM caller ───────────────────────────────────────────────────────
@@ -630,6 +642,25 @@ Rules:
 		return string(data), nil
 	}
 
+	// ── SSE helpers ─────────────────────────────────────────────────────
+
+	sendSSE := func(w http.ResponseWriter, event string, data any) {
+		jsonData, _ := json.Marshal(data)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}
+
+	type sseStatus struct {
+		Step    string `json:"step"`
+		Message string `json:"message"`
+	}
+
+	type sseError struct {
+		Message string `json:"message"`
+	}
+
 	// ── Handler ──────────────────────────────────────────────────────────
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -647,10 +678,9 @@ Rules:
 
 		var req struct {
 			URL  string `json:"url"`
-			Text string `json:"text"` // pre-built simple format (JSON-LD path)
 			Mode string `json:"mode"` // "ai", "basic", or "probe"
 		}
-		body := http.MaxBytesReader(w, r.Body, llmMaxRequestBody)
+		body := http.MaxBytesReader(w, r.Body, 4096)
 		if err := json.NewDecoder(body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
@@ -671,45 +701,10 @@ Rules:
 			http.Error(w, "mode must be 'ai' or 'basic'", http.StatusBadRequest)
 			return
 		}
-
 		if req.Mode == "ai" && llmURL == "" {
 			http.Error(w, "LLM extraction not configured", http.StatusNotImplemented)
 			return
 		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), llmTimeout)
-		defer cancel()
-
-		// ── Text-only path: frontend already built simple format from JSON-LD ──
-		if req.Text != "" {
-			if llmURL == "" {
-				http.Error(w, "LLM extraction not configured", http.StatusNotImplemented)
-				return
-			}
-			// Run LLM passes 1-3 on pre-built simple format (skip pass 0)
-			slog.Debug("extract: LLM pass 1 (extract) on pre-built input")
-			pass1, err := callLLM(ctx, extractPrompt, req.Text, false)
-			if err != nil {
-				slog.Error("extract: LLM extract failed", "error", err)
-				http.Error(w, "LLM extraction failed", http.StatusBadGateway)
-				return
-			}
-			slog.Debug("extract: LLM pass 2 (process)")
-			pass2, err := callLLM(ctx, processPrompt, pass1, false)
-			if err != nil {
-				pass2 = pass1
-			}
-			slog.Debug("extract: LLM pass 3 (tag)")
-			pass3, err := callLLM(ctx, tagPrompt, pass2, true)
-			if err != nil {
-				pass3 = pass2
-			}
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.Write([]byte(pass3))
-			return
-		}
-
-		// ── URL path: full fetch + extract pipeline ──────────────────────
 
 		// Validate URL
 		targetURL, err := validateProxyURL(req.URL)
@@ -718,107 +713,156 @@ Rules:
 			return
 		}
 
-		// ── Step 1: Fetch HTML ───────────────────────────────────────────
+		// ── Basic mode: fetch HTML and return for frontend-side extraction ──
+		if req.Mode == "basic" {
+			ctx, cancel := context.WithTimeout(r.Context(), proxyTimeout+35*time.Second)
+			defer cancel()
+
+			htmlContent, err := fetchHTML(ctx, targetURL.String())
+			if err != nil {
+				htmlContent, err = fetchViaBrowserlessStr(ctx, targetURL.String())
+				if err != nil {
+					http.Error(w, "could not fetch the URL", http.StatusBadGateway)
+					return
+				}
+			}
+			// Try Browserless if no JSON-LD found
+			if !hasJsonLdRecipe(htmlContent) {
+				if rendered, renderErr := fetchViaBrowserlessStr(ctx, targetURL.String()); renderErr == nil {
+					htmlContent = rendered
+				}
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(htmlContent))
+			return
+		}
+
+		// ── AI mode: full server-side pipeline with SSE status updates ───
+
+		ctx, cancel := context.WithTimeout(r.Context(), llmTimeout)
+		defer cancel()
+
+		// Set SSE headers — must be set before first write
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		// Ensure any panic sends an error event instead of dropping the connection
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("extract: panic", "error", r)
+				sendSSE(w, "error", sseError{Message: "Internal server error."})
+			}
+		}()
+
+		// Step 1: Fetch HTML
+		sendSSE(w, "status", sseStatus{Step: "fetch", Message: "Fetching page..."})
 		slog.Debug("extract: fetching", "url", targetURL.String())
+
 		usedBrowserless := false
 		htmlContent, err := fetchHTML(ctx, targetURL.String())
 		if err != nil {
 			slog.Debug("extract: static fetch failed", "error", err)
 			htmlContent, err = fetchViaBrowserlessStr(ctx, targetURL.String())
 			if err != nil {
-				http.Error(w, "could not fetch the URL", http.StatusBadGateway)
+				sendSSE(w, "error", sseError{Message: "Could not fetch the URL."})
 				return
 			}
 			usedBrowserless = true
 		}
 
-		// ── Step 2: Check for JSON-LD ────────────────────────────────────
-		hasJsonLd := hasJsonLdRecipe(htmlContent)
+		// Step 2: Check for JSON-LD, try Browserless if needed
+		recipe, hasJsonLd := extractJsonLdRecipeData(htmlContent)
 
-		// If no JSON-LD, try Browserless (unless we already used it)
 		if !hasJsonLd && !usedBrowserless {
+			sendSSE(w, "status", sseStatus{Step: "render", Message: "Rendering page..."})
 			slog.Debug("extract: no JSON-LD, trying browserless")
-			rendered, renderErr := fetchViaBrowserlessStr(ctx, targetURL.String())
-			if renderErr == nil {
+			if rendered, renderErr := fetchViaBrowserlessStr(ctx, targetURL.String()); renderErr == nil {
 				htmlContent = rendered
-				hasJsonLd = hasJsonLdRecipe(htmlContent)
-				usedBrowserless = true
+				recipe, hasJsonLd = extractJsonLdRecipeData(htmlContent)
 			}
 		}
 
-		// ── Step 3: Build LLM input or return basic extraction ───────────
-		if req.Mode == "basic" || (req.Mode == "ai" && llmURL == "") {
-			// Basic mode — just return whatever we have. Frontend parses JSON-LD.
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Write([]byte(htmlContent))
-			return
+		// Step 3: Build simple format input
+		// Check JSON-LD quality — must have both ingredients and instructions
+		useJsonLd := hasJsonLd
+		if useJsonLd {
+			ings, _ := recipe["recipeIngredient"].([]any)
+			instrs, _ := recipe["recipeInstructions"].([]any)
+			instrStr, _ := recipe["recipeInstructions"].(string)
+			if len(ings) == 0 || (len(instrs) == 0 && instrStr == "") {
+				slog.Debug("extract: JSON-LD incomplete (missing ingredients or instructions), falling back to HTML")
+				useJsonLd = false
+			}
 		}
 
-		// AI mode — build input and run LLM pipeline
-		var llmInput string
-		if hasJsonLd {
-			// Frontend will have built simple format from JSON-LD — but now we do it server-side.
-			// For now, send the HTML back and let frontend build simple format, then call us again.
-			// TODO: move buildSimpleFormat to Go for full server-side pipeline.
-			//
-			// Actually — keep it simple. Send the HTML with JSON-LD back to the frontend.
-			// The frontend already knows how to buildSimpleFormat from JSON-LD.
-			// Only use the LLM pipeline for the no-JSON-LD case where we need cleanHtmlForLlm.
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Write([]byte(htmlContent))
-			return
+		var simpleFormat string
+		if useJsonLd {
+			sendSSE(w, "status", sseStatus{Step: "build", Message: "Building recipe data..."})
+			slog.Debug("extract: building simple format from JSON-LD")
+			pageImages := extractPageImages(htmlContent)
+			simpleFormat = buildSimpleFormatFromJsonLd(recipe, pageImages)
+			slog.Debug("extract: simple format built", "length", len(simpleFormat), "content", simpleFormat[:min(len(simpleFormat), 500)])
+		} else {
+			sendSSE(w, "status", sseStatus{Step: "clean", Message: "Extracting recipe from page..."})
+			slog.Debug("extract: no JSON-LD, cleaning HTML for LLM")
+			llmInput := cleanHtmlForLlm(htmlContent)
+
+			if len(llmInput) < 50 {
+				sendSSE(w, "error", sseError{Message: "Could not extract content from this page."})
+				return
+			}
+
+			// Pass 0: Raw extraction (thinking enabled)
+			sendSSE(w, "status", sseStatus{Step: "pass0", Message: "Extracting recipe data..."})
+			slog.Debug("extract: LLM pass 0 (raw extract)")
+			pass0, err := callLLM(ctx, rawExtractPrompt, llmInput, true)
+			if err != nil {
+				slog.Error("extract: LLM raw extract failed", "error", err)
+				sendSSE(w, "error", sseError{Message: "AI extraction failed."})
+				return
+			}
+			simpleFormat = pass0
 		}
 
-		// No JSON-LD — clean HTML and run full LLM pipeline server-side
-		slog.Debug("extract: no JSON-LD, cleaning HTML for LLM")
-		llmInput = cleanHtmlForLlm(htmlContent)
-
-		if len(llmInput) < 50 {
-			http.Error(w, "could not extract content from page", http.StatusBadGateway)
-			return
-		}
-
-		// Pass 0: Raw extraction (thinking enabled)
-		slog.Debug("extract: LLM pass 0 (raw extract)")
-		pass0, err := callLLM(ctx, rawExtractPrompt, llmInput, true)
-		if err != nil {
-			slog.Error("extract: LLM raw extract failed", "error", err)
-			http.Error(w, "LLM extraction failed", http.StatusBadGateway)
-			return
-		}
-
-		// Pass 1: Extract (no thinking)
+		// Pass 1: Extract — fix quantities, translations
+		sendSSE(w, "status", sseStatus{Step: "pass1", Message: "Fixing quantities and units..."})
 		slog.Debug("extract: LLM pass 1 (extract)")
-		pass1, err := callLLM(ctx, extractPrompt, pass0, false)
+		pass1, err := callLLM(ctx, extractPrompt, simpleFormat, true)
 		if err != nil {
 			slog.Error("extract: LLM extract failed", "error", err)
-			http.Error(w, "LLM extraction failed", http.StatusBadGateway)
+			sendSSE(w, "error", sseError{Message: "AI extraction failed."})
 			return
 		}
 
-		// Pass 2: Process (no thinking)
+		// Pass 2: Process — clean names, place images
+		sendSSE(w, "status", sseStatus{Step: "pass2", Message: "Processing ingredients and images..."})
 		slog.Debug("extract: LLM pass 2 (process)")
 		pass2, err := callLLM(ctx, processPrompt, pass1, false)
 		if err != nil {
 			slog.Error("extract: LLM process failed", "error", err)
-			pass2 = pass1
+			pass2 = pass1 // graceful degradation
 		}
 
-		// Pass 3: Tag (thinking enabled)
+		// Pass 3: Tag — add @[] ingredient references
+		sendSSE(w, "status", sseStatus{Step: "pass3", Message: "Tagging ingredients..."})
 		slog.Debug("extract: LLM pass 3 (tag)")
 		pass3, err := callLLM(ctx, tagPrompt, pass2, true)
 		if err != nil {
 			slog.Error("extract: LLM tag failed", "error", err)
-			pass3 = pass2
+			pass3 = pass2 // graceful degradation
 		}
 
-		if !strings.Contains(pass3, "TITLE:") && !strings.Contains(pass3, "INGREDIENTS:") {
-			slog.Error("extract: LLM returned unexpected format", "content", pass3[:min(len(pass3), 200)])
-			http.Error(w, "LLM returned unexpected format", http.StatusBadGateway)
+		// Parse simple format → JSON
+		sendSSE(w, "status", sseStatus{Step: "parse", Message: "Finalizing recipe..."})
+		parsed, err := parseSimpleFormatToRecipe(pass3)
+		if err != nil {
+			slog.Error("extract: failed to parse LLM output", "error", err)
+			sendSSE(w, "error", sseError{Message: "Could not parse recipe from AI output."})
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte(pass3))
+		// Send result
+		sendSSE(w, "result", parsed)
 	}
 }

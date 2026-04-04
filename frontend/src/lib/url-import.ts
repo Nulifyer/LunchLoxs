@@ -4,14 +4,12 @@
  * Flow:
  *   1. User enters URL + picks mode (AI Enhanced / Quick Import)
  *   2. POST /api/proxy/extract {url, mode}
- *      - Backend fetches HTML (static → Browserless fallback)
- *      - If JSON-LD found: returns HTML (frontend extracts locally)
- *      - If no JSON-LD + AI mode: backend runs cleanHtml → LLM pipeline → returns simple format
- *   3. Frontend parses response → ScrapedRecipe
- *   4. Download images via proxy, import into book
+ *      - AI mode: backend streams SSE with status updates, returns JSON recipe
+ *      - Basic mode: backend returns HTML, frontend extracts JSON-LD locally
+ *   3. Download images via proxy, import into book
  */
 
-import { extractRecipeFromHtml, buildSimpleFormat, hasJsonLdRecipe, extractHtmlImages, type ScrapedRecipe } from "./recipe-scraper";
+import { extractRecipeFromHtml, type ScrapedRecipe } from "./recipe-scraper";
 import { canonicalUnitName } from "./units";
 import { parseQty, formatQty } from "./quantity";
 import { processAsset } from "./asset-processing";
@@ -36,90 +34,19 @@ function normalizeQty(raw: string): string {
   return raw;
 }
 
-// Flavor text for long-running LLM steps — shuffled, no repeats until all used
+// Flavor text shown as sub-line during LLM processing
 const FLAVOR_TEXTS = [
-  // Reading / parsing
-  "Reading through the recipe...",
-  "Scanning for ingredients...",
-  "Looking for the good parts...",
   "Separating recipe from life story...",
   "Skipping the three-paragraph preamble...",
-  "Finding where the recipe actually starts...",
-  "Decoding the ingredient list...",
-  "Parsing quantities and units...",
-
-  // Cooking metaphors
   "Preheating the extraction engine...",
-  "Measuring out the data...",
   "Sifting through the content...",
-  "Whisking the ingredients together...",
   "Folding in the metadata...",
-  "Letting the flavors develop...",
   "Reducing the content to its essence...",
-  "Bringing everything to a simmer...",
-  "Deglazing the page...",
-  "Caramelizing the details...",
   "Kneading the data into shape...",
-  "Proofing the results...",
-  "Rolling out the instructions...",
-  "Tempering the output...",
-
-  // Progress / steps
-  "Matching images to steps...",
-  "Organizing the cooking steps...",
-  "Sorting ingredients by type...",
-  "Tagging ingredient references...",
-  "Cross-referencing the steps...",
-  "Structuring the instructions...",
-  "Connecting the dots...",
-
-  // Finishing
-  "Almost there, just plating up...",
-  "Taste-testing the data...",
-  "Adding the finishing touches...",
-  "Garnishing with tags...",
-  "Final quality check...",
-  "Cleaning up the kitchen...",
-  "Wiping down the counters...",
-
-  // Fun
   "This recipe better be worth it...",
-  "Wondering if we should double the batch...",
-  "Resisting the urge to snack...",
-  "Making a grocery list in our head...",
-  "Hoping nobody salted it twice...",
-  "Checking if the oven is off...",
-  "Googling what 'fold gently' means...",
-  "Pretending we knew what blanch means...",
   "Converting cups to vibes...",
   "Debating metric vs imperial...",
 ];
-
-/** Start cycling flavor text on the loading spinner's second line. Returns a stop function.
- *  Shuffles the list and shows each message once before recycling. */
-function startFlavorText(loading: { updateLine2: (msg: string) => void }): () => void {
-  const pool = [...FLAVOR_TEXTS];
-  // Fisher-Yates shuffle
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j]!, pool[i]!];
-  }
-  let idx = 0;
-  loading.updateLine2(pool[0]!);
-  const interval = setInterval(() => {
-    idx++;
-    if (idx >= pool.length) {
-      // Reshuffle when exhausted
-      for (let i = pool.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [pool[i], pool[j]] = [pool[j]!, pool[i]!];
-      }
-      idx = 0;
-    }
-    loading.updateLine2(pool[idx]!);
-  }, 4000);
-  return () => { clearInterval(interval); loading.updateLine2(""); };
-}
 
 function getAuthHeaders(): Record<string, string> {
   const session = getSessionKeys();
@@ -127,84 +54,15 @@ function getAuthHeaders(): Record<string, string> {
   return { "X-User-ID": session.userId, "X-Auth-Hash": session.authHash };
 }
 
-async function proxyFetch(url: string, render = false): Promise<Response> {
+async function proxyFetch(url: string): Promise<Response> {
   return fetch(`${getApiBase()}/api/proxy/fetch`, {
     method: "POST",
     headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ url, render }),
+    body: JSON.stringify({ url }),
   });
 }
 
-/** Call the unified extract endpoint. Backend handles fetch + Browserless + LLM pipeline. */
-async function extractRecipe(url: string, mode: "ai" | "basic"): Promise<Response> {
-  return fetch(`${getApiBase()}/api/proxy/extract`, {
-    method: "POST",
-    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ url, mode }),
-  });
-}
-
-/** Parse the simple text format into a ScrapedRecipe. */
-function parseSimpleFormat(text: string): ScrapedRecipe | null {
-  const recipe: ScrapedRecipe = {
-    title: "", description: "", servings: 4, prepMinutes: 0, cookMinutes: 0,
-    ingredients: [], instructions: "", tags: [], imageUrls: [],
-  };
-
-  // Parse header fields
-  const headerMatch = (key: string): string => {
-    const re = new RegExp(`^${key}:\\s*(.+)$`, "mi");
-    const m = text.match(re);
-    return m ? m[1]!.trim() : "";
-  };
-
-  recipe.title = headerMatch("TITLE");
-  if (!recipe.title) return null;
-  recipe.description = headerMatch("DESC");
-  recipe.servings = parseInt(headerMatch("SERVINGS")) || 4;
-  recipe.prepMinutes = parseInt(headerMatch("PREP")) || 0;
-  recipe.cookMinutes = parseInt(headerMatch("COOK")) || 0;
-  recipe.tags = headerMatch("TAGS").split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
-
-  // Parse ingredients (lines between INGREDIENTS: and next section)
-  const ingSection = text.match(/^INGREDIENTS:\s*\n([\s\S]*?)(?=\n(?:INSTRUCTIONS:|ADDITIONAL IMAGES:))/mi);
-  if (ingSection) {
-    for (const line of ingSection[1]!.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const parts = trimmed.split("|").map((p) => p.trim());
-      if (parts.length >= 3) {
-        recipe.ingredients.push({
-          quantity: normalizeQty(parts[0]!),
-          unit: canonicalUnitName(parts[1]!) ?? parts[1]!,
-          item: parts[2]!,
-        });
-      } else if (parts.length === 1) {
-        recipe.ingredients.push({ quantity: "", unit: "", item: trimmed });
-      }
-    }
-  }
-
-  // Parse instructions (everything after INSTRUCTIONS: to end, excluding ADDITIONAL IMAGES if present)
-  const instrIdx = text.search(/^INSTRUCTIONS:\s*$/mi);
-  if (instrIdx >= 0) {
-    let instrText = text.slice(instrIdx).replace(/^INSTRUCTIONS:\s*\n?/i, "");
-    // Remove ADDITIONAL IMAGES section if present
-    const addlIdx = instrText.search(/^ADDITIONAL IMAGES:/mi);
-    if (addlIdx >= 0) instrText = instrText.slice(0, addlIdx);
-    recipe.instructions = instrText.trim();
-  }
-
-  // Collect image URLs from ![alt](url) in instructions
-  for (const match of recipe.instructions.matchAll(/!\[[^\]]*\]\((.+?)\)/g)) {
-    const url = match[1]!;
-    if (!recipe.imageUrls.includes(url)) recipe.imageUrls.push(url);
-  }
-
-  return recipe;
-}
-
-/** Check if the LLM extract endpoint is configured (quick probe). */
+/** Check if the LLM extract endpoint is configured. */
 async function isLlmAvailable(): Promise<boolean> {
   try {
     const resp = await fetch(`${getApiBase()}/api/proxy/extract`, {
@@ -212,10 +70,107 @@ async function isLlmAvailable(): Promise<boolean> {
       headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "probe" }),
     });
-    return resp.status === 204; // 204 = available, 501 = not configured
+    return resp.status === 204;
   } catch {
     return false;
   }
+}
+
+/** Read SSE stream from the AI extract endpoint. Updates loading spinner and returns ScrapedRecipe. */
+async function extractRecipeAI(
+  url: string,
+  loading: { update: (msg: string) => void; updateLine2: (msg: string) => void },
+): Promise<ScrapedRecipe> {
+  const resp = await fetch(`${getApiBase()}/api/proxy/extract`, {
+    method: "POST",
+    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ url, mode: "ai" }),
+  });
+
+  if (!resp.ok || !resp.body) {
+    const text = await resp.text().catch(() => "");
+    if (resp.status === 501) throw new Error("AI extraction is not configured on this server.");
+    if (resp.status === 400) throw new Error(text || "Invalid URL.");
+    if (resp.status === 429) throw new Error("Rate limit exceeded. Try again later.");
+    throw new Error(text || "Could not extract recipe.");
+  }
+
+  // Cycle flavor text as sub-line
+  const pool = [...FLAVOR_TEXTS].sort(() => Math.random() - 0.5);
+  let flavorIdx = 0;
+  loading.updateLine2(pool[0]!);
+  const flavorInterval = setInterval(() => {
+    flavorIdx = (flavorIdx + 1) % pool.length;
+    loading.updateLine2(pool[flavorIdx]!);
+  }, 4000);
+
+  try {
+    // Read SSE stream
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Parse SSE events (separated by double newline)
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop()!; // keep incomplete event
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        const eventMatch = part.match(/^event: (.+)$/m);
+        const dataMatch = part.match(/^data: (.+)$/m);
+        if (!eventMatch || !dataMatch) continue;
+
+        const eventType = eventMatch[1]!;
+        const data = JSON.parse(dataMatch[1]!);
+
+        if (eventType === "status") {
+          loading.update(data.message);
+        } else if (eventType === "result") {
+          // Normalize the recipe data
+          const recipe: ScrapedRecipe = {
+            title: data.title ?? "",
+            description: data.description ?? "",
+            servings: data.servings ?? 4,
+            prepMinutes: data.prepMinutes ?? 0,
+            cookMinutes: data.cookMinutes ?? 0,
+            tags: data.tags ?? [],
+            ingredients: (data.ingredients ?? []).map((ing: any) => ({
+              quantity: normalizeQty(ing.quantity ?? ""),
+              unit: canonicalUnitName(ing.unit ?? "") ?? ing.unit ?? "",
+              item: ing.item ?? "",
+            })),
+            instructions: data.instructions ?? "",
+            imageUrls: data.imageUrls ?? [],
+          };
+          return recipe;
+        } else if (eventType === "error") {
+          throw new Error(data.message || "AI extraction failed.");
+        }
+      }
+    }
+
+    throw new Error("AI extraction ended without returning a recipe.");
+  } finally {
+    clearInterval(flavorInterval);
+    loading.updateLine2("");
+  }
+}
+
+/** Extract recipe via basic mode (JSON-LD / microdata, no LLM). */
+async function extractRecipeBasic(url: string): Promise<ScrapedRecipe | null> {
+  const resp = await fetch(`${getApiBase()}/api/proxy/extract`, {
+    method: "POST",
+    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ url, mode: "basic" }),
+  });
+  if (!resp.ok) return null;
+  const html = await resp.text();
+  return extractRecipeFromHtml(html, url);
 }
 
 /** Show a combined URL + import mode dialog. Returns null if cancelled. */
@@ -290,7 +245,6 @@ function showImportDialog(llmAvailable: boolean): Promise<{ url: string; useLlm:
 
     dialog.addEventListener("cancel", () => resolve(null));
 
-    // Mount and show (same pattern as dialogs.ts showAndCleanup)
     document.body.appendChild(dialog);
     dialog.style.position = "fixed";
     dialog.style.top = "50%";
@@ -328,84 +282,29 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
     return;
   }
 
-  const loading = showLoading("Fetching recipe...", 0);
+  const loading = showLoading(useLlm ? "Starting AI extraction..." : "Fetching recipe...", 0);
   try {
-    // 1. Send URL + mode to backend — it handles fetch, Browserless, JSON-LD check, LLM pipeline
-    const mode = useLlm ? "ai" : "basic";
-    loading.update(useLlm ? "Extracting recipe with AI..." : "Fetching recipe...");
-    let stopFlavor: (() => void) | null = null;
-    if (useLlm) stopFlavor = startFlavorText(loading);
-
-    const resp = await extractRecipe(url, mode);
-
-    if (stopFlavor) stopFlavor();
-
-    if (!resp.ok) {
-      const status = resp.status;
-      if (status === 400) {
-        toastError((await resp.text()) || "Invalid URL.");
-      } else if (status === 501) {
-        toastError("AI extraction is not configured on this server.");
-      } else if (status === 429) {
-        toastError("Rate limit exceeded. Try again later.");
-      } else {
-        toastError("Could not extract recipe. Try a different URL.");
-      }
-      return;
-    }
-
-    // 2. Parse the response based on content type
+    // 1. Extract recipe
     let recipe: ScrapedRecipe | null = null;
-    const contentType = resp.headers.get("Content-Type") ?? "";
 
-    if (contentType.includes("text/plain")) {
-      // LLM pipeline output — simple text format
-      loading.update("Parsing recipe data...");
-      const text = await resp.text();
-      recipe = parseSimpleFormat(text);
+    if (useLlm) {
+      recipe = await extractRecipeAI(url, loading);
     } else {
-      // HTML response — extract JSON-LD / microdata locally
-      loading.update("Extracting recipe data...");
-      const html = await resp.text();
-
-      // Try LLM-enhanced path if we have JSON-LD and user wants AI
-      if (useLlm && hasJsonLdRecipe(html)) {
-        const pageImages = extractHtmlImages(html);
-        const simpleFormat = buildSimpleFormat(html, pageImages);
-        if (simpleFormat) {
-          // Send simple format to backend for LLM processing
-          loading.update("Enhancing recipe with AI...");
-          const stopFlavor2 = startFlavorText(loading);
-          const llmResp = await fetch(`${getApiBase()}/api/proxy/extract`, {
-            method: "POST",
-            headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
-            body: JSON.stringify({ text: simpleFormat }),
-          });
-          stopFlavor2();
-          if (llmResp.ok) {
-            recipe = parseSimpleFormat(await llmResp.text());
-          }
-        }
-      }
-
-      // Fall back to basic extraction
-      if (!recipe) {
-        recipe = extractRecipeFromHtml(html, url);
-      }
+      loading.update("Fetching recipe...");
+      recipe = await extractRecipeBasic(url);
     }
 
-    // 3. Check if we got anything
-    // (steps 4-5 handled above in response parsing)
     if (!recipe || !recipe.title) {
       toastError("Could not extract recipe data from this page. Try a different URL.");
       return;
     }
 
-    // 4. Download and process images
+    // 2. Download and process images
     const urlToChecksum = new Map<string, string>();
     if (recipe.imageUrls.length > 0 && book.encKey) {
       const total = Math.min(recipe.imageUrls.length, MAX_IMAGES);
       loading.update(`Downloading images (0/${total})...`);
+      loading.updateLine2("");
       let downloaded = 0;
       const docMgrForBlobs = getDocMgr();
       if (docMgrForBlobs) {
@@ -432,21 +331,21 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
       }
     }
 
-    // 5. Replace ![alt](url) image references with ![alt](blob:checksum)
+    // 3. Replace image URLs with blob checksums in instructions
     let instructions = recipe.instructions;
     for (const [imgUrl, checksum] of urlToChecksum) {
-      // Replace ![any alt text](imgUrl) with ![alt](blob:checksum)
       const escaped = imgUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       instructions = instructions.replace(
         new RegExp(`!\\[([^\\]]*)\\]\\(${escaped}\\)`, "g"),
         `![$1](blob:${checksum})`,
       );
     }
-    // Remove any remaining image refs that weren't downloaded
+    // Remove any remaining external image refs that weren't downloaded
     instructions = instructions.replace(/!\[[^\]]*\]\(https?:\/\/[^)]+\)\n?/g, "");
 
-    // 6. Import into book
+    // 4. Import into book
     loading.update("Saving to your book...");
+    loading.updateLine2("");
     const recipeData: { meta: Partial<RecipeMeta>; content: Partial<Recipe> } = {
       meta: {
         title: recipe.title,
@@ -480,7 +379,7 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
       }
     }
   } catch (e: any) {
-    toastError("Import failed: " + (e.message ?? e));
+    toastError(e.message ?? "Import failed.");
   } finally {
     loading.dismiss();
   }

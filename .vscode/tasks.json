@@ -49,7 +49,7 @@
     {
       "label": "teardown",
       "type": "shell",
-      "command": "pkill -f 'bun run dev|bun run watch' ; podman compose down -v",
+      "command": "taskkill //F //IM server.exe 2>nul; taskkill //F //IM testserver.exe 2>nul; pkill -f 'bun run dev|bun run watch' 2>/dev/null; podman compose down -v",
       "problemMatcher": [],
       "presentation": {
         "reveal": "silent"

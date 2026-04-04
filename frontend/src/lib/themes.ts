@@ -26,7 +26,7 @@ export interface Theme {
 
 export const themes: Record<string, Theme> = {
   "auto-dark": {
-    label: "Dark", bg: "#0d1117", bgSurface: "#161b22", bgHover: "#1c2128", bgInput: "#0d1117", border: "#30363d", muted: "#484f58", text: "#e6edf3", subtle: "#8b949e", accent: "#58a6ff", green: "#3fb950", yellow: "#d29922", red: "#f85149", purple: "#bc8cff", cyan: "#56d7c2",
+    label: "Dark", bg: "#0d1117", bgSurface: "#161b22", bgHover: "#1c2128", bgInput: "#0d1117", border: "#30363d", muted: "#555d68", text: "#e6edf3", subtle: "#8b949e", accent: "#58a6ff", green: "#3fb950", yellow: "#d29922", red: "#f85149", purple: "#bc8cff", cyan: "#56d7c2",
   },
   "auto-light": {
     label: "Light", bg: "#ffffff", bgSurface: "#f6f8fa", bgHover: "#eaeef2", bgInput: "#ffffff", border: "#d0d7de", muted: "#8c959f", text: "#1f2328", subtle: "#656d76", accent: "#0969da", green: "#1a7f37", yellow: "#9a6700", red: "#cf222e", purple: "#8250df", cyan: "#0d7680",

@@ -244,7 +244,7 @@ function mapSchemaOrgToRecipe(data: any): ScrapedRecipe {
     ingredients: parseIngredientList(data.recipeIngredient),
     instructions,
     tags: parseTags(data.recipeCategory, data.keywords),
-    // Step images are inline as [IMAGE:] markers in instructions — downloaded during import
+    // Step images are inline as ![](url) in instructions — downloaded during import
     imageUrls: stepImageUrls,
   };
 }
@@ -411,7 +411,7 @@ function extractStepImageUrl(image: any): string | undefined {
 }
 
 /** Normalize various instruction formats to numbered markdown text.
- *  Embeds [IMAGE: url] markers inline when HowToStep has an image field. */
+ *  Embeds ![alt](url) markers inline when HowToStep has an image field. */
 function normalizeInstructions(data: any): { text: string; stepImageUrls: string[] } {
   if (!data) return { text: "", stepImageUrls: [] };
 
@@ -430,7 +430,7 @@ function normalizeInstructions(data: any): { text: string; stepImageUrls: string
       lines.push(`${stepNum}. ${text}`);
       stepNum++;
       if (imageUrl) {
-        lines.push(`[IMAGE: ${imageUrl}]`);
+        lines.push(`![](${imageUrl})`);
         stepImageUrls.push(imageUrl);
       }
     };

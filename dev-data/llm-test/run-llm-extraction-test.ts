@@ -190,7 +190,19 @@ function buildSimpleFormat(recipe: Record<string, unknown>, pageImages: string[]
   const usedUrls = new Set<string>();
   const instructions = recipe.recipeInstructions;
 
-  if (Array.isArray(instructions)) {
+  // String instructions (single block of text/HTML)
+  if (typeof instructions === "string") {
+    const cleaned = stripHtml(instructions).trim();
+    if (cleaned) {
+      // Try to split into paragraphs → numbered steps
+      const paragraphs = cleaned.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+      if (paragraphs.length > 1) {
+        paragraphs.forEach((p, i) => lines.push(`${i + 1}. ${p}`));
+      } else {
+        lines.push(`1. ${cleaned}`);
+      }
+    }
+  } else if (Array.isArray(instructions)) {
     let stepNum = 1;
     for (const item of instructions as Record<string, unknown>[]) {
       if (typeof item === "string") {
@@ -579,13 +591,23 @@ Your job:
 - CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten, summarize, or paraphrase any step.
 - Keep ALL images exactly where they are. Do NOT remove or move any ![alt](url) lines.
 - Decode any HTML entities in the text (e.g. &#8217; -> ', &frac14; -> 1/4, &frac12; -> 1/2, &frac34; -> 3/4).
+- NON-ENGLISH: If the recipe text is not in English:
+  - Keep ALL original non-English text in the original form. Do NOT replace it with English. Instead do the following:
+  - For ingredient items: append "(english name)" e.g. "Arroz bomba" -> "Arroz bomba (bomba rice)"
+  - For each instruction step, keep the original non-english text, then add an English translation on the NEXT line starting with "> ". Example:
+    1. Freír el pollo en aceite.
+    > Fry the chicken in oil.
+    2. Añadir el agua.
+    > Add the water.
+  - DESC and TAGS should be in English.
+  - If translations already exist, preserve them. Do NOT duplicate steps.
 - Output ONLY the same plain text format. No JSON, no markdown fencing, no explanation.`;
 
 // Pass 2: Process — clean names, place images
 const PROCESS_PROMPT = `You are a recipe data processor. You receive recipe data in a simple text format. You have TWO jobs:
 
 JOB 1 — Clean up ingredient names:
-Strip parenthetical sizes, verbose qualifiers, and prep notes from ingredient item names. Keep the name short and recognizable.
+Strip parenthetical sizes, verbose qualifiers, and prep notes from ingredient item names. Keep the name short and recognizable. Do NOT strip English translation parentheses from non-English ingredients (e.g. keep "Arroz bomba (bomba rice)" as-is).
 
 Examples:
 - "large can (28 ounces) diced tomatoes" -> "diced tomatoes"
@@ -629,11 +651,12 @@ Notice: "Author Kate" was removed (unrelated). Each cooking image was placed aft
 Rules:
 - CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten or paraphrase.
 - CRITICAL: Ingredients MUST stay in pipe-delimited format: quantity | unit | item. Do NOT drop the pipes.
+- NON-ENGLISH: Preserve any existing translations (parenthetical English names on ingredients, "> " translation lines after instructions). If translations are missing, add them.
 - Output the COMPLETE recipe in the same format (TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS).
 - No JSON, no markdown fencing, no explanation.`;
 
 // Pass 3: Tag — add @[] ingredient references
-const TAG_PROMPT = `You are a recipe text tagger. You receive a recipe in simple text format. Your ONLY job is to tag ingredient mentions in the INSTRUCTIONS section using the format @[item name] (at-sign, open square bracket, the exact item name from INGREDIENTS, close square bracket).
+const TAG_PROMPT = `You are a recipe text tagger. You receive a recipe in simple text format. Your ONLY job is to tag ingredient mentions in the INSTRUCTIONS section using the format @[item name] (at-sign, open square bracket, the EXACT and COMPLETE item name from the INGREDIENTS list including any parenthetical translations, close square bracket).
 
 Example input:
 TITLE: Simple Pasta
@@ -684,7 +707,8 @@ Rules:
 - Match to the MOST SPECIFIC ingredient. If the list has both "wontons" and "wonton noodles", then "wontons" matches @[wontons] and "noodles" matches @[wonton noodles].
 - Tag EVERY mention of an ingredient throughout the instructions, not just the first occurrence.
 - Do NOT tag inside image alt text (inside ![...] brackets). Only tag in instruction step text.
-- ONLY add @[] tags. Do NOT change, shorten, or remove ANY other text, images, or step numbers.
+- ONLY add @[] tags. Do NOT wrap them in backticks or code formatting. Do NOT change, shorten, or remove ANY other text, images, or step numbers.
+- NON-ENGLISH: Preserve any existing translations (parenthetical English names on ingredients, "> " translation lines after instructions). Tag ingredient mentions in BOTH the original language lines AND the "> " translation lines.
 - IMPORTANT: Output the COMPLETE recipe starting from TITLE through the end. Include ALL sections: TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS. Do not skip the header.`;
 
 // ─── Parse simple format ─────────────────────────────────────────────────────
@@ -798,6 +822,16 @@ async function main(): Promise<void> {
   const pageImages = extractPageImages(html);
   let pass1: string;
 
+  // Check JSON-LD quality — must have both ingredients and instructions
+  if (recipe) {
+    const ings = recipe.recipeIngredient as unknown[] ?? [];
+    const instrs = recipe.recipeInstructions;
+    if (ings.length === 0 || (!Array.isArray(instrs) && typeof instrs !== "string") || (Array.isArray(instrs) && instrs.length === 0)) {
+      console.log("  JSON-LD incomplete (missing ingredients or instructions), falling back to HTML");
+      recipe = null;
+    }
+  }
+
   if (recipe) {
     // ── JSON-LD path: build simple format, then Pass 1 ────────────────
     const trimmed = { ...recipe };
@@ -817,7 +851,7 @@ async function main(): Promise<void> {
 
     console.log("\nPass 1: Extract (fix quantities, merge dupes)...");
     start = Date.now();
-    const pass1result = await callLLM(simpleFormat, EXTRACT_PROMPT, false);
+    const pass1result = await callLLM(simpleFormat, EXTRACT_PROMPT, true);
     pass1 = decodeEntities(pass1result.content);
     console.log(`  ${elapsed(start)}`);
     save("02-extract.txt", pass1);
@@ -848,7 +882,7 @@ async function main(): Promise<void> {
 
     console.log("\nPass 1: Extract (fix quantities, merge dupes)...");
     start = Date.now();
-    const pass1result = await callLLM(pass0, EXTRACT_PROMPT, false);
+    const pass1result = await callLLM(pass0, EXTRACT_PROMPT, true);
     pass1 = decodeEntities(pass1result.content);
     console.log(`  ${elapsed(start)}`);
     save("03-extract.txt", pass1);
@@ -904,7 +938,8 @@ function extractJsonLdRecipe(html: string): Record<string, unknown> | null {
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null) {
     try {
-      return findRecipeInJsonLd(JSON.parse(m[1]!));
+      const found = findRecipeInJsonLd(JSON.parse(m[1]!));
+      if (found) return found;
     } catch { /* skip */ }
   }
   return null;

@@ -149,6 +149,15 @@ TEMPLATE.innerHTML = `
   .markdown ul, .markdown ol { margin: 0.3em 0; padding-left: 1.5em; }
   .markdown li { margin: 0.15em 0; }
   .markdown img { display: none; }
+  .markdown blockquote {
+    margin: 0.2em 0 0.5em 0;
+    padding: 0.2em 0 0.2em 0.75em;
+    border-left: 2px solid var(--text-muted);
+    color: var(--text-muted);
+    font-style: italic;
+    font-size: 0.92em;
+  }
+  .markdown blockquote p { margin: 0; }
 
   /* Ingredient refs in markdown */
   .ing-ref {
@@ -355,8 +364,8 @@ export class RecipePreview extends HTMLElement {
 
     if (this._instrEl) {
       if (this._doc.instructions) {
-        const resolved = this._resolveIngredientRefs(this._doc.instructions, ings);
-        this._instrEl.innerHTML = `<div class="markdown">${DOMPurify.sanitize(marked.parse(resolved) as string)}</div>`;
+        const html = DOMPurify.sanitize(marked.parse(this._doc.instructions) as string);
+        this._instrEl.innerHTML = `<div class="markdown">${this._resolveIngredientRefs(html, ings)}</div>`;
       } else {
         this._instrEl.innerHTML = `<div class="empty">No instructions yet.</div>`;
       }
@@ -364,7 +373,8 @@ export class RecipePreview extends HTMLElement {
 
     if (this._notesEl) {
       if (this._doc.notes) {
-        this._notesEl.innerHTML = `<h4>Notes</h4><div class="markdown">${DOMPurify.sanitize(marked.parse(this._resolveIngredientRefs(this._doc.notes, ings)) as string)}</div>`;
+        const notesHtml = DOMPurify.sanitize(marked.parse(this._doc.notes) as string);
+        this._notesEl.innerHTML = `<h4>Notes</h4><div class="markdown">${this._resolveIngredientRefs(notesHtml, ings)}</div>`;
       } else {
         this._notesEl.innerHTML = "";
       }
@@ -372,6 +382,8 @@ export class RecipePreview extends HTMLElement {
   }
 
   private _resolveIngredientRefs(md: string, ingredients: Ingredient[]): string {
+    // Strip <code> wrapping around @[] refs (LLM sometimes outputs `@[...]` with backticks)
+    md = md.replace(/<code>(@\[[^\]]+\])<\/code>/g, "$1");
     return md.replace(/@\[([^\]]+)\]/g, (_match, name: string) => {
       const ing = ingredients.find((i) => i.item.toLowerCase() === name.toLowerCase());
       if (!ing) {
