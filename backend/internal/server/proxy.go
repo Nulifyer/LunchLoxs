@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,14 +20,27 @@ import (
 )
 
 const (
-	proxyTimeout      = 15 * time.Second
 	proxyMaxBody      = 5 << 20  // 5 MB
 	proxyMaxURL       = 2048
 	proxyRateLimit    = 10 // requests per minute per user
 	proxyRateWindow   = time.Minute
-	llmTimeout        = 10 * time.Minute
 	llmMaxRequestBody = 200 << 10 // 200 KB
 )
+
+var (
+	proxyTimeout       = durationEnv("PROXY_TIMEOUT_SECS", 15*time.Second)
+	llmTimeout         = durationEnv("LLM_TIMEOUT_SECS", 20*time.Minute)
+	browserlessTimeout = durationEnv("BROWSERLESS_TIMEOUT_SECS", 30*time.Second)
+)
+
+func durationEnv(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return fallback
+}
 
 var chromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
@@ -143,7 +158,7 @@ func proxyFetchHandler(queries *db.Queries, corsOrigin, browserlessEndpoint, bro
 		},
 	}
 
-	browserlessClient := &http.Client{Timeout: 30 * time.Second}
+	browserlessClient := &http.Client{Timeout: browserlessTimeout}
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORSHeaders(w, corsOrigin)
@@ -341,7 +356,7 @@ func proxyExtractHandler(queries *db.Queries, corsOrigin, llmEndpoint, browserle
 			return nil
 		},
 	}
-	browserlessClient := &http.Client{Timeout: 30 * time.Second}
+	browserlessClient := &http.Client{Timeout: browserlessTimeout}
 	llmClient := &http.Client{Timeout: llmTimeout}
 
 	var llmURL string
@@ -661,6 +676,11 @@ Rules:
 		Message string `json:"message"`
 	}
 
+	type sseWarning struct {
+		Step    string `json:"step"`
+		Message string `json:"message"`
+	}
+
 	// ── Handler ──────────────────────────────────────────────────────────
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -830,9 +850,9 @@ Rules:
 		slog.Debug("extract: LLM pass 1 (extract)")
 		pass1, err := callLLM(ctx, extractPrompt, simpleFormat, true)
 		if err != nil {
-			slog.Error("extract: LLM extract failed", "error", err)
-			sendSSE(w, "error", sseError{Message: "AI extraction failed."})
-			return
+			slog.Warn("extract: LLM extract failed, using raw input", "error", err)
+			sendSSE(w, "warning", sseWarning{Step: "pass1", Message: "Quantity/unit fixing skipped (AI timed out)."})
+			pass1 = simpleFormat // graceful degradation
 		}
 
 		// Pass 2: Process — clean names, place images
@@ -841,6 +861,7 @@ Rules:
 		pass2, err := callLLM(ctx, processPrompt, pass1, false)
 		if err != nil {
 			slog.Error("extract: LLM process failed", "error", err)
+			sendSSE(w, "warning", sseWarning{Step: "pass2", Message: "Ingredient cleanup skipped (AI timed out)."})
 			pass2 = pass1 // graceful degradation
 		}
 
@@ -850,6 +871,7 @@ Rules:
 		pass3, err := callLLM(ctx, tagPrompt, pass2, true)
 		if err != nil {
 			slog.Error("extract: LLM tag failed", "error", err)
+			sendSSE(w, "warning", sseWarning{Step: "pass3", Message: "Ingredient tagging skipped (AI timed out)."})
 			pass3 = pass2 // graceful degradation
 		}
 

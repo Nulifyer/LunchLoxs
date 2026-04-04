@@ -17,7 +17,7 @@ import { storeBlob } from "./blob-client";
 import { getSessionKeys } from "./auth";
 import { getApiBase } from "./config";
 import { showLoading } from "./spinner";
-import { toastSuccess, toastError } from "./toast";
+import { toastSuccess, toastWarning, toastError } from "./toast";
 import { importRecipesIntoBook } from "../import-export";
 import { getDocMgr } from "../state";
 import { selectRecipe } from "../ui/recipes";
@@ -80,7 +80,8 @@ async function isLlmAvailable(): Promise<boolean> {
 async function extractRecipeAI(
   url: string,
   loading: { update: (msg: string) => void; updateLine2: (msg: string) => void },
-): Promise<ScrapedRecipe> {
+): Promise<ScrapedRecipe & { warnings?: string[] }> {
+  const warnings: string[] = [];
   const resp = await fetch(`${getApiBase()}/api/proxy/extract`, {
     method: "POST",
     headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
@@ -130,6 +131,8 @@ async function extractRecipeAI(
 
         if (eventType === "status") {
           loading.update(data.message);
+        } else if (eventType === "warning") {
+          warnings.push(data.message);
         } else if (eventType === "result") {
           // Normalize the recipe data
           const recipe: ScrapedRecipe = {
@@ -147,6 +150,7 @@ async function extractRecipeAI(
             instructions: data.instructions ?? "",
             imageUrls: data.imageUrls ?? [],
           };
+          if (warnings.length > 0) recipe.warnings = warnings;
           return recipe;
         } else if (eventType === "error") {
           throw new Error(data.message || "AI extraction failed.");
@@ -288,7 +292,11 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
     let recipe: ScrapedRecipe | null = null;
 
     if (useLlm) {
-      recipe = await extractRecipeAI(url, loading);
+      const result = await extractRecipeAI(url, loading);
+      if (result.warnings?.length) {
+        for (const msg of result.warnings) toastWarning(msg);
+      }
+      recipe = result;
     } else {
       loading.update("Fetching recipe...");
       recipe = await extractRecipeBasic(url);
