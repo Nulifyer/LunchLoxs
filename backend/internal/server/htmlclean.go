@@ -1,11 +1,71 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"golang.org/x/net/html"
 )
+
+// hasJsonLdRecipe checks if HTML contains a JSON-LD block with @type "Recipe".
+func hasJsonLdRecipe(htmlContent string) bool {
+	re := regexp.MustCompile(`(?i)<script[^>]*application/ld\+json[^>]*>([\s\S]*?)</script>`)
+	for _, match := range re.FindAllStringSubmatch(htmlContent, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		if findRecipeType([]byte(match[1])) {
+			return true
+		}
+	}
+	return false
+}
+
+// findRecipeType recursively searches parsed JSON for @type "Recipe".
+func findRecipeType(data []byte) bool {
+	var obj any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return false
+	}
+	return searchRecipeType(obj)
+}
+
+func searchRecipeType(v any) bool {
+	switch val := v.(type) {
+	case map[string]any:
+		if t, ok := val["@type"]; ok {
+			if s, ok := t.(string); ok && s == "Recipe" {
+				return true
+			}
+			if arr, ok := t.([]any); ok {
+				for _, item := range arr {
+					if s, ok := item.(string); ok && s == "Recipe" {
+						return true
+					}
+				}
+			}
+		}
+		if graph, ok := val["@graph"]; ok {
+			if searchRecipeType(graph) {
+				return true
+			}
+		}
+		for _, child := range val {
+			if searchRecipeType(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range val {
+			if searchRecipeType(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // cleanHtmlForLlm extracts structured readable text from HTML for LLM processing.
 // It isolates the main content area, removes junk, and converts the DOM tree to

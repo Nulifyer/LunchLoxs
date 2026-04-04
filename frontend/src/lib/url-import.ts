@@ -210,10 +210,9 @@ async function isLlmAvailable(): Promise<boolean> {
     const resp = await fetch(`${getApiBase()}/api/proxy/extract`, {
       method: "POST",
       headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
-      body: JSON.stringify({ url: "https://probe.test", mode: "ai" }),
+      body: JSON.stringify({ mode: "probe" }),
     });
-    // 501 = LLM not configured, 400 = configured (bad URL but endpoint exists)
-    return resp.status !== 501;
+    return resp.status === 204; // 204 = available, 501 = not configured
   } catch {
     return false;
   }
@@ -396,12 +395,13 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
     }
 
     // 3. Check if we got anything
+    // (steps 4-5 handled above in response parsing)
     if (!recipe || !recipe.title) {
       toastError("Could not extract recipe data from this page. Try a different URL.");
       return;
     }
 
-    // 6. Download and process images
+    // 4. Download and process images
     const urlToChecksum = new Map<string, string>();
     if (recipe.imageUrls.length > 0 && book.encKey) {
       const total = Math.min(recipe.imageUrls.length, MAX_IMAGES);
@@ -432,7 +432,7 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
       }
     }
 
-    // 7. Replace ![alt](url) image references with ![alt](blob:checksum)
+    // 5. Replace ![alt](url) image references with ![alt](blob:checksum)
     let instructions = recipe.instructions;
     for (const [imgUrl, checksum] of urlToChecksum) {
       // Replace ![any alt text](imgUrl) with ![alt](blob:checksum)
@@ -445,7 +445,7 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
     // Remove any remaining image refs that weren't downloaded
     instructions = instructions.replace(/!\[[^\]]*\]\(https?:\/\/[^)]+\)\n?/g, "");
 
-    // 8. Import into book
+    // 6. Import into book
     loading.update("Saving to your book...");
     const recipeData: { meta: Partial<RecipeMeta>; content: Partial<Recipe> } = {
       meta: {

@@ -648,11 +648,27 @@ Rules:
 		var req struct {
 			URL  string `json:"url"`
 			Text string `json:"text"` // pre-built simple format (JSON-LD path)
-			Mode string `json:"mode"` // "ai" or "basic"
+			Mode string `json:"mode"` // "ai", "basic", or "probe"
 		}
 		body := http.MaxBytesReader(w, r.Body, llmMaxRequestBody)
 		if err := json.NewDecoder(body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		// Probe: frontend checks if LLM is available
+		if req.Mode == "probe" {
+			if llmURL == "" {
+				http.Error(w, "LLM extraction not configured", http.StatusNotImplemented)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		}
+
+		// Validate mode
+		if req.Mode != "ai" && req.Mode != "basic" {
+			http.Error(w, "mode must be 'ai' or 'basic'", http.StatusBadRequest)
 			return
 		}
 
@@ -704,27 +720,29 @@ Rules:
 
 		// ── Step 1: Fetch HTML ───────────────────────────────────────────
 		slog.Debug("extract: fetching", "url", targetURL.String())
+		usedBrowserless := false
 		htmlContent, err := fetchHTML(ctx, targetURL.String())
 		if err != nil {
 			slog.Debug("extract: static fetch failed", "error", err)
-			// Try Browserless as fallback for 403s etc.
 			htmlContent, err = fetchViaBrowserlessStr(ctx, targetURL.String())
 			if err != nil {
 				http.Error(w, "could not fetch the URL", http.StatusBadGateway)
 				return
 			}
+			usedBrowserless = true
 		}
 
 		// ── Step 2: Check for JSON-LD ────────────────────────────────────
-		hasJsonLd := strings.Contains(htmlContent, `"@type"`) && strings.Contains(htmlContent, `"Recipe"`)
+		hasJsonLd := hasJsonLdRecipe(htmlContent)
 
-		// If no JSON-LD on static HTML, try Browserless (JS rendering may produce it)
-		if !hasJsonLd {
+		// If no JSON-LD, try Browserless (unless we already used it)
+		if !hasJsonLd && !usedBrowserless {
 			slog.Debug("extract: no JSON-LD, trying browserless")
 			rendered, renderErr := fetchViaBrowserlessStr(ctx, targetURL.String())
 			if renderErr == nil {
 				htmlContent = rendered
-				hasJsonLd = strings.Contains(htmlContent, `"@type"`) && strings.Contains(htmlContent, `"Recipe"`)
+				hasJsonLd = hasJsonLdRecipe(htmlContent)
+				usedBrowserless = true
 			}
 		}
 
