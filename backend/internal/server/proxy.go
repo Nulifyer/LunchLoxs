@@ -271,51 +271,208 @@ func fetchViaBrowserless(ctx context.Context, client *http.Client, endpoint, tok
 	return data, resp.Header.Get("Content-Type"), nil
 }
 
-// proxyExtractHandler handles POST /api/proxy/extract.
-// Forwards recipe data to an OpenAI-compatible LLM endpoint for enhanced extraction.
-// Returns 501 if no LLM endpoint is configured.
-func proxyExtractHandler(queries *db.Queries, corsOrigin string, llmEndpoint string) http.HandlerFunc {
-	if llmEndpoint == "" {
-		return func(w http.ResponseWriter, r *http.Request) {
-			setCORSHeaders(w, corsOrigin)
-			http.Error(w, "LLM extraction not configured", http.StatusNotImplemented)
+// stripReasoningSpillover removes LLM reasoning that leaked into the content
+// after the recipe output. Scans backwards for the last recipe-like line.
+func stripReasoningSpillover(content string) string {
+	lines := strings.Split(content, "\n")
+	last := len(lines) - 1
+	for i := last; i >= 0; i-- {
+		l := strings.TrimSpace(lines[i])
+		if l == "" {
+			continue
 		}
+		// Recipe content patterns
+		isRecipe := false
+		if len(l) > 0 && l[0] >= '0' && l[0] <= '9' && strings.Contains(l, ".") {
+			isRecipe = true // numbered step
+		}
+		if strings.HasPrefix(l, "![") {
+			isRecipe = true // image
+		}
+		if strings.Contains(l, "|") {
+			isRecipe = true // pipe-delimited ingredient
+		}
+		if strings.HasPrefix(l, "TITLE:") || strings.HasPrefix(l, "DESC:") ||
+			strings.HasPrefix(l, "SERVINGS:") || strings.HasPrefix(l, "PREP:") ||
+			strings.HasPrefix(l, "COOK:") || strings.HasPrefix(l, "TAGS:") ||
+			strings.HasPrefix(l, "INGREDIENTS:") || strings.HasPrefix(l, "INSTRUCTIONS:") ||
+			strings.HasPrefix(l, "ADDITIONAL IMAGES:") {
+			isRecipe = true
+		}
+		if strings.HasPrefix(l, "@[") {
+			isRecipe = true
+		}
+		if isRecipe {
+			if i < last {
+				return strings.Join(lines[:i+1], "\n")
+			}
+			return content
+		}
+		// Known reasoning prefixes — keep scanning backwards
+		if strings.HasPrefix(l, "Wait") || strings.HasPrefix(l, "Actually") ||
+			strings.HasPrefix(l, "Let me") || strings.HasPrefix(l, "I ") ||
+			strings.HasPrefix(l, "Refining") || strings.HasPrefix(l, "Final") ||
+			strings.HasPrefix(l, "Re-read") || strings.HasPrefix(l, "Hmm") ||
+			strings.HasPrefix(l, "Notice") || strings.HasPrefix(l, "However") ||
+			strings.HasPrefix(l, "One ") || strings.HasPrefix(l, "So ") {
+			continue
+		}
+		// Unknown line — assume it's still recipe content
+		if i < last {
+			return strings.Join(lines[:i+1], "\n")
+		}
+		return content
+	}
+	return content
+}
+
+// proxyExtractHandler handles POST /api/proxy/extract.
+// Accepts {url, mode} — fetches the page, extracts recipe data, optionally runs LLM pipeline.
+// mode "ai": full LLM pipeline (returns simple text format with @[] tags)
+// mode "basic": JSON-LD/microdata extraction only (returns simple text format, no LLM)
+// Returns 501 if AI mode requested but no LLM endpoint is configured.
+func proxyExtractHandler(queries *db.Queries, corsOrigin, llmEndpoint, browserlessEndpoint, browserlessToken string) http.HandlerFunc {
+	fetchClient := &http.Client{
+		Timeout: proxyTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+	browserlessClient := &http.Client{Timeout: 30 * time.Second}
+	llmClient := &http.Client{Timeout: llmTimeout}
+
+	var llmURL string
+	if llmEndpoint != "" {
+		llmURL = strings.TrimRight(llmEndpoint, "/") + "/v1/chat/completions"
 	}
 
-	llmURL := strings.TrimRight(llmEndpoint, "/") + "/v1/chat/completions"
-	client := &http.Client{Timeout: llmTimeout}
+	// ── Prompts (synced with test script) ────────────────────────────────
 
-	extractPrompt := `You are a recipe data enhancer. You receive recipe data in a simple text format. Clean it up and output the SAME format back.
+	rawExtractPrompt := `You are a recipe extractor. You receive the raw text content of a web page that contains a recipe but has NO structured data. The text may contain <img> HTML tags — these are images from the page in their original position.
 
-Example input/output format:
+Your job is to find the recipe and output it in a specific simple text format.
+
+Extract the recipe and output it in EXACTLY this format:
+
 TITLE: Recipe Name
-DESC: Brief description
+DESC: A short description of the dish
 SERVINGS: 4
-PREP: 15
-COOK: 30
-TAGS: mexican, quick, easy
+PREP: 30
+COOK: 45
+TAGS: tag1, tag2, tag3
 
 INGREDIENTS:
-2 | cup | all-purpose flour
+2 | cup | flour
 1 | tsp | salt
-3 | | large eggs
+3 | | eggs
 
 INSTRUCTIONS:
-1. Full step text here.
-![Step 1 photo](https://example.com/step1.jpg)
-2. Another full step here.
+1. First step text here.
+![alt text](image-url)
+2. Second step text here.
+3. Third step text here.
+
+Rules:
+- Every ingredient line must be: quantity | unit | item name
+- Units must be standard: cup, tsp, tbsp, oz, lb, g, ml, clove, can, bunch, piece. Keep units lowercase singular.
+- If an ingredient has no unit (countable items like eggs), leave unit empty: "3 | | eggs"
+- Infer reasonable quantities for ingredients that don't specify one (e.g. salt -> "1 | tsp | salt").
+- PREP and COOK are in minutes. Set to 0 if not mentioned.
+- SERVINGS defaults to 4 if not mentioned.
+- Instructions must be numbered steps. Keep the FULL original text of each step — do NOT summarize or shorten.
+- IMAGES: Convert any <img> tags to ![alt](src) format. Place each image on its own line after the instruction step it relates to. Use the alt attribute for the alt text, and the src attribute for the URL. Skip images that are clearly not recipe photos (logos, badges, avatars).
+- TAGS: include cuisine type, dish type, dietary info, or other relevant tags from the page.
+- NON-ENGLISH: If the recipe is not in English, keep the original text AND add English translations:
+  - For TITLE: "Original Title (English Translation)"
+  - For ingredient items: "original name (english name)" e.g. "鶏レバー (chicken liver)"
+  - For each instruction step, add the English translation on the next line prefixed with "> " e.g.:
+    1. レバーを一口大に切る。
+    > Cut the liver into bite-sized pieces.
+  - DESC and TAGS should be in English.
+- IGNORE irrelevant or duplicate content: skip reviews, comments, related recipes, author bios, ads, navigation, repeated text, and other non-recipe content.
+- Output ONLY the plain text format above. No JSON, no markdown fencing, no explanation.
+- If the page contains multiple recipes, extract only the primary/main one.`
+
+	extractPrompt := `You are a recipe data fixer. You receive recipe data in a simple text format. Fix any issues and output the SAME format back.
 
 Your job:
-- Fix any ingredients missing quantities by inferring reasonable defaults (e.g. "salt" → "1 | tsp | salt", "large flour tortillas" → "2 | | large flour tortillas").
-- Keep units lowercase singular (cup, tsp, tbsp, oz, lb, g, ml).
+- Every ingredient MUST have an accurate quantity and unit that makes sense. Parse the original text carefully to extract the measurement. Examples:
+  "5 to 6 ounces baby spinach" -> "5 | oz | baby spinach"
+  "1 large can (28 ounces) diced tomatoes" -> "28 | oz | diced tomatoes"
+  "2 cups (16 ounces) cottage cheese" -> "2 | cup | cottage cheese"
+  If the ingredient truly has no unit (countable items like eggs), leave unit empty: "3 | | eggs"
+  Do NOT leave unit empty when the source text specifies a measurement.
+- Fix any ingredients missing quantities by inferring reasonable defaults (e.g. " | | salt" -> "1 | tsp | salt").
+- Units must be a standard measurement: cup, tsp, tbsp, oz, lb, g, ml, clove, can, bunch, piece. Do NOT use the ingredient name as the unit. Keep units lowercase singular.
+- Merge duplicate ingredients ONLY if they are truly the same item used for the same purpose (combine quantities). Do NOT merge ingredients that share a name but are used in different parts of the recipe (e.g. "3/4 cup sugar" for a topping and "2 tbsp sugar" for a batter are separate ingredients — keep both).
 - CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten, summarize, or paraphrase any step.
 - Keep ALL images exactly where they are. Do NOT remove or move any ![alt](url) lines.
-- If there is an ADDITIONAL IMAGES section, try to place relevant cooking/dish images into the instructions near the most relevant step. Remove the ADDITIONAL IMAGES section after placing them.
+- Decode any HTML entities in the text (e.g. &#8217; -> ', &frac14; -> 1/4, &frac12; -> 1/2, &frac34; -> 3/4).
 - Output ONLY the same plain text format. No JSON, no markdown fencing, no explanation.`
 
-	enhancePrompt := `You are a recipe text enhancer. You receive a recipe in simple text format. Your ONLY job is to tag ingredient mentions in the INSTRUCTIONS section using the format @[item name] (at-sign, open square bracket, the exact item name from INGREDIENTS, close square bracket).
+	processPrompt := `You are a recipe data processor. You receive recipe data in a simple text format. You have TWO jobs:
+
+JOB 1 — Clean up ingredient names:
+Strip parenthetical sizes, verbose qualifiers, and prep notes from ingredient item names. Keep the name short and recognizable.
+
+Examples:
+- "large can (28 ounces) diced tomatoes" -> "diced tomatoes"
+- "(2 cups) freshly grated low-moisture, part-skim mozzarella cheese" -> "mozzarella cheese"
+- "large carrots, chopped (about 1 cup)" -> "carrots, chopped"
+- "roughly chopped fresh basil + additional for garnish" -> "fresh basil"
+- "cloves garlic, pressed or minced" -> "garlic, minced"
+- "medium zucchini, chopped" -> "zucchini, chopped"
+- "to 6 ounces baby spinach" -> "baby spinach"
+- "no-boil lasagna noodles*" -> "lasagna noodles"
+Move stripped size info (like "28 ounces", "2 cups") into the quantity/unit fields if not already there.
+
+JOB 2 — Place images into instructions:
+If there is an ADDITIONAL IMAGES section at the bottom, move EACH image to INSIDE the instructions. Place each image on its own line directly AFTER the step it relates to. Match the image alt text to the step content. Remove images that are clearly unrelated (logos, author photos, other recipe thumbnails, banners). Delete the ADDITIONAL IMAGES section completely when done.
+
+For EVERY image in the ADDITIONAL IMAGES section, ask: "which step does this image show?" and place it after that step.
 
 Example input:
+INSTRUCTIONS:
+1. Sauté the vegetables until golden.
+2. Mix the cottage cheese filling.
+3. Layer the noodles and sauce.
+
+ADDITIONAL IMAGES:
+![sautéed vegetables](https://example.com/sauteed.jpg)
+![cottage cheese filling mixture](https://example.com/filling.jpg)
+![layering the lasagna](https://example.com/layers.jpg)
+![Author Kate](https://example.com/kate.jpg)
+
+Example output:
+INSTRUCTIONS:
+1. Sauté the vegetables until golden.
+![sautéed vegetables](https://example.com/sauteed.jpg)
+2. Mix the cottage cheese filling.
+![cottage cheese filling mixture](https://example.com/filling.jpg)
+3. Layer the noodles and sauce.
+![layering the lasagna](https://example.com/layers.jpg)
+
+Notice: "Author Kate" was removed (unrelated). Each cooking image was placed after its matching step.
+
+Rules:
+- CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten or paraphrase.
+- CRITICAL: Ingredients MUST stay in pipe-delimited format: quantity | unit | item. Do NOT drop the pipes.
+- Output the COMPLETE recipe in the same format (TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS).
+- No JSON, no markdown fencing, no explanation.`
+
+	tagPrompt := `You are a recipe text tagger. You receive a recipe in simple text format. Your ONLY job is to tag ingredient mentions in the INSTRUCTIONS section using the format @[item name] (at-sign, open square bracket, the exact item name from INGREDIENTS, close square bracket).
+
+Example input:
+TITLE: Simple Pasta
+DESC: A quick pasta dish.
+SERVINGS: 2
+PREP: 5
+COOK: 10
+TAGS: italian, quick
+
 INGREDIENTS:
 1/2 | tsp | olive oil
 2 | | flour tortillas
@@ -328,6 +485,13 @@ INSTRUCTIONS:
 3. Cook the noodles separately.
 
 Example output:
+TITLE: Simple Pasta
+DESC: A quick pasta dish.
+SERVINGS: 2
+PREP: 5
+COOK: 10
+TAGS: italian, quick
+
 INGREDIENTS:
 1/2 | tsp | olive oil
 2 | | flour tortillas
@@ -339,29 +503,43 @@ INSTRUCTIONS:
 2. Sprinkle @[grated cheese] on top.
 3. Cook the @[egg noodles] separately.
 
-Notice how partial words are matched to the full ingredient name:
-- "oil" -> @[olive oil]
-- "tortilla" -> @[flour tortillas]
-- "cheese" -> @[grated cheese]
-- "noodles" -> @[egg noodles]
-In a recipe, when the instructions mention a word like "noodles", "broth", "oil", etc., it refers to the ingredient in the INGREDIENTS list. Always tag it with the FULL ingredient item name.
+Notice: "oil" -> @[olive oil], "tortilla" -> @[flour tortillas], "cheese" -> @[grated cheese], "noodles" -> @[egg noodles].
 
 Rules:
-- The tag format is @[item name] — the @ sign, then [ then the ingredient item name, then ]. Example: @[bok choy]
-- Match aggressively: any word in the instructions that refers to an ingredient should be tagged. "noodles" matches "wonton noodles", "broth" matches "chicken broth", "oil" matches "olive oil".
-- Match to the MOST SPECIFIC ingredient. If the list has both "wontons" and "wonton noodles", then "wontons" in the text matches @[wontons], and "noodles" matches @[wonton noodles]. Do not confuse similar ingredients.
+- The tag format is @[item name] — @ then [ then ingredient item name then ]. Example: @[bok choy]
+- Match aggressively: any word that refers to an ingredient should be tagged. Examples:
+  "noodles" -> @[wonton noodles], "broth" -> @[chicken broth], "oil" -> @[olive oil],
+  "spinach" -> @[baby spinach], "cheese" -> @[mozzarella cheese] or @[cottage cheese] depending on context,
+  "pepper" -> @[black pepper] or @[red pepper flakes] or @[bell pepper] depending on context.
+- Match to the MOST SPECIFIC ingredient. If the list has both "wontons" and "wonton noodles", then "wontons" matches @[wontons] and "noodles" matches @[wonton noodles].
+- Tag EVERY mention of an ingredient throughout the instructions, not just the first occurrence.
+- Do NOT tag inside image alt text (inside ![...] brackets). Only tag in instruction step text.
 - ONLY add @[] tags. Do NOT change, shorten, or remove ANY other text, images, or step numbers.
-- Output the COMPLETE recipe in the same format (all sections: TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS).`
+- IMPORTANT: Output the COMPLETE recipe starting from TITLE through the end. Include ALL sections: TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS. Do not skip the header.`
 
-	// callLLM sends a system+user prompt and returns the raw content string.
-	callLLM := func(ctx context.Context, system, user string) (string, error) {
+	// ── LLM caller ───────────────────────────────────────────────────────
+
+	callLLM := func(ctx context.Context, system, user string, enableThinking bool) (string, error) {
+		temp := 0.7
+		topP := 0.8
+		maxTokens := 8192
+		if enableThinking {
+			temp = 0.6
+			topP = 0.95
+			maxTokens = 16384
+		}
 		llmReq := map[string]any{
 			"messages": []map[string]string{
 				{"role": "system", "content": system},
-				{"role": "user", "content": "/no_think\n" + user},
+				{"role": "user", "content": user},
 			},
-			"temperature": 0,
-			"max_tokens":  4096,
+			"temperature":          temp,
+			"top_p":                topP,
+			"top_k":                20,
+			"min_p":                0.05,
+			"repetition_penalty":   1.05,
+			"max_tokens":           maxTokens,
+			"chat_template_kwargs": map[string]any{"enable_thinking": enableThinking},
 		}
 		llmBody, err := json.Marshal(llmReq)
 		if err != nil {
@@ -374,7 +552,7 @@ Rules:
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 
-		resp, err := client.Do(httpReq)
+		resp, err := llmClient.Do(httpReq)
 		if err != nil {
 			return "", fmt.Errorf("LLM request failed: %w", err)
 		}
@@ -399,15 +577,60 @@ Rules:
 		}
 
 		content := strings.TrimSpace(llmResp.Choices[0].Message.Content)
-		// Strip markdown fences
+		if idx := strings.Index(content, "<think>"); idx == 0 {
+			if end := strings.Index(content, "</think>"); end > 0 {
+				content = strings.TrimSpace(content[end+len("</think>"):])
+			}
+		}
 		if strings.HasPrefix(content, "```") {
 			lines := strings.Split(content, "\n")
 			if len(lines) >= 3 {
 				content = strings.Join(lines[1:len(lines)-1], "\n")
 			}
 		}
+		content = stripReasoningSpillover(content)
 		return content, nil
 	}
+
+	// ── Fetch HTML (static, then Browserless fallback) ───────────────────
+
+	fetchHTML := func(ctx context.Context, targetURL string) (string, error) {
+		req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("User-Agent", chromeUA)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+		resp, err := fetchClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("fetch failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			return "", fmt.Errorf("upstream returned %d", resp.StatusCode)
+		}
+
+		data, err := io.ReadAll(io.LimitReader(resp.Body, proxyMaxBody))
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+
+	fetchViaBrowserlessStr := func(ctx context.Context, targetURL string) (string, error) {
+		if browserlessEndpoint == "" {
+			return "", fmt.Errorf("browserless not configured")
+		}
+		data, _, err := fetchViaBrowserless(ctx, browserlessClient, browserlessEndpoint, browserlessToken, targetURL)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+
+	// ── Handler ──────────────────────────────────────────────────────────
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORSHeaders(w, corsOrigin)
@@ -423,43 +646,161 @@ Rules:
 		}
 
 		var req struct {
-			Text string `json:"text"`
-			Pass string `json:"pass"` // "extract" or "enhance"
+			URL  string `json:"url"`
+			Text string `json:"text"` // pre-built simple format (JSON-LD path)
+			Mode string `json:"mode"` // "ai" or "basic"
 		}
 		body := http.MaxBytesReader(w, r.Body, llmMaxRequestBody)
 		if err := json.NewDecoder(body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		if len(req.Text) < 20 {
-			http.Error(w, "text too short", http.StatusBadRequest)
+
+		if req.Mode == "ai" && llmURL == "" {
+			http.Error(w, "LLM extraction not configured", http.StatusNotImplemented)
 			return
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), llmTimeout)
 		defer cancel()
 
-		// Select prompt based on pass
-		prompt := extractPrompt
-		if req.Pass == "enhance" {
-			prompt = enhancePrompt
-		}
-
-		result, err := callLLM(ctx, prompt, req.Text)
-		if err != nil {
-			slog.Error("proxy: LLM call failed", "pass", req.Pass, "error", err)
-			http.Error(w, "LLM processing failed", http.StatusBadGateway)
+		// ── Text-only path: frontend already built simple format from JSON-LD ──
+		if req.Text != "" {
+			if llmURL == "" {
+				http.Error(w, "LLM extraction not configured", http.StatusNotImplemented)
+				return
+			}
+			// Run LLM passes 1-3 on pre-built simple format (skip pass 0)
+			slog.Debug("extract: LLM pass 1 (extract) on pre-built input")
+			pass1, err := callLLM(ctx, extractPrompt, req.Text, false)
+			if err != nil {
+				slog.Error("extract: LLM extract failed", "error", err)
+				http.Error(w, "LLM extraction failed", http.StatusBadGateway)
+				return
+			}
+			slog.Debug("extract: LLM pass 2 (process)")
+			pass2, err := callLLM(ctx, processPrompt, pass1, false)
+			if err != nil {
+				pass2 = pass1
+			}
+			slog.Debug("extract: LLM pass 3 (tag)")
+			pass3, err := callLLM(ctx, tagPrompt, pass2, true)
+			if err != nil {
+				pass3 = pass2
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Write([]byte(pass3))
 			return
 		}
 
-		// Basic validation — check for TITLE: in the output
-		if !strings.Contains(result, "TITLE:") && !strings.Contains(result, "INGREDIENTS:") {
-			slog.Error("proxy: LLM returned unexpected format", "content", result[:min(len(result), 200)])
+		// ── URL path: full fetch + extract pipeline ──────────────────────
+
+		// Validate URL
+		targetURL, err := validateProxyURL(req.URL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// ── Step 1: Fetch HTML ───────────────────────────────────────────
+		slog.Debug("extract: fetching", "url", targetURL.String())
+		htmlContent, err := fetchHTML(ctx, targetURL.String())
+		if err != nil {
+			slog.Debug("extract: static fetch failed", "error", err)
+			// Try Browserless as fallback for 403s etc.
+			htmlContent, err = fetchViaBrowserlessStr(ctx, targetURL.String())
+			if err != nil {
+				http.Error(w, "could not fetch the URL", http.StatusBadGateway)
+				return
+			}
+		}
+
+		// ── Step 2: Check for JSON-LD ────────────────────────────────────
+		hasJsonLd := strings.Contains(htmlContent, `"@type"`) && strings.Contains(htmlContent, `"Recipe"`)
+
+		// If no JSON-LD on static HTML, try Browserless (JS rendering may produce it)
+		if !hasJsonLd {
+			slog.Debug("extract: no JSON-LD, trying browserless")
+			rendered, renderErr := fetchViaBrowserlessStr(ctx, targetURL.String())
+			if renderErr == nil {
+				htmlContent = rendered
+				hasJsonLd = strings.Contains(htmlContent, `"@type"`) && strings.Contains(htmlContent, `"Recipe"`)
+			}
+		}
+
+		// ── Step 3: Build LLM input or return basic extraction ───────────
+		if req.Mode == "basic" || (req.Mode == "ai" && llmURL == "") {
+			// Basic mode — just return whatever we have. Frontend parses JSON-LD.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(htmlContent))
+			return
+		}
+
+		// AI mode — build input and run LLM pipeline
+		var llmInput string
+		if hasJsonLd {
+			// Frontend will have built simple format from JSON-LD — but now we do it server-side.
+			// For now, send the HTML back and let frontend build simple format, then call us again.
+			// TODO: move buildSimpleFormat to Go for full server-side pipeline.
+			//
+			// Actually — keep it simple. Send the HTML with JSON-LD back to the frontend.
+			// The frontend already knows how to buildSimpleFormat from JSON-LD.
+			// Only use the LLM pipeline for the no-JSON-LD case where we need cleanHtmlForLlm.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(htmlContent))
+			return
+		}
+
+		// No JSON-LD — clean HTML and run full LLM pipeline server-side
+		slog.Debug("extract: no JSON-LD, cleaning HTML for LLM")
+		llmInput = cleanHtmlForLlm(htmlContent)
+
+		if len(llmInput) < 50 {
+			http.Error(w, "could not extract content from page", http.StatusBadGateway)
+			return
+		}
+
+		// Pass 0: Raw extraction (thinking enabled)
+		slog.Debug("extract: LLM pass 0 (raw extract)")
+		pass0, err := callLLM(ctx, rawExtractPrompt, llmInput, true)
+		if err != nil {
+			slog.Error("extract: LLM raw extract failed", "error", err)
+			http.Error(w, "LLM extraction failed", http.StatusBadGateway)
+			return
+		}
+
+		// Pass 1: Extract (no thinking)
+		slog.Debug("extract: LLM pass 1 (extract)")
+		pass1, err := callLLM(ctx, extractPrompt, pass0, false)
+		if err != nil {
+			slog.Error("extract: LLM extract failed", "error", err)
+			http.Error(w, "LLM extraction failed", http.StatusBadGateway)
+			return
+		}
+
+		// Pass 2: Process (no thinking)
+		slog.Debug("extract: LLM pass 2 (process)")
+		pass2, err := callLLM(ctx, processPrompt, pass1, false)
+		if err != nil {
+			slog.Error("extract: LLM process failed", "error", err)
+			pass2 = pass1
+		}
+
+		// Pass 3: Tag (thinking enabled)
+		slog.Debug("extract: LLM pass 3 (tag)")
+		pass3, err := callLLM(ctx, tagPrompt, pass2, true)
+		if err != nil {
+			slog.Error("extract: LLM tag failed", "error", err)
+			pass3 = pass2
+		}
+
+		if !strings.Contains(pass3, "TITLE:") && !strings.Contains(pass3, "INGREDIENTS:") {
+			slog.Error("extract: LLM returned unexpected format", "content", pass3[:min(len(pass3), 200)])
 			http.Error(w, "LLM returned unexpected format", http.StatusBadGateway)
 			return
 		}
 
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte(result))
+		w.Write([]byte(pass3))
 	}
 }

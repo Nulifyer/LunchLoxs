@@ -5,7 +5,15 @@
  * Tests the full recipe URL import pipeline and saves each stage to disk for inspection.
  *
  * Usage:
- *   bun run dev-data/llm-test/run-llm-extraction-test.ts [url]
+ *   bun run dev-data/llm-test/run-llm-extraction-test.ts [url] [--stop-after=STAGE]
+ *
+ * Stages: fetch, input, pass0, pass1, pass2, pass3
+ *   fetch  — stop after fetching HTML + checking JSON-LD (saves 00-raw.html)
+ *   input  — stop after building LLM input (saves 01-input.txt)
+ *   pass0  — stop after raw extraction (no-JSON-LD path only)
+ *   pass1  — stop after Pass 1 (extract)
+ *   pass2  — stop after Pass 2 (process)
+ *   pass3  — run full pipeline (default)
  *
  * Defaults to: https://www.madewithlau.com/recipes/wonton-noodle-soup
  *
@@ -14,21 +22,29 @@
  *   - LLM (llama.cpp) running on localhost:8081 (podman compose up -d llama)
  *
  * Output files saved to dev-data/llm-test/:
- *   01-static.html              Raw HTML from static fetch
- *   02-rendered.html            HTML after Browserless rendering (if needed)
- *   03-jsonld-raw.json          Raw JSON-LD recipe object extracted from HTML
- *   04-simple-format.txt        Simple text format built from JSON-LD + page images
- *   05-llm-pass1-extract.txt    LLM Pass 1: fix quantities, merge dupes
- *   06-llm-pass2-process.txt    LLM Pass 2: clean ingredient names, place images
- *   07-llm-pass3-tag.txt        LLM Pass 3: add @[] ingredient tags
- *   08-final-parsed.json        Final ScrapedRecipe object after parsing
+ *   01-input.txt                Simple format (JSON-LD path) or cleaned HTML (raw path)
+ *   02-extract.txt              Pass 1 output (JSON-LD path)
+ *   02-raw-extract.txt          Pass 0 output: raw text → simple format (raw path)
+ *   03-extract.txt              Pass 1 output (raw path)
+ *   04-process.txt              Pass 2: clean ingredient names, place images
+ *   05-tag.txt                  Pass 3: add @[] ingredient tags
+ *   06-final.json               Final ScrapedRecipe object after parsing
  */
 
-const TARGET_URL = Bun.argv[2] ?? "https://www.madewithlau.com/recipes/wonton-noodle-soup";
+// Parse args: positional URL and optional --stop-after=STAGE
+const args = Bun.argv.slice(2);
+const stopArg = args.find((a) => a.startsWith("--stop-after="));
+const STOP_AFTER = stopArg ? stopArg.split("=")[1]! : "pass3";
+const TARGET_URL = args.find((a) => !a.startsWith("--")) ?? "https://www.madewithlau.com/recipes/wonton-noodle-soup";
 const OUT_DIR = import.meta.dir;
 const LLM_URL = "http://localhost:8081";
 const BROWSERLESS_URL = "http://localhost:3000";
 const BROWSERLESS_TOKEN = "dev-token";
+const VALID_STAGES = ["fetch", "input", "pass0", "pass1", "pass2", "pass3"];
+if (!VALID_STAGES.includes(STOP_AFTER)) {
+  console.error(`Invalid --stop-after stage: ${STOP_AFTER}. Valid: ${VALID_STAGES.join(", ")}`);
+  process.exit(1);
+}
 
 function save(name: string, content: string): void {
   Bun.write(`${OUT_DIR}/${name}`, content);
@@ -218,6 +234,157 @@ function buildSimpleFormat(recipe: Record<string, unknown>, pageImages: string[]
   return lines.join("\n");
 }
 
+// ─── Clean HTML for LLM (no-JSON-LD fallback) ───────────────────────────────
+
+import { parse as parseHtml, type HTMLElement as ParsedHTMLElement } from "node-html-parser";
+
+function cleanHtmlForLlm(html: string): string {
+  const doc = parseHtml(html);
+
+  const title = doc.querySelector("title")?.textContent?.trim() ?? "";
+
+  // Try to isolate the main recipe/content area using known selectors.
+  // Priority: recipe plugin containers > microdata > generic article > fallback
+  // Keep it simple — use broad structural elements, not plugin-specific classes.
+  // Sites without JSON-LD are typically old blogs where these work reliably.
+  const containerSelectors = [
+    "article",
+    "main",
+    ".entry-content", ".post-content", ".article-body", ".post-body",
+    ".entry", ".hentry",
+    "#content",
+  ];
+
+  let contentEl: ParsedHTMLElement | null = null;
+  for (const sel of containerSelectors) {
+    const el = doc.querySelector(sel);
+    if (el && el.innerHTML.length > 200) {
+      contentEl = el;
+      break;
+    }
+  }
+  if (!contentEl) contentEl = doc.querySelector("body") ?? doc;
+
+  // Remove non-content elements
+  for (const tag of ["script", "style", "nav", "footer", "header", "aside", "iframe", "svg", "noscript", "form"]) {
+    contentEl.querySelectorAll(tag).forEach((el) => el.remove());
+  }
+  // Remove comment sections, sharing/social, related posts, ads, sidebar widgets
+  const junkSelectors = [
+    '[class*="comment"]', '[class*="share"]', '[class*="social"]',
+    '[class*="related"]', '[class*="sidebar"]', '[class*="widget"]',
+    '[class*="advertisement"]', '[class*="popular-post"]', '[class*="post-navigation"]',
+    '[id="comments"]', '[id="sidebar"]',
+  ];
+  for (const sel of junkSelectors) {
+    contentEl.querySelectorAll(sel).forEach((el) => el.remove());
+  }
+
+  // Headings that signal non-recipe content — stop processing when we hit these
+  const junkHeadingPatterns = [
+    /^related\b/i, /^more\s+recipes/i, /^you\s+(may\s+)?also\s+like/i,
+    /^recommended/i, /^popular\b/i, /^recent\s+posts/i,
+    /^leave\s+a\s+(comment|reply|review)/i, /^write\s+a\s+review/i,
+    /^\d+\s+(comment|response|review)/i, /^comments?\s*$/i,
+    /^about\s+the\s+author/i, /^meet\s+/i, /^author\b/i,
+    /^categories\b/i, /^archives\b/i, /^tags\s*:/i,
+    /^share\s+this/i, /^follow\b/i, /^subscribe\b/i,
+    /^newsletter/i, /^blogroll/i,
+  ];
+
+  function isJunkHeading(text: string): boolean {
+    return junkHeadingPatterns.some((p) => p.test(text.trim()));
+  }
+
+  // Convert the DOM tree to structured text with images inline.
+  // Walk the tree and convert elements to readable text.
+  const lines: string[] = [];
+  const seenImgs = new Set<string>();
+  let stopped = false;
+
+  function walk(node: ParsedHTMLElement): void {
+    for (const child of node.childNodes) {
+      if (stopped) return;
+
+      // Text node
+      if (child.nodeType === 3) {
+        const t = child.textContent.replace(/[ \t]+/g, " ");
+        if (t.trim()) lines.push(t);
+        continue;
+      }
+      // Element node
+      if (child.nodeType !== 1) continue;
+      const el = child as ParsedHTMLElement;
+      const tag = el.tagName?.toLowerCase() ?? "";
+
+      // Headings → markdown (but stop if it's a junk heading)
+      if (/^h[1-6]$/.test(tag)) {
+        const level = parseInt(tag[1]!);
+        const prefix = "#".repeat(Math.min(level, 3));
+        const text = el.textContent.trim();
+        if (text && isJunkHeading(text)) {
+          stopped = true;
+          return;
+        }
+        if (text) lines.push(`\n${prefix} ${text}`);
+        continue;
+      }
+
+      // Images → keep full <img> tag so LLM sees all attributes
+      if (tag === "img") {
+        const src = (el.getAttribute("src") ?? "").replace(/&amp;/g, "&");
+        if (!src || src.startsWith("data:") || seenImgs.has(src)) continue;
+        if (/(logo|icon|avatar|badge|award|pixel|gravatar|wp-smiley|emoji|banner|tracking)/i.test(src)) continue;
+        if (/\.gif(\?|$)/i.test(src)) continue;
+        seenImgs.add(src);
+        lines.push(`\n${el.toString()}`);
+        continue;
+      }
+
+      // List items → bullet
+      if (tag === "li") {
+        const text = el.textContent.trim();
+        if (text) lines.push(`- ${text}`);
+        continue;
+      }
+
+      // Block elements → recurse with spacing
+      if (["p", "div", "section", "blockquote", "ul", "ol", "figure", "figcaption"].includes(tag)) {
+        walk(el);
+        lines.push(""); // blank line after block
+        continue;
+      }
+
+      // Everything else → recurse
+      walk(el);
+    }
+  }
+
+  walk(contentEl);
+
+  let text = lines.join("\n");
+  // Decode entities
+  text = decodeEntities(text);
+  text = text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ");
+  // Collapse whitespace while preserving structure
+  text = text.replace(/[ \t]+/g, " ");
+  text = text.replace(/\n[ \t]+/g, "\n");
+  text = text.replace(/[ \t]+\n/g, "\n");
+  text = text.replace(/\n{3,}/g, "\n\n");
+  text = text.trim();
+
+  if (text.length > 15000) {
+    text = text.slice(0, 15000) + "\n[... truncated]";
+  }
+
+  let result = "";
+  if (title) result += `# ${title}\n\n`;
+  result += text;
+
+  return result;
+}
+
 // ─── Extract page images ─────────────────────────────────────────────────────
 
 function extractPageImages(html: string): string[] {
@@ -249,7 +416,12 @@ function extractPageImages(html: string): string[] {
 
 // ─── LLM call ────────────────────────────────────────────────────────────────
 
-async function callLLM(text: string, systemPrompt: string, enableThinking = false): Promise<string> {
+interface LLMResult {
+  content: string;
+  reasoning: string;
+}
+
+async function callLLM(text: string, systemPrompt: string, enableThinking = false): Promise<LLMResult> {
   const resp = await fetch(`${LLM_URL}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -258,8 +430,13 @@ async function callLLM(text: string, systemPrompt: string, enableThinking = fals
         { role: "system", content: systemPrompt },
         { role: "user", content: text },
       ],
-      temperature: 0,
-      max_tokens: 4096,
+      // Qwen3.5 recommended sampling: 0.6/0.95/20 for thinking, 0.7/0.8/20 for non-thinking
+      temperature: enableThinking ? 0.6 : 0.7,
+      top_p: enableThinking ? 0.95 : 0.8,
+      top_k: 20,
+      min_p: 0.05,
+      repetition_penalty: 1.05,
+      max_tokens: enableThinking ? 16384 : 8192,
       stream: true,
       chat_template_kwargs: { enable_thinking: enableThinking },
     }),
@@ -314,6 +491,16 @@ async function callLLM(text: string, systemPrompt: string, enableThinking = fals
 
   if (reasoning || tokenCount > 0) process.stdout.write("\n");
 
+  // In streaming mode, llama.cpp may not separate <think> tags into reasoning_content.
+  // Parse them out of content manually as a fallback.
+  if (!reasoning && content.includes("<think>")) {
+    const thinkMatch = content.match(/^<think>([\s\S]*?)<\/think>\s*/);
+    if (thinkMatch) {
+      reasoning = thinkMatch[1]!;
+      content = content.slice(thinkMatch[0]!.length);
+    }
+  }
+
   if (reasoning) console.log(`    Thinking: ${reasoning.length.toLocaleString()} chars`);
   console.log(`    Output: ${tokenCount} tokens, ${content.length.toLocaleString()} chars`);
 
@@ -324,10 +511,57 @@ async function callLLM(text: string, systemPrompt: string, enableThinking = fals
     content = codeLines.slice(1, -1).join("\n");
   }
 
-  return content;
+  return { content, reasoning };
 }
 
+
 // ─── Prompts ─────────────────────────────────────────────────────────────────
+
+// Pass 0: Raw extraction — convert unstructured page text into simple format
+const RAW_EXTRACT_PROMPT = `You are a recipe extractor. You receive the raw text content of a web page that contains a recipe but has NO structured data. The text may contain <img> HTML tags — these are images from the page in their original position.
+
+Your job is to find the recipe and output it in a specific simple text format.
+
+Extract the recipe and output it in EXACTLY this format:
+
+TITLE: Recipe Name
+DESC: A short description of the dish
+SERVINGS: 4
+PREP: 30
+COOK: 45
+TAGS: tag1, tag2, tag3
+
+INGREDIENTS:
+2 | cup | flour
+1 | tsp | salt
+3 | | eggs
+
+INSTRUCTIONS:
+1. First step text here.
+![alt text](image-url)
+2. Second step text here.
+3. Third step text here.
+
+Rules:
+- Every ingredient line must be: quantity | unit | item name
+- Units must be standard: cup, tsp, tbsp, oz, lb, g, ml, clove, can, bunch, piece. Keep units lowercase singular.
+- If an ingredient has no unit (countable items like eggs), leave unit empty: "3 | | eggs"
+- Infer reasonable quantities for ingredients that don't specify one (e.g. salt -> "1 | tsp | salt").
+- PREP and COOK are in minutes. Set to 0 if not mentioned.
+- SERVINGS defaults to 4 if not mentioned.
+- Instructions must be numbered steps. Keep the FULL original text of each step — do NOT summarize or shorten.
+- IMAGES: Convert any <img> tags to ![alt](src) format. Place each image on its own line after the instruction step it relates to. Use the alt attribute for the alt text, and the src attribute for the URL. Skip images that are clearly not recipe photos (logos, badges, avatars).
+- TAGS: include cuisine type, dish type, dietary info, or other relevant tags from the page.
+- NON-ENGLISH: If the recipe is not in English, keep the original text AND add English translations:
+  - For TITLE: "Original Title (English Translation)"
+  - For ingredient items: "original name (english name)" e.g. "鶏レバー (chicken liver)"
+  - For each instruction step, add the English translation on the next line prefixed with "> " e.g.:
+    1. レバーを一口大に切る。
+    > Cut the liver into bite-sized pieces.
+  - DESC and TAGS should be in English.
+- IGNORE irrelevant or duplicate content: skip reviews, comments, related recipes, author bios, ads, navigation, repeated text, and other non-recipe content.
+- Output ONLY the plain text format above. No JSON, no markdown fencing, no explanation.
+- If the page contains multiple recipes, extract only the primary/main one.`;
 
 // Pass 1: Extract — fix missing data, infer quantities
 const EXTRACT_PROMPT = `You are a recipe data fixer. You receive recipe data in a simple text format. Fix any issues and output the SAME format back.
@@ -341,7 +575,7 @@ Your job:
   Do NOT leave unit empty when the source text specifies a measurement.
 - Fix any ingredients missing quantities by inferring reasonable defaults (e.g. " | | salt" -> "1 | tsp | salt").
 - Units must be a standard measurement: cup, tsp, tbsp, oz, lb, g, ml, clove, can, bunch, piece. Do NOT use the ingredient name as the unit. Keep units lowercase singular.
-- Merge duplicate ingredients if they appear twice with the same item name (combine quantities).
+- Merge duplicate ingredients ONLY if they are truly the same item used for the same purpose (combine quantities). Do NOT merge ingredients that share a name but are used in different parts of the recipe (e.g. "3/4 cup sugar" for a topping and "2 tbsp sugar" for a batter are separate ingredients — keep both).
 - CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten, summarize, or paraphrase any step.
 - Keep ALL images exactly where they are. Do NOT remove or move any ![alt](url) lines.
 - Decode any HTML entities in the text (e.g. &#8217; -> ', &frac14; -> 1/4, &frac12; -> 1/2, &frac34; -> 3/4).
@@ -394,6 +628,7 @@ Notice: "Author Kate" was removed (unrelated). Each cooking image was placed aft
 
 Rules:
 - CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten or paraphrase.
+- CRITICAL: Ingredients MUST stay in pipe-delimited format: quantity | unit | item. Do NOT drop the pipes.
 - Output the COMPLETE recipe in the same format (TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS).
 - No JSON, no markdown fencing, no explanation.`;
 
@@ -523,8 +758,8 @@ async function main(): Promise<void> {
   console.log(`\nTesting pipeline for: ${TARGET_URL}\n`);
 
   // Clean old output files
-  for (const name of ["01-input.txt", "02-extract.txt", "03-process.txt",
-    "04-tag.txt", "05-final.json"]) {
+  for (const name of ["00-raw.html", "00-jsonld.json", "01-input.txt", "02-raw-extract.txt", "02-extract.txt", "03-extract.txt",
+    "03-process.txt", "04-process.txt", "04-tag.txt", "05-tag.txt", "05-final.json", "06-final.json"]) {
     try { const fs = await import("fs"); fs.unlinkSync(`${OUT_DIR}/${name}`); } catch { /* ignore */ }
   }
 
@@ -553,54 +788,105 @@ async function main(): Promise<void> {
     console.log(`  ${elapsed(start)} | ${html.length.toLocaleString()} bytes | JSON-LD: ${recipe ? "YES" : "NO"}`);
   }
 
-  if (!recipe) {
-    console.log("\nNo JSON-LD recipe found. Cannot continue.");
+  if (STOP_AFTER === "fetch") {
+    save("00-raw.html", html);
+    if (recipe) save("00-jsonld.json", JSON.stringify(recipe, null, 2));
+    console.log(`\nStopped after fetch. Done in ${elapsed(totalStart)}`);
     return;
   }
 
-  // ── Build simple format input ──────────────────────────────────────────
-  const trimmed = { ...recipe };
-  for (const key of ["@context", "video", "publisher", "review", "aggregateRating",
-    "mainEntityOfPage", "datePublished", "dateModified", "author", "nutrition"]) {
-    delete trimmed[key];
-  }
   const pageImages = extractPageImages(html);
-  const simpleFormat = buildSimpleFormat(trimmed, pageImages);
-  save("01-input.txt", simpleFormat);
-  const lines = simpleFormat.split("\n");
-  console.log(`\nInput: ${lines.filter((l) => l.includes("|")).length} ingredients | ${lines.filter((l) => /^\d+\./.test(l)).length} steps | ${lines.filter((l) => l.startsWith("![")).length} images`);
+  let pass1: string;
 
-  // ── Pass 1: Extract ────────────────────────────────────────────────────
-  console.log("\nPass 1: Extract (fix quantities, merge dupes)...");
-  start = Date.now();
-  const pass1raw = await callLLM(simpleFormat, EXTRACT_PROMPT, false);
-  const pass1 = decodeEntities(pass1raw);
-  console.log(`  ${elapsed(start)}`);
-  save("02-extract.txt", pass1);
+  if (recipe) {
+    // ── JSON-LD path: build simple format, then Pass 1 ────────────────
+    const trimmed = { ...recipe };
+    for (const key of ["@context", "video", "publisher", "review", "aggregateRating",
+      "mainEntityOfPage", "datePublished", "dateModified", "author", "nutrition"]) {
+      delete trimmed[key];
+    }
+    const simpleFormat = buildSimpleFormat(trimmed, pageImages);
+    save("01-input.txt", simpleFormat);
+    const lines = simpleFormat.split("\n");
+    console.log(`\nInput: ${lines.filter((l) => l.includes("|")).length} ingredients | ${lines.filter((l) => /^\d+\./.test(l)).length} steps | ${lines.filter((l) => l.startsWith("![")).length} images`);
+
+    if (STOP_AFTER === "input") {
+      console.log(`\nStopped after input. Done in ${elapsed(totalStart)}`);
+      return;
+    }
+
+    console.log("\nPass 1: Extract (fix quantities, merge dupes)...");
+    start = Date.now();
+    const pass1result = await callLLM(simpleFormat, EXTRACT_PROMPT, false);
+    pass1 = decodeEntities(pass1result.content);
+    console.log(`  ${elapsed(start)}`);
+    save("02-extract.txt", pass1);
+  } else {
+    // ── No JSON-LD: clean HTML → Pass 0 (raw extraction) → Pass 1 ────
+    console.log("\nNo JSON-LD found. Using raw text extraction...");
+    save("00-raw.html", html);
+    const cleanedText = cleanHtmlForLlm(html);
+    save("01-input.txt", cleanedText);
+    console.log(`  Cleaned text: ${cleanedText.length.toLocaleString()} chars`);
+
+    if (STOP_AFTER === "input") {
+      console.log(`\nStopped after input. Done in ${elapsed(totalStart)}`);
+      return;
+    }
+
+    console.log("\nPass 0: Raw extract (page text → simple format)...");
+    start = Date.now();
+    const pass0result = await callLLM(cleanedText, RAW_EXTRACT_PROMPT, true);
+    const pass0 = decodeEntities(pass0result.content);
+    console.log(`  ${elapsed(start)}`);
+    save("02-raw-extract.txt", pass0);
+
+    if (STOP_AFTER === "pass0") {
+      console.log(`\nStopped after pass0. Done in ${elapsed(totalStart)}`);
+      return;
+    }
+
+    console.log("\nPass 1: Extract (fix quantities, merge dupes)...");
+    start = Date.now();
+    const pass1result = await callLLM(pass0, EXTRACT_PROMPT, false);
+    pass1 = decodeEntities(pass1result.content);
+    console.log(`  ${elapsed(start)}`);
+    save("03-extract.txt", pass1);
+  }
+
+  if (STOP_AFTER === "pass1") {
+    console.log(`\nStopped after pass1. Done in ${elapsed(totalStart)}`);
+    return;
+  }
 
   // ── Pass 2: Process ────────────────────────────────────────────────────
   console.log("\nPass 2: Process (clean names, place images)...");
   start = Date.now();
-  const pass2raw = await callLLM(pass1, PROCESS_PROMPT, false);
-  const pass2 = decodeEntities(pass2raw);
+  const pass2result = await callLLM(pass1, PROCESS_PROMPT, false);
+  const pass2 = decodeEntities(pass2result.content);
   console.log(`  ${elapsed(start)}`);
-  save("03-process.txt", pass2);
+  save("04-process.txt", pass2);
+
+  if (STOP_AFTER === "pass2") {
+    console.log(`\nStopped after pass2. Done in ${elapsed(totalStart)}`);
+    return;
+  }
 
   // ── Pass 3: Tag ────────────────────────────────────────────────────────
   console.log("\nPass 3: Tag (add @[] ingredient references)...");
-  console.log("  (thinking enabled, budget 2048 tokens)");
+  console.log("  (thinking enabled)");
   start = Date.now();
-  const pass3raw = await callLLM(pass2, TAG_PROMPT, true);
-  const pass3 = decodeEntities(pass3raw);
+  const pass3result = await callLLM(pass2, TAG_PROMPT, true);
+  const pass3 = decodeEntities(pass3result.content);
   console.log(`  ${elapsed(start)}`);
-  save("04-tag.txt", pass3);
+  save("05-tag.txt", pass3);
   const tagCount = (pass3.match(/@\[/g) ?? []).length;
   console.log(`  @[] tags: ${tagCount}`);
 
   // ── Parse final ────────────────────────────────────────────────────────
   console.log("\nFinal parse...");
   const final = parseSimpleFormat(pass3);
-  save("05-final.json", JSON.stringify(final, null, 2));
+  save("06-final.json", JSON.stringify(final, null, 2));
   if (final) {
     console.log(`  Title: ${final.title}`);
     console.log(`  Ingredients: ${final.ingredients.length}`);

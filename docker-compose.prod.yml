@@ -25,11 +25,12 @@
 #   Without LLM (basic JSON-LD extraction only):
 #     docker compose -f docker-compose.prod.yml --profile scrape up -d
 #
-#   With LLM (enhanced extraction via Qwen3-8B):
+#   With LLM (enhanced extraction via Qwen3.5-9B):
 #     docker compose -f docker-compose.prod.yml --profile scrape --profile llm up -d
 #     Set LLM_ENDPOINT=http://llama:8080 in .env
 #
-#   The recommended model is Qwen3-8B-Q4_K_M (~5GB, needs ~6GB RAM).
+#   The recommended model is Qwen3.5-9B-Q8_0 (~9.5GB, needs ~12GB VRAM for GPU).
+#   Download: https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q8_0.gguf
 #   Build: docker build -t lunchloxs-llama docker/llama
 #   Any OpenAI-compatible endpoint works (e.g. Ollama, vLLM, or a remote API).
 

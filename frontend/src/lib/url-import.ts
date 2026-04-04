@@ -2,25 +2,22 @@
  * Import a recipe from a URL.
  *
  * Flow:
- *   1. Fetch HTML via proxy
- *   2. Try JSON-LD / microdata extraction
- *   3. If no JSON-LD, re-fetch with Browserless (JS rendering)
- *   4. CODE: Transform JSON-LD → simple text format (preserves full verbatim text)
- *   5. LLM Pass 1: Enhance simple format (infer quantities, clean units, place images)
- *   6. LLM Pass 2: Add @[ingredient] tags to instructions
- *   7. CODE: Parse simple format → ScrapedRecipe → download images → import
- *
- * Without LLM: steps 4-6 are skipped, basic JSON-LD extraction used instead.
+ *   1. User enters URL + picks mode (AI Enhanced / Quick Import)
+ *   2. POST /api/proxy/extract {url, mode}
+ *      - Backend fetches HTML (static → Browserless fallback)
+ *      - If JSON-LD found: returns HTML (frontend extracts locally)
+ *      - If no JSON-LD + AI mode: backend runs cleanHtml → LLM pipeline → returns simple format
+ *   3. Frontend parses response → ScrapedRecipe
+ *   4. Download images via proxy, import into book
  */
 
-import { extractRecipeFromHtml, buildSimpleFormat, hasJsonLdRecipe, extractHtmlImages, cleanHtmlForLlm, type ScrapedRecipe } from "./recipe-scraper";
+import { extractRecipeFromHtml, buildSimpleFormat, hasJsonLdRecipe, extractHtmlImages, type ScrapedRecipe } from "./recipe-scraper";
 import { canonicalUnitName } from "./units";
 import { parseQty, formatQty } from "./quantity";
 import { processAsset } from "./asset-processing";
 import { storeBlob } from "./blob-client";
 import { getSessionKeys } from "./auth";
 import { getApiBase } from "./config";
-import { showPrompt, showSelect } from "./dialogs";
 import { showLoading } from "./spinner";
 import { toastSuccess, toastError } from "./toast";
 import { importRecipesIntoBook } from "../import-export";
@@ -138,20 +135,13 @@ async function proxyFetch(url: string, render = false): Promise<Response> {
   });
 }
 
-/** Send text to LLM extract endpoint. Returns raw text response or null. */
-async function llmCall(text: string, pass: "extract" | "enhance" = "extract"): Promise<string | null> {
-  try {
-    const resp = await fetch(`${getApiBase()}/api/proxy/extract`, {
-      method: "POST",
-      headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
-      body: JSON.stringify({ text, pass }),
-    });
-    if (resp.status === 501) return null; // LLM not configured
-    if (!resp.ok) return null;
-    return await resp.text();
-  } catch {
-    return null;
-  }
+/** Call the unified extract endpoint. Backend handles fetch + Browserless + LLM pipeline. */
+async function extractRecipe(url: string, mode: "ai" | "basic"): Promise<Response> {
+  return fetch(`${getApiBase()}/api/proxy/extract`, {
+    method: "POST",
+    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ url, mode }),
+  });
 }
 
 /** Parse the simple text format into a ScrapedRecipe. */
@@ -220,21 +210,112 @@ async function isLlmAvailable(): Promise<boolean> {
     const resp = await fetch(`${getApiBase()}/api/proxy/extract`, {
       method: "POST",
       headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
-      body: JSON.stringify({ text: "" }),
+      body: JSON.stringify({ url: "https://probe.test", mode: "ai" }),
     });
-    // 501 = not configured, 400 = configured but bad input (means it's there)
+    // 501 = LLM not configured, 400 = configured (bad URL but endpoint exists)
     return resp.status !== 501;
   } catch {
     return false;
   }
 }
 
-export async function handleImportFromUrl(book: Book): Promise<void> {
-  const url = await showPrompt("Paste a recipe URL:", {
-    title: "Import from URL",
-    placeholder: "https://www.example.com/recipe/...",
-    confirmText: "Import",
+/** Show a combined URL + import mode dialog. Returns null if cancelled. */
+function showImportDialog(llmAvailable: boolean): Promise<{ url: string; useLlm: boolean } | null> {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "custom-dialog";
+    const article = document.createElement("article");
+    const body = document.createElement("div");
+    body.className = "custom-dialog-body";
+    const footer = document.createElement("div");
+    footer.className = "dialog-footer";
+    article.appendChild(body);
+    article.appendChild(footer);
+    dialog.appendChild(article);
+
+    const h = document.createElement("strong");
+    h.textContent = "Import from URL";
+    h.style.display = "block";
+    h.style.marginBottom = "0.5rem";
+    body.appendChild(h);
+
+    const label = document.createElement("label");
+    label.textContent = "Paste a recipe URL:";
+    label.style.fontSize = "0.8rem";
+    body.appendChild(label);
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "https://www.example.com/recipe/...";
+    input.style.marginTop = "0.3rem";
+    body.appendChild(input);
+
+    let modeSelect: HTMLSelectElement | null = null;
+    if (llmAvailable) {
+      const modeLabel = document.createElement("label");
+      modeLabel.textContent = "Import mode:";
+      modeLabel.style.fontSize = "0.8rem";
+      modeLabel.style.marginTop = "0.75rem";
+      modeLabel.style.display = "block";
+      body.appendChild(modeLabel);
+
+      modeSelect = document.createElement("select");
+      modeSelect.style.marginTop = "0.3rem";
+      for (const opt of [
+        { value: "llm", label: "AI Enhanced (slower, better quality)" },
+        { value: "basic", label: "Quick Import (fast, basic extraction)" },
+      ]) {
+        const o = document.createElement("option");
+        o.value = opt.value;
+        o.textContent = opt.label;
+        modeSelect.appendChild(o);
+      }
+      body.appendChild(modeSelect);
+    }
+
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => { dialog.close(); resolve(null); });
+    footer.appendChild(cancel);
+
+    const confirm = document.createElement("button");
+    confirm.textContent = "Import";
+    confirm.className = "primary";
+    const doConfirm = () => {
+      dialog.close();
+      resolve({ url: input.value, useLlm: modeSelect?.value === "llm" });
+    };
+    confirm.addEventListener("click", doConfirm);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") doConfirm(); });
+    footer.appendChild(confirm);
+
+    dialog.addEventListener("cancel", () => resolve(null));
+
+    // Mount and show (same pattern as dialogs.ts showAndCleanup)
+    document.body.appendChild(dialog);
+    dialog.style.position = "fixed";
+    dialog.style.top = "50%";
+    dialog.style.left = "50%";
+    dialog.style.transform = "translate(-50%, -50%)";
+    dialog.style.zIndex = "210";
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.style.display = "block";
+    backdrop.style.zIndex = "200";
+    document.body.insertBefore(backdrop, dialog);
+    dialog.show();
+    dialog.addEventListener("close", () => { backdrop.remove(); dialog.remove(); document.body.style.overflow = ""; }, { once: true });
+    document.body.style.overflow = "hidden";
+    input.focus();
   });
+}
+
+export async function handleImportFromUrl(book: Book): Promise<void> {
+  const llmAvailable = await isLlmAvailable();
+  const result = await showImportDialog(llmAvailable);
+  if (!result) return;
+
+  const { url, useLlm } = result;
   if (!url) return;
 
   try {
@@ -248,106 +329,73 @@ export async function handleImportFromUrl(book: Book): Promise<void> {
     return;
   }
 
-  // Check if LLM is available and let user choose mode
-  let useLlm = false;
-  const llmAvailable = await isLlmAvailable();
-  if (llmAvailable) {
-    const mode = await showSelect([
-      { value: "llm", label: "AI Enhanced (slower, better quality)" },
-      { value: "basic", label: "Quick Import (fast, basic extraction)" },
-    ], {
-      title: "Import Mode",
-      message: "AI enhancement adds ingredient tagging, infers missing quantities, and places step images. Takes a few minutes.",
-    });
-    if (!mode) return; // cancelled
-    useLlm = mode === "llm";
-  }
-
   const loading = showLoading("Fetching recipe...", 0);
   try {
-    // 1. Fetch static HTML
-    const resp = await proxyFetch(url);
+    // 1. Send URL + mode to backend — it handles fetch, Browserless, JSON-LD check, LLM pipeline
+    const mode = useLlm ? "ai" : "basic";
+    loading.update(useLlm ? "Extracting recipe with AI..." : "Fetching recipe...");
+    let stopFlavor: (() => void) | null = null;
+    if (useLlm) stopFlavor = startFlavorText(loading);
+
+    const resp = await extractRecipe(url, mode);
+
+    if (stopFlavor) stopFlavor();
+
     if (!resp.ok) {
       const status = resp.status;
-      if (status === 403 || status === 429) {
-        toastError("This site blocked the request. Try a different URL.");
-      } else if (status === 400) {
+      if (status === 400) {
         toastError((await resp.text()) || "Invalid URL.");
+      } else if (status === 501) {
+        toastError("AI extraction is not configured on this server.");
+      } else if (status === 429) {
+        toastError("Rate limit exceeded. Try again later.");
       } else {
-        toastError("Could not reach the URL. Please check it and try again.");
+        toastError("Could not extract recipe. Try a different URL.");
       }
       return;
     }
 
-    let html = await resp.text();
-    loading.update("Looking for recipe data...");
-    let hasJsonLd = hasJsonLdRecipe(html);
-
-    // 2. If no JSON-LD in static HTML, try Browserless rendering
-    if (!hasJsonLd) {
-      loading.update("Page needs rendering...");
-      loading.updateLine2("Loading JavaScript content");
-      const renderResp = await proxyFetch(url, true);
-      if (renderResp.ok) {
-        html = await renderResp.text();
-        hasJsonLd = hasJsonLdRecipe(html);
-      }
-      loading.updateLine2("");
-    }
-
-    // 3. Extract recipe
+    // 2. Parse the response based on content type
     let recipe: ScrapedRecipe | null = null;
+    const contentType = resp.headers.get("Content-Type") ?? "";
 
-    if (useLlm && hasJsonLd) {
-      // JSON-LD + LLM path:
-      // a) Transform JSON-LD → simple format (preserves full verbatim text + images)
-      loading.update("Preparing recipe data...");
-      const pageImages = extractHtmlImages(html);
-      const simpleFormat = buildSimpleFormat(html, pageImages);
+    if (contentType.includes("text/plain")) {
+      // LLM pipeline output — simple text format
+      loading.update("Parsing recipe data...");
+      const text = await resp.text();
+      recipe = parseSimpleFormat(text);
+    } else {
+      // HTML response — extract JSON-LD / microdata locally
+      loading.update("Extracting recipe data...");
+      const html = await resp.text();
 
-      if (simpleFormat) {
-        // b) LLM Pass 1: Enhance (infer quantities, clean up, place additional images)
-        loading.update("Enhancing recipe...");
-        let stopFlavor = startFlavorText(loading);
-        const enhanced = await llmCall(simpleFormat, "extract");
-        stopFlavor();
-
-        if (enhanced) {
-          // c) LLM Pass 2: Tag ingredients in instructions
-          loading.update("Tagging ingredients...");
-          stopFlavor = startFlavorText(loading);
-          const tagged = await llmCall(enhanced, "enhance");
-          stopFlavor();
-
-          // d) Parse the final simple format
-          recipe = parseSimpleFormat(tagged ?? enhanced);
+      // Try LLM-enhanced path if we have JSON-LD and user wants AI
+      if (useLlm && hasJsonLdRecipe(html)) {
+        const pageImages = extractHtmlImages(html);
+        const simpleFormat = buildSimpleFormat(html, pageImages);
+        if (simpleFormat) {
+          // Send simple format to backend for LLM processing
+          loading.update("Enhancing recipe with AI...");
+          const stopFlavor2 = startFlavorText(loading);
+          const llmResp = await fetch(`${getApiBase()}/api/proxy/extract`, {
+            method: "POST",
+            headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+            body: JSON.stringify({ text: simpleFormat }),
+          });
+          stopFlavor2();
+          if (llmResp.ok) {
+            recipe = parseSimpleFormat(await llmResp.text());
+          }
         }
       }
-    } else if (useLlm && !hasJsonLd) {
-      // No JSON-LD — send cleaned HTML to LLM, get simple format back
-      loading.update("No structured data, trying AI extraction...");
-      const stopFlavor = startFlavorText(loading);
-      const cleaned = cleanHtmlForLlm(html);
-      const result = await llmCall(cleaned, "extract");
-      stopFlavor();
 
-      if (result) {
-        // Pass 2: Tag ingredients
-        loading.update("Tagging ingredients...");
-        const stopFlavor2 = startFlavorText(loading);
-        const tagged = await llmCall(result, "enhance");
-        stopFlavor2();
-        recipe = parseSimpleFormat(tagged ?? result);
+      // Fall back to basic extraction
+      if (!recipe) {
+        recipe = extractRecipeFromHtml(html, url);
       }
     }
 
-    // 4. Fall back to basic JSON-LD extraction (no LLM, user chose basic, or LLM failed)
-    if (!recipe) {
-      loading.update("Extracting recipe...");
-      recipe = extractRecipeFromHtml(html, url);
-    }
-
-    // 5. Check if we got anything
+    // 3. Check if we got anything
     if (!recipe || !recipe.title) {
       toastError("Could not extract recipe data from this page. Try a different URL.");
       return;

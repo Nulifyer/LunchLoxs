@@ -169,7 +169,7 @@ func NewMux(queries *db.Queries, frontendURL string, rateConfig syncpkg.RateConf
 
 	// -- Proxy endpoints (recipe URL import) --
 	mux.HandleFunc("POST /api/proxy/fetch", proxyFetchHandler(queries, corsOrigin, cfg.browserlessEndpoint, cfg.browserlessToken))
-	mux.HandleFunc("POST /api/proxy/extract", proxyExtractHandler(queries, corsOrigin, cfg.llmEndpoint))
+	mux.HandleFunc("POST /api/proxy/extract", proxyExtractHandler(queries, corsOrigin, cfg.llmEndpoint, cfg.browserlessEndpoint, cfg.browserlessToken))
 
 	// CORS preflight for API endpoints
 	mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {
