@@ -56,12 +56,25 @@ self.onmessage = async (e: MessageEvent) => {
 
 async function loadModel(reportProgress: boolean) {
   if (extractor) return;
-  extractor = await (pipeline as any)("feature-extraction", "Xenova/bge-small-en-v1.5", {
-    dtype: "q8",
-    progress_callback: reportProgress
-      ? (p: any) => self.postMessage({ type: "model-progress", progress: p })
-      : undefined,
-  });
+  const progressCallback = reportProgress
+    ? (p: any) => self.postMessage({ type: "model-progress", progress: p })
+    : undefined;
+
+  // Try WebGPU first for ~4x speedup, fall back to WASM
+  try {
+    extractor = await (pipeline as any)("feature-extraction", "Xenova/bge-small-en-v1.5", {
+      device: "webgpu",
+      dtype: "fp32",
+      progress_callback: progressCallback,
+    });
+    self.postMessage({ type: "model-device", device: "webgpu" });
+  } catch {
+    extractor = await (pipeline as any)("feature-extraction", "Xenova/bge-small-en-v1.5", {
+      dtype: "q8",
+      progress_callback: progressCallback,
+    });
+    self.postMessage({ type: "model-device", device: "wasm" });
+  }
 }
 
 // -- Embedding generation --

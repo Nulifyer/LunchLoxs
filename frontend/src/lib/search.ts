@@ -261,11 +261,22 @@ export async function hybridSearch(query: string, limit = 15): Promise<SearchRes
     console.log("[search] vector returned", vectorHits.length, "hits", vectorHits.slice(0, 3).map(h => `${h.key.slice(-8)}:${h.score.toFixed(3)}`));
     if (vectorHits.length === 0) return search(query, limit);
 
-    // Map vector results to SearchResult using the fzf index for metadata
+    // Keep vector ordering — use fzf only to determine snippet field
+    const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
     const results: SearchResult[] = [];
     for (const { key } of vectorHits) {
       const entry = index.get(key);
-      if (entry) results.push({ entry, score: 0, matchField: "title" });
+      if (!entry) continue;
+
+      let bestField: SearchResult["matchField"] = "title";
+      let bestScore = 0;
+      let matchTag: string | undefined;
+      for (const token of tokens) {
+        const { score, field, tag } = scoreToken(token, entry);
+        if (score > bestScore) { bestScore = score; bestField = field; matchTag = tag; }
+      }
+
+      results.push({ entry, score: 0, matchField: bestField, matchTag });
     }
     console.log("[search] mapped", results.length, "results from", vectorHits.length, "vector hits");
     return results;

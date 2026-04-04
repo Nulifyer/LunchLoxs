@@ -63,6 +63,7 @@ export function createDropdown(items: DropdownItem[], opts?: { label?: string; c
         const sep = document.createElement("div");
         sep.className = "dropdown-sep";
         menu.appendChild(sep);
+        continue;
       }
 
       const btn = document.createElement("button");
