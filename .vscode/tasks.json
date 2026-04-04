@@ -11,7 +11,7 @@
     {
       "label": "frontend-dev",
       "type": "shell",
-      "command": "cd frontend && bun run build && bun run dev",
+      "command": "cd frontend && bun run build && LOG_LEVEL=debug bun run dev",
       "dependsOn": "infra",
       "isBackground": true,
       "problemMatcher": {

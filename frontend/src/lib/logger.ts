@@ -28,8 +28,16 @@ const origError = console.error.bind(console);
 
 const isDev = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 
-export const log = (...args: any[]) => { push("log", args); if (isDev) origLog(...args); };
-export const warn = (...args: any[]) => { push("warn", args); if (isDev) origWarn(...args); };
+// LOG_LEVEL: "debug" shows all, "info" (default) shows log+warn+error, "warn" shows warn+error, "error" shows only errors
+// Set via <meta name="log-level" content="debug"> or defaults based on isDev
+const metaLevel = document.querySelector<HTMLMetaElement>('meta[name="log-level"]')?.content;
+const logLevel = metaLevel || (isDev ? "debug" : "info");
+const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
+const level = LEVELS[logLevel as keyof typeof LEVELS] ?? LEVELS.info;
+
+export const debug = (...args: any[]) => { push("log", args); if (level <= LEVELS.debug) origLog(...args); };
+export const log = (...args: any[]) => { push("log", args); if (level <= LEVELS.info) origLog(...args); };
+export const warn = (...args: any[]) => { push("warn", args); if (level <= LEVELS.warn) origWarn(...args); };
 export const error = (...args: any[]) => { push("error", args); origError(...args); };
 
 /**

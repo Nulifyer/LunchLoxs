@@ -117,6 +117,7 @@ services:
       FRONTEND_HOST: ${FRONTEND_HOST:?Set FRONTEND_HOST in .env}
       FRONTEND_HTTPS: ${FRONTEND_HTTPS:-}
       BIND_HOST: "0.0.0.0"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       LLM_ENDPOINT: ${LLM_ENDPOINT:-}
       BROWSERLESS_ENDPOINT: ${BROWSERLESS_ENDPOINT:-}
       BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-}
@@ -137,6 +138,7 @@ services:
     environment:
       BACKEND_HOST: ${BACKEND_HOST:-}
       BACKEND_HTTPS: ${BACKEND_HTTPS:-}
+      LOG_LEVEL: ${LOG_LEVEL:-}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=Host(`${FRONTEND_HOST}`)"

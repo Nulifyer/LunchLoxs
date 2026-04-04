@@ -14,8 +14,11 @@ const baseHeaders: Record<string, string> = {
 };
 
 let indexHtml = await Bun.file("public/index.html").text();
-const metaTag = `<meta name="backend-url" content="${backendUrl}" />`;
-indexHtml = indexHtml.replace("</head>", `  ${metaTag}\n</head>`);
+indexHtml = indexHtml.replace("</head>", `  <meta name="backend-url" content="${backendUrl}" />\n</head>`);
+const logLevel = Bun.env.LOG_LEVEL ?? "";
+if (logLevel) {
+  indexHtml = indexHtml.replace("</head>", `  <meta name="log-level" content="${logLevel}" />\n</head>`);
+}
 
 const server = Bun.serve({
   port: 5000,

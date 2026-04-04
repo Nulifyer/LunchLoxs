@@ -12,6 +12,7 @@ COPY <<'EOF' serve.ts
 const backendHost = Bun.env.BACKEND_HOST ?? "";
 const backendHttps = Bun.env.BACKEND_HTTPS === "true";
 const backendUrl = backendHost ? `${backendHttps ? "https" : "http"}://${backendHost}` : "";
+const logLevel = Bun.env.LOG_LEVEL ?? "";
 const base: Record<string, string> = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "credentialless",
@@ -20,12 +21,16 @@ const noCache = { ...base, "Cache-Control": "no-cache" };
 const immutable = { ...base, "Cache-Control": "public, max-age=31536000, immutable" };
 const revalidate = new Set(["/index.html", "/index.js", "/app.css", "/service-worker.js", "/version.json", "/asset-manifest.json", "/manifest.json", "/theme-loader.js"]);
 
-// If BACKEND_URL is set (cross-origin mode), inject meta tag into index.html
+// Inject meta tags into index.html at runtime
 let indexHtml: string | null = null;
-if (backendUrl) {
+if (backendUrl || logLevel) {
   indexHtml = await Bun.file("dist/index.html").text();
-  const metaTag = `<meta name="backend-url" content="${backendUrl}" />`;
-  indexHtml = indexHtml.replace("</head>", `  ${metaTag}\n</head>`);
+  if (backendUrl) {
+    indexHtml = indexHtml.replace("</head>", `  <meta name="backend-url" content="${backendUrl}" />\n</head>`);
+  }
+  if (logLevel) {
+    indexHtml = indexHtml.replace("</head>", `  <meta name="log-level" content="${logLevel}" />\n</head>`);
+  }
 }
 
 Bun.serve({
