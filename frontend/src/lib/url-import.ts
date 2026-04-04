@@ -150,7 +150,7 @@ async function extractRecipeAI(
             instructions: data.instructions ?? "",
             imageUrls: data.imageUrls ?? [],
           };
-          if (warnings.length > 0) recipe.warnings = warnings;
+          if (warnings.length > 0) return { ...recipe, warnings };
           return recipe;
         } else if (eventType === "error") {
           throw new Error(data.message || "AI extraction failed.");
