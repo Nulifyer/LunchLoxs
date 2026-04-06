@@ -53,10 +53,21 @@ services:
       - app
 
   llama:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda13
-    command: ["--model", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8080", "--jinja", "--ctx-size", "32768", "--n-predict", "16384", "--threads", "12", "--gpu-layers", "99", "--reasoning-budget", "8192", "--reasoning-format", "deepseek"]
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda13}
+    environment:
+      LLAMA_ARG_MODEL: ${LLAMA_MODEL_FILE:-/models/hf-cache/hub/models--unsloth--Qwen3-30B-A3B-GGUF/snapshots/d5b1d57bd0b504ac62ae6c725904e96ef228dc74/Qwen3-30B-A3B-Q4_K_M.gguf}
+      LLAMA_ARG_ALIAS: ${LLAMA_MODEL_ALIAS:-qwen3-30b-a3b-q4_k_m}
+      LLAMA_ARG_HOST: "0.0.0.0"
+      LLAMA_ARG_PORT: "8080"
+      LLAMA_ARG_CTX_SIZE: "32768"
+      LLAMA_ARG_N_PREDICT: "16384"
+      LLAMA_ARG_REASONING: ${LLAMA_REASONING:-off}
+      LLAMA_ARG_N_PARALLEL: "1"
+      LLAMA_ARG_FLASH_ATTN: "on"
+      LLAMA_ARG_MMPROJ_AUTO: "false"
     volumes:
-      - ./dev-data/models/Qwen3.5-9B-Q8_0.gguf:/models/model.gguf:ro
+      - ./dev-data/models:/models
+      - ./dev-data/models/hf-cache:/root/.cache/huggingface
     ports:
       - "127.0.0.1:8081:8080"
     devices:
@@ -76,6 +87,7 @@ services:
       - app
 
   backend:
+    image: recipepwa-backend:latest
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -90,6 +102,21 @@ services:
       BIND_HOST: "0.0.0.0"
       LOG_LEVEL: debug
       LLM_ENDPOINT: http://llama:8080
+      LLM_API_KEY: ""
+      LLM_PROMPT_DIR: /app/prompts/url-import
+      LLM_TIMEOUT: 20m
+      LLM_DEFAULT_TEMPERATURE: "0.7"
+      LLM_DEFAULT_TOP_P: "0.8"
+      LLM_DEFAULT_MAX_TOKENS: "8192"
+      LLM_PASS0_TEMPERATURE: "0.6"
+      LLM_PASS0_TOP_P: "0.95"
+      LLM_PASS0_MAX_TOKENS: "16384"
+      LLM_PASS1_TEMPERATURE: "0.6"
+      LLM_PASS1_TOP_P: "0.95"
+      LLM_PASS1_MAX_TOKENS: "16384"
+      LLM_PASS3_TEMPERATURE: "0.6"
+      LLM_PASS3_TOP_P: "0.95"
+      LLM_PASS3_MAX_TOKENS: "16384"
       BROWSERLESS_ENDPOINT: http://browserless:3000
       BROWSERLESS_TOKEN: dev-token
     labels:

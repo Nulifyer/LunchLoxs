@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	proxyMaxBody      = 5 << 20  // 5 MB
+	proxyMaxBody      = 5 << 20 // 5 MB
 	proxyMaxURL       = 2048
 	proxyRateLimit    = 10 // requests per minute per user
 	proxyRateWindow   = time.Minute
@@ -29,7 +29,6 @@ const (
 
 var (
 	proxyTimeout       = durationEnv("PROXY_TIMEOUT_SECS", 15*time.Second)
-	llmTimeout         = durationEnv("LLM_TIMEOUT_SECS", 20*time.Minute)
 	browserlessTimeout = durationEnv("BROWSERLESS_TIMEOUT_SECS", 30*time.Second)
 )
 
@@ -357,266 +356,13 @@ func proxyExtractHandler(queries *db.Queries, corsOrigin, llmEndpoint, browserle
 		},
 	}
 	browserlessClient := &http.Client{Timeout: browserlessTimeout}
-	llmClient := &http.Client{Timeout: llmTimeout}
-
-	var llmURL string
+	llmCfg := loadLLMConfigFromEnv()
 	if llmEndpoint != "" {
-		llmURL = strings.TrimRight(llmEndpoint, "/") + "/v1/chat/completions"
+		llmCfg.CompletionsURL = normalizeChatCompletionsURL(llmEndpoint)
 	}
-
-	// ── Prompts (synced with test script) ────────────────────────────────
-
-	rawExtractPrompt := `You are a recipe extractor. You receive the raw text content of a web page that contains a recipe but has NO structured data. The text may contain <img> HTML tags — these are images from the page in their original position.
-
-Your job is to find the recipe and output it in a specific simple text format.
-
-Extract the recipe and output it in EXACTLY this format:
-
-TITLE: Recipe Name
-DESC: A short description of the dish
-SERVINGS: 4
-PREP: 30
-COOK: 45
-TAGS: tag1, tag2, tag3
-
-INGREDIENTS:
-2 | cup | flour
-1 | tsp | salt
-3 | | eggs
-
-INSTRUCTIONS:
-1. First step text here.
-![alt text](image-url)
-2. Second step text here.
-3. Third step text here.
-
-Rules:
-- Every ingredient line must be: quantity | unit | item name
-- Units must be standard: cup, tsp, tbsp, oz, lb, g, ml, clove, can, bunch, piece. Keep units lowercase singular.
-- If an ingredient has no unit (countable items like eggs), leave unit empty: "3 | | eggs"
-- Infer reasonable quantities for ingredients that don't specify one (e.g. salt -> "1 | tsp | salt").
-- PREP and COOK are in minutes. Set to 0 if not mentioned.
-- SERVINGS defaults to 4 if not mentioned.
-- Instructions must be numbered steps. Keep the FULL original text of each step — do NOT summarize or shorten.
-- IMAGES: Convert any <img> tags to ![alt](src) format. Place each image on its own line after the instruction step it relates to. Use the alt attribute for the alt text, and the src attribute for the URL. Skip images that are clearly not recipe photos (logos, badges, avatars).
-- TAGS: include cuisine type, dish type, dietary info, or other relevant tags from the page.
-- NON-ENGLISH: If the recipe is not in English, keep the original text AND add English translations:
-  - For TITLE: "Original Title (English Translation)"
-  - For ingredient items: "original name (english name)" e.g. "鶏レバー (chicken liver)"
-  - For each instruction step, add the English translation on the next line prefixed with "> " e.g.:
-    1. レバーを一口大に切る。
-    > Cut the liver into bite-sized pieces.
-  - DESC and TAGS should be in English.
-- IGNORE irrelevant or duplicate content: skip reviews, comments, related recipes, author bios, ads, navigation, repeated text, and other non-recipe content.
-- Output ONLY the plain text format above. No JSON, no markdown fencing, no explanation.
-- If the page contains multiple recipes, extract only the primary/main one.`
-
-	extractPrompt := `You are a recipe data fixer. You receive recipe data in a simple text format. Fix any issues and output the SAME format back.
-
-Your job:
-- Every ingredient MUST have an accurate quantity and unit that makes sense. Parse the original text carefully to extract the measurement. Examples:
-  "5 to 6 ounces baby spinach" -> "5 | oz | baby spinach"
-  "1 large can (28 ounces) diced tomatoes" -> "28 | oz | diced tomatoes"
-  "2 cups (16 ounces) cottage cheese" -> "2 | cup | cottage cheese"
-  If the ingredient truly has no unit (countable items like eggs), leave unit empty: "3 | | eggs"
-  Do NOT leave unit empty when the source text specifies a measurement.
-- Fix any ingredients missing quantities by inferring reasonable defaults (e.g. " | | salt" -> "1 | tsp | salt").
-- Units must be a standard measurement: cup, tsp, tbsp, oz, lb, g, ml, clove, can, bunch, piece. Do NOT use the ingredient name as the unit. Keep units lowercase singular.
-- Merge duplicate ingredients ONLY if they are truly the same item used for the same purpose (combine quantities). Do NOT merge ingredients that share a name but are used in different parts of the recipe (e.g. "3/4 cup sugar" for a topping and "2 tbsp sugar" for a batter are separate ingredients — keep both).
-- CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten, summarize, or paraphrase any step.
-- Keep ALL images exactly where they are. Do NOT remove or move any ![alt](url) lines.
-- Decode any HTML entities in the text (e.g. &#8217; -> ', &frac14; -> 1/4, &frac12; -> 1/2, &frac34; -> 3/4).
-- NON-ENGLISH: If the recipe text is not in English:
-  - Keep ALL original non-English text in the original form. Do NOT replace it with English. Instead do the following:
-  - For ingredient items: append "(english name)" e.g. "Arroz bomba" -> "Arroz bomba (bomba rice)"
-  - For each instruction step, keep the original non-english text, then add an English translation on the NEXT line starting with "> ". Example:
-    1. Freír el pollo en aceite.
-    > Fry the chicken in oil.
-    2. Añadir el agua.
-    > Add the water.
-  - DESC and TAGS should be in English.
-  - If translations already exist, preserve them. Do NOT duplicate steps.
-- Output ONLY the same plain text format. No JSON, no markdown fencing, no explanation.`
-
-	processPrompt := `You are a recipe data processor. You receive recipe data in a simple text format. You have TWO jobs:
-
-JOB 1 — Clean up ingredient names:
-Strip parenthetical sizes, verbose qualifiers, and prep notes from ingredient item names. Keep the name short and recognizable. Do NOT strip English translation parentheses from non-English ingredients (e.g. keep "Arroz bomba (bomba rice)" as-is).
-
-Examples:
-- "large can (28 ounces) diced tomatoes" -> "diced tomatoes"
-- "(2 cups) freshly grated low-moisture, part-skim mozzarella cheese" -> "mozzarella cheese"
-- "large carrots, chopped (about 1 cup)" -> "carrots, chopped"
-- "roughly chopped fresh basil + additional for garnish" -> "fresh basil"
-- "cloves garlic, pressed or minced" -> "garlic, minced"
-- "medium zucchini, chopped" -> "zucchini, chopped"
-- "to 6 ounces baby spinach" -> "baby spinach"
-- "no-boil lasagna noodles*" -> "lasagna noodles"
-Move stripped size info (like "28 ounces", "2 cups") into the quantity/unit fields if not already there.
-
-JOB 2 — Place images into instructions:
-If there is an ADDITIONAL IMAGES section at the bottom, move EACH image to INSIDE the instructions. Place each image on its own line directly AFTER the step it relates to. Match the image alt text to the step content. Remove images that are clearly unrelated (logos, author photos, other recipe thumbnails, banners). Delete the ADDITIONAL IMAGES section completely when done.
-
-For EVERY image in the ADDITIONAL IMAGES section, ask: "which step does this image show?" and place it after that step.
-
-Example input:
-INSTRUCTIONS:
-1. Sauté the vegetables until golden.
-2. Mix the cottage cheese filling.
-3. Layer the noodles and sauce.
-
-ADDITIONAL IMAGES:
-![sautéed vegetables](https://example.com/sauteed.jpg)
-![cottage cheese filling mixture](https://example.com/filling.jpg)
-![layering the lasagna](https://example.com/layers.jpg)
-![Author Kate](https://example.com/kate.jpg)
-
-Example output:
-INSTRUCTIONS:
-1. Sauté the vegetables until golden.
-![sautéed vegetables](https://example.com/sauteed.jpg)
-2. Mix the cottage cheese filling.
-![cottage cheese filling mixture](https://example.com/filling.jpg)
-3. Layer the noodles and sauce.
-![layering the lasagna](https://example.com/layers.jpg)
-
-Notice: "Author Kate" was removed (unrelated). Each cooking image was placed after its matching step.
-
-Rules:
-- CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten or paraphrase.
-- CRITICAL: Ingredients MUST stay in pipe-delimited format: quantity | unit | item. Do NOT drop the pipes.
-- NON-ENGLISH: Preserve any existing translations (parenthetical English names on ingredients, "> " translation lines after instructions). If translations are missing, add them.
-- Output the COMPLETE recipe in the same format (TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS).
-- No JSON, no markdown fencing, no explanation.`
-
-	tagPrompt := `You are a recipe text tagger. You receive a recipe in simple text format. Your ONLY job is to tag ingredient mentions in the INSTRUCTIONS section using the format @[item name] (at-sign, open square bracket, the EXACT and COMPLETE item name from the INGREDIENTS list including any parenthetical translations, close square bracket).
-
-Example input:
-TITLE: Simple Pasta
-DESC: A quick pasta dish.
-SERVINGS: 2
-PREP: 5
-COOK: 10
-TAGS: italian, quick
-
-INGREDIENTS:
-1/2 | tsp | olive oil
-2 | | flour tortillas
-1 | cup | grated cheese
-8 | oz | egg noodles
-
-INSTRUCTIONS:
-1. Heat oil in a pan. Place a tortilla in the pan.
-2. Sprinkle cheese on top.
-3. Cook the noodles separately.
-
-Example output:
-TITLE: Simple Pasta
-DESC: A quick pasta dish.
-SERVINGS: 2
-PREP: 5
-COOK: 10
-TAGS: italian, quick
-
-INGREDIENTS:
-1/2 | tsp | olive oil
-2 | | flour tortillas
-1 | cup | grated cheese
-8 | oz | egg noodles
-
-INSTRUCTIONS:
-1. Heat @[olive oil] in a pan. Place a @[flour tortillas] in the pan.
-2. Sprinkle @[grated cheese] on top.
-3. Cook the @[egg noodles] separately.
-
-Notice: "oil" -> @[olive oil], "tortilla" -> @[flour tortillas], "cheese" -> @[grated cheese], "noodles" -> @[egg noodles].
-
-Rules:
-- The tag format is @[item name] — @ then [ then ingredient item name then ]. Example: @[bok choy]
-- Match aggressively: any word that refers to an ingredient should be tagged. Examples:
-  "noodles" -> @[wonton noodles], "broth" -> @[chicken broth], "oil" -> @[olive oil],
-  "spinach" -> @[baby spinach], "cheese" -> @[mozzarella cheese] or @[cottage cheese] depending on context,
-  "pepper" -> @[black pepper] or @[red pepper flakes] or @[bell pepper] depending on context.
-- Match to the MOST SPECIFIC ingredient. If the list has both "wontons" and "wonton noodles", then "wontons" matches @[wontons] and "noodles" matches @[wonton noodles].
-- Tag EVERY mention of an ingredient throughout the instructions, not just the first occurrence.
-- Do NOT tag inside image alt text (inside ![...] brackets). Only tag in instruction step text.
-- ONLY add @[] tags. Do NOT wrap them in backticks or code formatting. Do NOT change, shorten, or remove ANY other text, images, or step numbers.
-- NON-ENGLISH: Preserve any existing translations (parenthetical English names on ingredients, "> " translation lines after instructions). Tag ingredient mentions in BOTH the original language lines AND the "> " translation lines.
-- IMPORTANT: Output the COMPLETE recipe starting from TITLE through the end. Include ALL sections: TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS. Do not skip the header.`
-
-	// ── LLM caller ───────────────────────────────────────────────────────
-
-	callLLM := func(ctx context.Context, system, user string, enableThinking bool) (string, error) {
-		temp := 0.7
-		topP := 0.8
-		maxTokens := 8192
-		if enableThinking {
-			temp = 0.6
-			topP = 0.95
-			maxTokens = 16384
-		}
-		llmReq := map[string]any{
-			"messages": []map[string]string{
-				{"role": "system", "content": system},
-				{"role": "user", "content": user},
-			},
-			"temperature":          temp,
-			"top_p":                topP,
-			"top_k":                20,
-			"min_p":                0.05,
-			"repetition_penalty":   1.05,
-			"max_tokens":           maxTokens,
-			"chat_template_kwargs": map[string]any{"enable_thinking": enableThinking},
-		}
-		llmBody, err := json.Marshal(llmReq)
-		if err != nil {
-			return "", err
-		}
-
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", llmURL, bytes.NewReader(llmBody))
-		if err != nil {
-			return "", err
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-
-		resp, err := llmClient.Do(httpReq)
-		if err != nil {
-			return "", fmt.Errorf("LLM request failed: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("LLM returned %d", resp.StatusCode)
-		}
-
-		var llmResp struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-		}
-		if err := json.NewDecoder(io.LimitReader(resp.Body, proxyMaxBody)).Decode(&llmResp); err != nil {
-			return "", fmt.Errorf("failed to parse LLM response: %w", err)
-		}
-		if len(llmResp.Choices) == 0 {
-			return "", fmt.Errorf("LLM returned no choices")
-		}
-
-		content := strings.TrimSpace(llmResp.Choices[0].Message.Content)
-		if idx := strings.Index(content, "<think>"); idx == 0 {
-			if end := strings.Index(content, "</think>"); end > 0 {
-				content = strings.TrimSpace(content[end+len("</think>"):])
-			}
-		}
-		if strings.HasPrefix(content, "```") {
-			lines := strings.Split(content, "\n")
-			if len(lines) >= 3 {
-				content = strings.Join(lines[1:len(lines)-1], "\n")
-			}
-		}
-		content = stripReasoningSpillover(content)
-		return content, nil
+	llm, err := newLLMClient(llmCfg)
+	if err != nil {
+		slog.Error("extract: failed to initialize LLM client", "error", err)
 	}
 
 	// ── Fetch HTML (static, then Browserless fallback) ───────────────────
@@ -708,7 +454,7 @@ Rules:
 
 		// Probe: frontend checks if LLM is available
 		if req.Mode == "probe" {
-			if llmURL == "" {
+			if llm == nil {
 				http.Error(w, "LLM extraction not configured", http.StatusNotImplemented)
 			} else {
 				w.WriteHeader(http.StatusNoContent)
@@ -721,7 +467,7 @@ Rules:
 			http.Error(w, "mode must be 'ai' or 'basic'", http.StatusBadRequest)
 			return
 		}
-		if req.Mode == "ai" && llmURL == "" {
+		if req.Mode == "ai" && llm == nil {
 			http.Error(w, "LLM extraction not configured", http.StatusNotImplemented)
 			return
 		}
@@ -759,7 +505,7 @@ Rules:
 
 		// ── AI mode: full server-side pipeline with SSE status updates ───
 
-		ctx, cancel := context.WithTimeout(r.Context(), llmTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), llmCfg.Timeout)
 		defer cancel()
 
 		// Set SSE headers — must be set before first write
@@ -836,7 +582,7 @@ Rules:
 			// Pass 0: Raw extraction (thinking enabled)
 			sendSSE(w, "status", sseStatus{Step: "pass0", Message: "Extracting recipe data..."})
 			slog.Debug("extract: LLM pass 0 (raw extract)")
-			pass0, err := callLLM(ctx, rawExtractPrompt, llmInput, true)
+			pass0, err := llm.call(ctx, llmPassRawExtract, llm.prompts.RawExtract, llmInput)
 			if err != nil {
 				slog.Error("extract: LLM raw extract failed", "error", err)
 				sendSSE(w, "error", sseError{Message: "AI extraction failed."})
@@ -848,7 +594,7 @@ Rules:
 		// Pass 1: Extract — fix quantities, translations
 		sendSSE(w, "status", sseStatus{Step: "pass1", Message: "Fixing quantities and units..."})
 		slog.Debug("extract: LLM pass 1 (extract)")
-		pass1, err := callLLM(ctx, extractPrompt, simpleFormat, true)
+		pass1, err := llm.call(ctx, llmPassExtract, llm.prompts.Extract, simpleFormat)
 		if err != nil {
 			slog.Warn("extract: LLM extract failed, using raw input", "error", err)
 			sendSSE(w, "warning", sseWarning{Step: "pass1", Message: "Quantity/unit fixing skipped (AI timed out)."})
@@ -858,7 +604,7 @@ Rules:
 		// Pass 2: Process — clean names, place images
 		sendSSE(w, "status", sseStatus{Step: "pass2", Message: "Processing ingredients and images..."})
 		slog.Debug("extract: LLM pass 2 (process)")
-		pass2, err := callLLM(ctx, processPrompt, pass1, false)
+		pass2, err := llm.call(ctx, llmPassProcess, llm.prompts.Process, pass1)
 		if err != nil {
 			slog.Error("extract: LLM process failed", "error", err)
 			sendSSE(w, "warning", sseWarning{Step: "pass2", Message: "Ingredient cleanup skipped (AI timed out)."})
@@ -868,7 +614,7 @@ Rules:
 		// Pass 3: Tag — add @[] ingredient references
 		sendSSE(w, "status", sseStatus{Step: "pass3", Message: "Tagging ingredients..."})
 		slog.Debug("extract: LLM pass 3 (tag)")
-		pass3, err := callLLM(ctx, tagPrompt, pass2, true)
+		pass3, err := llm.call(ctx, llmPassTag, llm.prompts.Tag, pass2)
 		if err != nil {
 			slog.Error("extract: LLM tag failed", "error", err)
 			sendSSE(w, "warning", sseWarning{Step: "pass3", Message: "Ingredient tagging skipped (AI timed out)."})

@@ -25,14 +25,13 @@
 #   Without LLM (basic JSON-LD extraction only):
 #     docker compose -f docker-compose.prod.yml --profile scrape up -d
 #
-#   With LLM (enhanced extraction via Qwen3.5-9B):
+#   With LLM (enhanced extraction through any OpenAI-style chat service):
 #     docker compose -f docker-compose.prod.yml --profile scrape --profile llm up -d
 #     Set LLM_ENDPOINT=http://llama:8080 in .env
 #
-#   The recommended model is Qwen3.5-9B-Q8_0 (~9.5GB, needs ~12GB VRAM for GPU).
-#   Download: https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q8_0.gguf
-#   Build: docker build -t lunchloxs-llama docker/llama
-#   Any OpenAI-compatible endpoint works (e.g. Ollama, vLLM, or a remote API).
+#   Local development can use CUDA-backed llama.cpp on an RTX 5080 for fast iteration.
+#   Production should stay backend-agnostic and target the actual Ryzen AI deployment host.
+#   Any OpenAI-compatible chat completions endpoint works (e.g. llama.cpp, Ollama, vLLM, or a remote API).
 
 services:
   traefik:
@@ -119,6 +118,24 @@ services:
       BIND_HOST: "0.0.0.0"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LLM_ENDPOINT: ${LLM_ENDPOINT:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_PROMPT_DIR: ${LLM_PROMPT_DIR:-}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-20m}
+      LLM_DEFAULT_TEMPERATURE: ${LLM_DEFAULT_TEMPERATURE:-}
+      LLM_DEFAULT_TOP_P: ${LLM_DEFAULT_TOP_P:-}
+      LLM_DEFAULT_MAX_TOKENS: ${LLM_DEFAULT_MAX_TOKENS:-}
+      LLM_PASS0_TEMPERATURE: ${LLM_PASS0_TEMPERATURE:-}
+      LLM_PASS0_TOP_P: ${LLM_PASS0_TOP_P:-}
+      LLM_PASS0_MAX_TOKENS: ${LLM_PASS0_MAX_TOKENS:-}
+      LLM_PASS1_TEMPERATURE: ${LLM_PASS1_TEMPERATURE:-}
+      LLM_PASS1_TOP_P: ${LLM_PASS1_TOP_P:-}
+      LLM_PASS1_MAX_TOKENS: ${LLM_PASS1_MAX_TOKENS:-}
+      LLM_PASS2_TEMPERATURE: ${LLM_PASS2_TEMPERATURE:-}
+      LLM_PASS2_TOP_P: ${LLM_PASS2_TOP_P:-}
+      LLM_PASS2_MAX_TOKENS: ${LLM_PASS2_MAX_TOKENS:-}
+      LLM_PASS3_TEMPERATURE: ${LLM_PASS3_TEMPERATURE:-}
+      LLM_PASS3_TOP_P: ${LLM_PASS3_TOP_P:-}
+      LLM_PASS3_MAX_TOKENS: ${LLM_PASS3_MAX_TOKENS:-}
       BROWSERLESS_ENDPOINT: ${BROWSERLESS_ENDPOINT:-}
       BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-}
     labels:

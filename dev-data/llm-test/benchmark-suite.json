@@ -1,0 +1,128 @@
+[
+  {
+    "slug": "basic-json-ld",
+    "label": "Basic JSON-LD",
+    "url": "https://www.simplyrecipes.com/recipes/quesadilla/",
+    "groups": ["known"]
+  },
+  {
+    "slug": "no-images",
+    "label": "No images",
+    "url": "https://tasty.co/recipe/the-best-one-bowl-brownies",
+    "groups": ["known"]
+  },
+  {
+    "slug": "needs-browserless-to-render",
+    "label": "Needs browserless to render",
+    "url": "https://www.madewithlau.com/recipes/wonton-noodle-soup",
+    "groups": ["known"]
+  },
+  {
+    "slug": "complex-many-ingredients-steps",
+    "label": "Complex (many ingredients/steps)",
+    "url": "https://cookieandkate.com/best-vegetable-lasagna-recipe/",
+    "groups": ["known"]
+  },
+  {
+    "slug": "no-json-ld-old-wordpress-blog",
+    "label": "No JSON-LD (old WordPress blog)",
+    "url": "https://recipesfrommykitchen.wordpress.com/2012/08/03/strawberry-blueberry-shortcake/",
+    "groups": ["known"]
+  },
+  {
+    "slug": "microdata-only-itemprop-no-json-ld",
+    "label": "Microdata only (itemprop, no JSON-LD)",
+    "url": "https://tastykitchen.com/recipes/main-courses/chicken-fried-steak/",
+    "groups": ["known"]
+  },
+  {
+    "slug": "wprm-plugin-wp-recipe-maker",
+    "label": "WPRM plugin (WP Recipe Maker)",
+    "url": "https://www.justonecookbook.com/simple-chicken-curry/",
+    "groups": ["known"]
+  },
+  {
+    "slug": "tasty-recipes-plugin",
+    "label": "Tasty Recipes plugin",
+    "url": "https://pinchofyum.com/the-best-soft-chocolate-chip-cookies",
+    "groups": ["known"]
+  },
+  {
+    "slug": "multiple-recipes-on-one-page",
+    "label": "Multiple recipes on one page",
+    "url": "https://www.budgetbytes.com/chicken-noodle-soup/",
+    "groups": ["known"]
+  },
+  {
+    "slug": "non-english-japanese",
+    "label": "Non-English (Japanese)",
+    "url": "https://cookpad.com/recipe/2555569",
+    "groups": ["known"]
+  },
+  {
+    "slug": "non-english-spanish",
+    "label": "Non-English (Spanish)",
+    "url": "https://www.directoalpaladar.com/recetas-de-arroces/paella-valenciana-receta-tradicional",
+    "groups": ["known"]
+  },
+  {
+    "slug": "very-long-recipe-29-ingredients-26-steps",
+    "label": "Very long recipe (29 ingredients, 26+ steps)",
+    "url": "https://www.indianhealthyrecipes.com/hyderabadi-biryani-recipe/",
+    "groups": ["known"]
+  },
+  {
+    "slug": "minimal-sparse-blog-prose-light-markup",
+    "label": "Minimal/sparse (blog prose, light markup)",
+    "url": "https://smittenkitchen.com/2006/11/chocolate-chip-sour-cream-cake/",
+    "groups": ["known"]
+  },
+  {
+    "slug": "video-embed-recipe-videoobject-in-json-ld",
+    "label": "Video embed (Recipe + VideoObject in JSON-LD)",
+    "url": "https://www.allrecipes.com/recipe/10813/best-chocolate-chip-cookies/",
+    "groups": ["known"]
+  },
+  {
+    "slug": "mediavine-create-card",
+    "label": "Mediavine Create card",
+    "url": "https://tidymom.net/honey-glazed-ham-apricot/",
+    "groups": ["known"]
+  },
+  {
+    "slug": "woks-tomato-egg-drop-soup",
+    "label": "Tomato Egg Drop Soup",
+    "url": "https://thewoksoflife.com/tomato-egg-drop-soup/",
+    "groups": ["control", "control_jsonld"]
+  },
+  {
+    "slug": "spendwithpennies-lasagna",
+    "label": "Easy Homemade Lasagna",
+    "url": "https://www.spendwithpennies.com/easy-homemade-lasagna/",
+    "groups": ["control", "control_jsonld"]
+  },
+  {
+    "slug": "vegetarian-kadai-vegetables",
+    "label": "Kadai Vegetables",
+    "url": "https://vegetarian-planet.blogspot.com/2009/08/kadai-vegetables.html",
+    "groups": ["control", "control_raw"]
+  },
+  {
+    "slug": "vegetarian-double-chocolate-banana-muffins",
+    "label": "Double Chocolate Banana Muffins",
+    "url": "https://vegetarian-planet.blogspot.com/2009/12/eggless-and-butterless-double-chocolate.html",
+    "groups": ["control", "control_raw"]
+  },
+  {
+    "slug": "shabs-mutton-korma",
+    "label": "Mutton Korma/Kuruma",
+    "url": "https://shabscuisine.blogspot.com/2009/11/mutton-kormakuruma-mild-and-creamy.html",
+    "groups": ["control", "control_raw"]
+  },
+  {
+    "slug": "king-arthur-sourdough-pancakes",
+    "label": "King Arthur 404",
+    "url": "https://www.kingarthurbaking.com/recipes/classic-sourdough-pancakes-or-waffles-recipe",
+    "groups": ["control", "control_broken"]
+  }
+]

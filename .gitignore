@@ -29,6 +29,8 @@ Thumbs.db
 *.dll
 *.so
 *.dylib
+.gocache/
+.tmp/
 
 # Bun
 
@@ -43,3 +45,5 @@ dev-data/node_modules/
 dev-data/bun.lock
 dev-data/*.zip
 dev-data/llm-test/0*
+dev-data/llm-test/results/
+dev-data/llm-test/dev-data/

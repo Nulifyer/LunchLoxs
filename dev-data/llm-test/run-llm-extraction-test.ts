@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+
 /**
  * LLM Recipe Extraction Pipeline Test
  *
@@ -19,7 +22,7 @@
  *
  * Requirements:
  *   - Browserless running on localhost:3000 (podman compose up -d browserless)
- *   - LLM (llama.cpp) running on localhost:8081 (podman compose up -d llama)
+ *   - An OpenAI-style chat completions service running on localhost:8081 (podman compose up -d llama)
  *
  * Output files saved to dev-data/llm-test/:
  *   01-input.txt                Simple format (JSON-LD path) or cleaned HTML (raw path)
@@ -37,9 +40,13 @@ const stopArg = args.find((a) => a.startsWith("--stop-after="));
 const STOP_AFTER = stopArg ? stopArg.split("=")[1]! : "pass3";
 const TARGET_URL = args.find((a) => !a.startsWith("--")) ?? "https://www.madewithlau.com/recipes/wonton-noodle-soup";
 const OUT_DIR = import.meta.dir;
-const LLM_URL = "http://localhost:8081";
-const BROWSERLESS_URL = "http://localhost:3000";
-const BROWSERLESS_TOKEN = "dev-token";
+const REPO_ROOT = resolve(import.meta.dir, "..", "..");
+const LLM_ENDPOINT = process.env.LLM_ENDPOINT ?? "http://localhost:8081";
+const LLM_API_KEY = process.env.LLM_API_KEY ?? "";
+const LLM_TIMEOUT_MS = parseDurationMs(process.env.LLM_TIMEOUT, 20 * 60 * 1000);
+const BROWSERLESS_URL = process.env.BROWSERLESS_ENDPOINT ?? "http://localhost:3000";
+const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN ?? "dev-token";
+const PROMPT_DIR = resolvePromptDir(process.env.LLM_PROMPT_DIR);
 const VALID_STAGES = ["fetch", "input", "pass0", "pass1", "pass2", "pass3"];
 if (!VALID_STAGES.includes(STOP_AFTER)) {
   console.error(`Invalid --stop-after stage: ${STOP_AFTER}. Valid: ${VALID_STAGES.join(", ")}`);
@@ -54,6 +61,98 @@ function save(name: string, content: string): void {
 function elapsed(start: number): string {
   return `${((Date.now() - start) / 1000).toFixed(1)}s`;
 }
+
+function parseDurationMs(value: string | undefined, fallbackMs: number): number {
+  if (!value) return fallbackMs;
+  if (/^\d+$/.test(value)) return parseInt(value, 10) * 1000;
+
+  const match = value.match(/^(\d+)(ms|s|m|h)$/i);
+  if (!match) return fallbackMs;
+
+  const amount = parseInt(match[1]!, 10);
+  switch (match[2]!.toLowerCase()) {
+    case "ms": return amount;
+    case "s": return amount * 1000;
+    case "m": return amount * 60 * 1000;
+    case "h": return amount * 60 * 60 * 1000;
+    default: return fallbackMs;
+  }
+}
+
+function resolvePromptDir(override?: string): string {
+  const candidates = [
+    override,
+    join(REPO_ROOT, "prompts", "url-import"),
+    join(REPO_ROOT, "backend", "prompts", "url-import"),
+  ].filter(Boolean) as string[];
+
+  for (const candidate of candidates) {
+    try {
+      const testFile = readFileSync(join(candidate, "pass0-raw-extract.txt"), "utf8");
+      if (testFile) return candidate;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+
+  throw new Error("Prompt directory not found. Set LLM_PROMPT_DIR to a valid prompt asset directory.");
+}
+
+function readPrompt(name: string): string {
+  return readFileSync(join(PROMPT_DIR, name), "utf8").trim();
+}
+
+interface Tuning {
+  temperature: number;
+  topP: number;
+  maxTokens: number;
+  enableThinking?: boolean;
+}
+
+function envFloat(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function passTuning(prefix: string, fallback: Tuning): Tuning {
+  const globalDefaults = {
+    temperature: envFloat("LLM_DEFAULT_TEMPERATURE", fallback.temperature),
+    topP: envFloat("LLM_DEFAULT_TOP_P", fallback.topP),
+    maxTokens: envInt("LLM_DEFAULT_MAX_TOKENS", fallback.maxTokens),
+  };
+
+  return {
+    temperature: envFloat(`LLM_${prefix}_TEMPERATURE`, globalDefaults.temperature),
+    topP: envFloat(`LLM_${prefix}_TOP_P`, globalDefaults.topP),
+    maxTokens: envInt(`LLM_${prefix}_MAX_TOKENS`, globalDefaults.maxTokens),
+    enableThinking: envBool(`LLM_${prefix}_ENABLE_THINKING`, fallback.enableThinking ?? false),
+  };
+}
+
+function envBool(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+const TUNING = {
+  pass0: passTuning("PASS0", { temperature: 0.6, topP: 0.95, maxTokens: 16384, enableThinking: true }),
+  pass1: passTuning("PASS1", { temperature: 0.6, topP: 0.95, maxTokens: 16384, enableThinking: false }),
+  pass2: passTuning("PASS2", { temperature: 0.7, topP: 0.8, maxTokens: 8192, enableThinking: false }),
+  pass3: passTuning("PASS3", { temperature: 0.6, topP: 0.95, maxTokens: 16384, enableThinking: false }),
+} as const;
 
 // ─── Helpers (mirror recipe-scraper.ts logic) ────────────────────────────────
 
@@ -250,29 +349,65 @@ function buildSimpleFormat(recipe: Record<string, unknown>, pageImages: string[]
 
 import { parse as parseHtml, type HTMLElement as ParsedHTMLElement } from "node-html-parser";
 
+function detectErrorPage(html: string, title: string): string | null {
+  const loweredTitle = title.toLowerCase();
+  const loweredHtml = html.toLowerCase();
+
+  const errorSignals = [
+    loweredTitle.includes("page not found"),
+    loweredTitle === "404",
+    /<meta[^>]+content="error 404: page not found"/i.test(html),
+    /pageType': 'error_page'/.test(html),
+    /"pageType":\s*"error_page"/.test(html),
+    /the page you['’]re looking for can['’]t be found/i.test(html),
+    /<h1[^>]*>\s*uh-oh!\s*<\/h1>/i.test(html),
+  ];
+
+  if (!errorSignals.some(Boolean)) return null;
+
+  if (loweredHtml.includes("recipe")) {
+    return `# ${title || "Page Not Found"}\n\nThis page appears to be an error page or missing page, not a recipe.`;
+  }
+
+  return `# ${title || "Page Not Found"}\n\nThis page appears to be an error page, not a recipe.`;
+}
+
 function cleanHtmlForLlm(html: string): string {
   const doc = parseHtml(html);
 
   const title = doc.querySelector("title")?.textContent?.trim() ?? "";
+  const errorPage = detectErrorPage(html, title);
+  if (errorPage) return errorPage;
 
   // Try to isolate the main recipe/content area using known selectors.
   // Priority: recipe plugin containers > microdata > generic article > fallback
   // Keep it simple — use broad structural elements, not plugin-specific classes.
   // Sites without JSON-LD are typically old blogs where these work reliably.
   const containerSelectors = [
+    '[itemprop="articleBody"]',
+    '[itemprop="recipeInstructions"]',
+    ".recipe",
+    ".recipe-content",
+    ".recipe-card",
+    ".recipe-body",
     "article",
     "main",
+    ".post-body",
+    ".post",
+    ".post-outer",
+    ".blog-posts",
     ".entry-content", ".post-content", ".article-body", ".post-body",
     ".entry", ".hentry",
     "#content",
   ];
 
   let contentEl: ParsedHTMLElement | null = null;
+  let bestLength = 0;
   for (const sel of containerSelectors) {
     const el = doc.querySelector(sel);
-    if (el && el.innerHTML.length > 200) {
+    if (el && el.innerHTML.length > 200 && el.innerHTML.length > bestLength) {
       contentEl = el;
-      break;
+      bestLength = el.innerHTML.length;
     }
   }
   if (!contentEl) contentEl = doc.querySelector("body") ?? doc;
@@ -386,6 +521,15 @@ function cleanHtmlForLlm(html: string): string {
   text = text.replace(/\n{3,}/g, "\n\n");
   text = text.trim();
 
+  if (text.length < 80) {
+    const metaDescription = doc.querySelector('meta[name="description"]')?.getAttribute("content")?.trim()
+      ?? doc.querySelector('meta[property="og:description"]')?.getAttribute("content")?.trim()
+      ?? "";
+    if (metaDescription) {
+      text = [text, metaDescription].filter(Boolean).join("\n\n");
+    }
+  }
+
   if (text.length > 15000) {
     text = text.slice(0, 15000) + "\n[... truncated]";
   }
@@ -433,78 +577,93 @@ interface LLMResult {
   reasoning: string;
 }
 
-async function callLLM(text: string, systemPrompt: string, enableThinking = false): Promise<LLMResult> {
-  const resp = await fetch(`${LLM_URL}/v1/chat/completions`, {
+function normalizeCompletionsUrl(endpoint: string): string {
+  const trimmed = endpoint.replace(/\/+$/, "");
+  return trimmed.endsWith("/v1/chat/completions") ? trimmed : `${trimmed}/v1/chat/completions`;
+}
+
+function stripReasoningSpillover(content: string): string {
+  const lines = content.split("\n");
+  let last = lines.length - 1;
+
+  for (let i = last; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line) continue;
+
+    const isRecipeLine = /^\d+\./.test(line)
+      || line.startsWith("![")
+      || line.includes("|")
+      || line.startsWith("TITLE:")
+      || line.startsWith("DESC:")
+      || line.startsWith("SERVINGS:")
+      || line.startsWith("PREP:")
+      || line.startsWith("COOK:")
+      || line.startsWith("TAGS:")
+      || line.startsWith("INGREDIENTS:")
+      || line.startsWith("INSTRUCTIONS:")
+      || line.startsWith("ADDITIONAL IMAGES:")
+      || line.startsWith("@[");
+
+    if (isRecipeLine) {
+      return i < last ? lines.slice(0, i + 1).join("\n") : content;
+    }
+
+    if (/^(Wait|Actually|Let me|I |Refining|Final|Re-read|Hmm|Notice|However|One |So )/.test(line)) {
+      continue;
+    }
+
+    return i < last ? lines.slice(0, i + 1).join("\n") : content;
+  }
+
+  return content;
+}
+
+async function callLLM(text: string, systemPrompt: string, tuning: Tuning): Promise<LLMResult> {
+  const headers: HeadersInit = { "Content-Type": "application/json" };
+  if (LLM_API_KEY) {
+    headers.Authorization = `Bearer ${LLM_API_KEY}`;
+  }
+
+  const resp = await fetch(normalizeCompletionsUrl(LLM_ENDPOINT), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
+    signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
     body: JSON.stringify({
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: text },
       ],
-      // Qwen3.5 recommended sampling: 0.6/0.95/20 for thinking, 0.7/0.8/20 for non-thinking
-      temperature: enableThinking ? 0.6 : 0.7,
-      top_p: enableThinking ? 0.95 : 0.8,
-      top_k: 20,
-      min_p: 0.05,
-      repetition_penalty: 1.05,
-      max_tokens: enableThinking ? 16384 : 8192,
-      stream: true,
-      chat_template_kwargs: { enable_thinking: enableThinking },
+      temperature: tuning.temperature,
+      top_p: tuning.topP,
+      max_tokens: tuning.maxTokens,
+      chat_template_kwargs: {
+        enable_thinking: tuning.enableThinking ?? false,
+      },
     }),
   });
 
-  if (!resp.ok || !resp.body) {
+  if (!resp.ok) {
     throw new Error(`LLM returned ${resp.status}`);
   }
 
-  // Stream SSE chunks and collect content + reasoning
+  const payload = await resp.json() as {
+    choices?: Array<{
+      message?: {
+        content?: string | Array<{ type?: string; text?: string }>;
+        reasoning_content?: string;
+      };
+    }>;
+  };
+
+  const rawContent = payload.choices?.[0]?.message?.content;
   let content = "";
-  let reasoning = "";
-  let tokenCount = 0;
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? ""; // keep incomplete line
-
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const data = line.slice(6).trim();
-      if (data === "[DONE]") continue;
-
-      try {
-        const chunk = JSON.parse(data);
-        const delta = chunk.choices?.[0]?.delta;
-        if (!delta) continue;
-
-        if (delta.reasoning_content) {
-          reasoning += delta.reasoning_content;
-          if (reasoning.length <= 200 || reasoning.length % 500 < 10) {
-            process.stdout.write("\r    Thinking: " + reasoning.length.toLocaleString() + " chars...");
-          }
-        }
-        if (delta.content) {
-          content += delta.content;
-          tokenCount++;
-          if (tokenCount <= 5 || tokenCount % 50 === 0) {
-            process.stdout.write("\r    Output: " + tokenCount + " tokens...");
-          }
-        }
-      } catch { /* skip malformed chunks */ }
-    }
+  if (typeof rawContent === "string") {
+    content = rawContent;
+  } else if (Array.isArray(rawContent)) {
+    content = rawContent.map((part) => part?.text ?? "").join("");
   }
 
-  if (reasoning || tokenCount > 0) process.stdout.write("\n");
-
-  // In streaming mode, llama.cpp may not separate <think> tags into reasoning_content.
-  // Parse them out of content manually as a fallback.
+  let reasoning = payload.choices?.[0]?.message?.reasoning_content?.trim() ?? "";
   if (!reasoning && content.includes("<think>")) {
     const thinkMatch = content.match(/^<think>([\s\S]*?)<\/think>\s*/);
     if (thinkMatch) {
@@ -513,203 +672,23 @@ async function callLLM(text: string, systemPrompt: string, enableThinking = fals
     }
   }
 
-  if (reasoning) console.log(`    Thinking: ${reasoning.length.toLocaleString()} chars`);
-  console.log(`    Output: ${tokenCount} tokens, ${content.length.toLocaleString()} chars`);
-
-  // Strip markdown fences
   content = content.trim();
   if (content.startsWith("```")) {
     const codeLines = content.split("\n");
     content = codeLines.slice(1, -1).join("\n");
   }
+  content = stripReasoningSpillover(content);
+
+  if (reasoning) console.log(`    Thinking: ${reasoning.length.toLocaleString()} chars`);
+  console.log(`    Output: ${content.length.toLocaleString()} chars`);
 
   return { content, reasoning };
 }
 
-
-// ─── Prompts ─────────────────────────────────────────────────────────────────
-
-// Pass 0: Raw extraction — convert unstructured page text into simple format
-const RAW_EXTRACT_PROMPT = `You are a recipe extractor. You receive the raw text content of a web page that contains a recipe but has NO structured data. The text may contain <img> HTML tags — these are images from the page in their original position.
-
-Your job is to find the recipe and output it in a specific simple text format.
-
-Extract the recipe and output it in EXACTLY this format:
-
-TITLE: Recipe Name
-DESC: A short description of the dish
-SERVINGS: 4
-PREP: 30
-COOK: 45
-TAGS: tag1, tag2, tag3
-
-INGREDIENTS:
-2 | cup | flour
-1 | tsp | salt
-3 | | eggs
-
-INSTRUCTIONS:
-1. First step text here.
-![alt text](image-url)
-2. Second step text here.
-3. Third step text here.
-
-Rules:
-- Every ingredient line must be: quantity | unit | item name
-- Units must be standard: cup, tsp, tbsp, oz, lb, g, ml, clove, can, bunch, piece. Keep units lowercase singular.
-- If an ingredient has no unit (countable items like eggs), leave unit empty: "3 | | eggs"
-- Infer reasonable quantities for ingredients that don't specify one (e.g. salt -> "1 | tsp | salt").
-- PREP and COOK are in minutes. Set to 0 if not mentioned.
-- SERVINGS defaults to 4 if not mentioned.
-- Instructions must be numbered steps. Keep the FULL original text of each step — do NOT summarize or shorten.
-- IMAGES: Convert any <img> tags to ![alt](src) format. Place each image on its own line after the instruction step it relates to. Use the alt attribute for the alt text, and the src attribute for the URL. Skip images that are clearly not recipe photos (logos, badges, avatars).
-- TAGS: include cuisine type, dish type, dietary info, or other relevant tags from the page.
-- NON-ENGLISH: If the recipe is not in English, keep the original text AND add English translations:
-  - For TITLE: "Original Title (English Translation)"
-  - For ingredient items: "original name (english name)" e.g. "鶏レバー (chicken liver)"
-  - For each instruction step, add the English translation on the next line prefixed with "> " e.g.:
-    1. レバーを一口大に切る。
-    > Cut the liver into bite-sized pieces.
-  - DESC and TAGS should be in English.
-- IGNORE irrelevant or duplicate content: skip reviews, comments, related recipes, author bios, ads, navigation, repeated text, and other non-recipe content.
-- Output ONLY the plain text format above. No JSON, no markdown fencing, no explanation.
-- If the page contains multiple recipes, extract only the primary/main one.`;
-
-// Pass 1: Extract — fix missing data, infer quantities
-const EXTRACT_PROMPT = `You are a recipe data fixer. You receive recipe data in a simple text format. Fix any issues and output the SAME format back.
-
-Your job:
-- Every ingredient MUST have an accurate quantity and unit that makes sense. Parse the original text carefully to extract the measurement. Examples:
-  "5 to 6 ounces baby spinach" -> "5 | oz | baby spinach"
-  "1 large can (28 ounces) diced tomatoes" -> "28 | oz | diced tomatoes"
-  "2 cups (16 ounces) cottage cheese" -> "2 | cup | cottage cheese"
-  If the ingredient truly has no unit (countable items like eggs), leave unit empty: "3 | | eggs"
-  Do NOT leave unit empty when the source text specifies a measurement.
-- Fix any ingredients missing quantities by inferring reasonable defaults (e.g. " | | salt" -> "1 | tsp | salt").
-- Units must be a standard measurement: cup, tsp, tbsp, oz, lb, g, ml, clove, can, bunch, piece. Do NOT use the ingredient name as the unit. Keep units lowercase singular.
-- Merge duplicate ingredients ONLY if they are truly the same item used for the same purpose (combine quantities). Do NOT merge ingredients that share a name but are used in different parts of the recipe (e.g. "3/4 cup sugar" for a topping and "2 tbsp sugar" for a batter are separate ingredients — keep both).
-- CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten, summarize, or paraphrase any step.
-- Keep ALL images exactly where they are. Do NOT remove or move any ![alt](url) lines.
-- Decode any HTML entities in the text (e.g. &#8217; -> ', &frac14; -> 1/4, &frac12; -> 1/2, &frac34; -> 3/4).
-- NON-ENGLISH: If the recipe text is not in English:
-  - Keep ALL original non-English text in the original form. Do NOT replace it with English. Instead do the following:
-  - For ingredient items: append "(english name)" e.g. "Arroz bomba" -> "Arroz bomba (bomba rice)"
-  - For each instruction step, keep the original non-english text, then add an English translation on the NEXT line starting with "> ". Example:
-    1. Freír el pollo en aceite.
-    > Fry the chicken in oil.
-    2. Añadir el agua.
-    > Add the water.
-  - DESC and TAGS should be in English.
-  - If translations already exist, preserve them. Do NOT duplicate steps.
-- Output ONLY the same plain text format. No JSON, no markdown fencing, no explanation.`;
-
-// Pass 2: Process — clean names, place images
-const PROCESS_PROMPT = `You are a recipe data processor. You receive recipe data in a simple text format. You have TWO jobs:
-
-JOB 1 — Clean up ingredient names:
-Strip parenthetical sizes, verbose qualifiers, and prep notes from ingredient item names. Keep the name short and recognizable. Do NOT strip English translation parentheses from non-English ingredients (e.g. keep "Arroz bomba (bomba rice)" as-is).
-
-Examples:
-- "large can (28 ounces) diced tomatoes" -> "diced tomatoes"
-- "(2 cups) freshly grated low-moisture, part-skim mozzarella cheese" -> "mozzarella cheese"
-- "large carrots, chopped (about 1 cup)" -> "carrots, chopped"
-- "roughly chopped fresh basil + additional for garnish" -> "fresh basil"
-- "cloves garlic, pressed or minced" -> "garlic, minced"
-- "medium zucchini, chopped" -> "zucchini, chopped"
-- "to 6 ounces baby spinach" -> "baby spinach"
-- "no-boil lasagna noodles*" -> "lasagna noodles"
-Move stripped size info (like "28 ounces", "2 cups") into the quantity/unit fields if not already there.
-
-JOB 2 — Place images into instructions:
-If there is an ADDITIONAL IMAGES section at the bottom, move EACH image to INSIDE the instructions. Place each image on its own line directly AFTER the step it relates to. Match the image alt text to the step content. Remove images that are clearly unrelated (logos, author photos, other recipe thumbnails, banners). Delete the ADDITIONAL IMAGES section completely when done.
-
-For EVERY image in the ADDITIONAL IMAGES section, ask: "which step does this image show?" and place it after that step.
-
-Example input:
-INSTRUCTIONS:
-1. Sauté the vegetables until golden.
-2. Mix the cottage cheese filling.
-3. Layer the noodles and sauce.
-
-ADDITIONAL IMAGES:
-![sautéed vegetables](https://example.com/sauteed.jpg)
-![cottage cheese filling mixture](https://example.com/filling.jpg)
-![layering the lasagna](https://example.com/layers.jpg)
-![Author Kate](https://example.com/kate.jpg)
-
-Example output:
-INSTRUCTIONS:
-1. Sauté the vegetables until golden.
-![sautéed vegetables](https://example.com/sauteed.jpg)
-2. Mix the cottage cheese filling.
-![cottage cheese filling mixture](https://example.com/filling.jpg)
-3. Layer the noodles and sauce.
-![layering the lasagna](https://example.com/layers.jpg)
-
-Notice: "Author Kate" was removed (unrelated). Each cooking image was placed after its matching step.
-
-Rules:
-- CRITICAL: Keep ALL instruction text EXACTLY as-is. Do NOT shorten or paraphrase.
-- CRITICAL: Ingredients MUST stay in pipe-delimited format: quantity | unit | item. Do NOT drop the pipes.
-- NON-ENGLISH: Preserve any existing translations (parenthetical English names on ingredients, "> " translation lines after instructions). If translations are missing, add them.
-- Output the COMPLETE recipe in the same format (TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS).
-- No JSON, no markdown fencing, no explanation.`;
-
-// Pass 3: Tag — add @[] ingredient references
-const TAG_PROMPT = `You are a recipe text tagger. You receive a recipe in simple text format. Your ONLY job is to tag ingredient mentions in the INSTRUCTIONS section using the format @[item name] (at-sign, open square bracket, the EXACT and COMPLETE item name from the INGREDIENTS list including any parenthetical translations, close square bracket).
-
-Example input:
-TITLE: Simple Pasta
-DESC: A quick pasta dish.
-SERVINGS: 2
-PREP: 5
-COOK: 10
-TAGS: italian, quick
-
-INGREDIENTS:
-1/2 | tsp | olive oil
-2 | | flour tortillas
-1 | cup | grated cheese
-8 | oz | egg noodles
-
-INSTRUCTIONS:
-1. Heat oil in a pan. Place a tortilla in the pan.
-2. Sprinkle cheese on top.
-3. Cook the noodles separately.
-
-Example output:
-TITLE: Simple Pasta
-DESC: A quick pasta dish.
-SERVINGS: 2
-PREP: 5
-COOK: 10
-TAGS: italian, quick
-
-INGREDIENTS:
-1/2 | tsp | olive oil
-2 | | flour tortillas
-1 | cup | grated cheese
-8 | oz | egg noodles
-
-INSTRUCTIONS:
-1. Heat @[olive oil] in a pan. Place a @[flour tortillas] in the pan.
-2. Sprinkle @[grated cheese] on top.
-3. Cook the @[egg noodles] separately.
-
-Notice: "oil" -> @[olive oil], "tortilla" -> @[flour tortillas], "cheese" -> @[grated cheese], "noodles" -> @[egg noodles].
-
-Rules:
-- The tag format is @[item name] — @ then [ then ingredient item name then ]. Example: @[bok choy]
-- Match aggressively: any word that refers to an ingredient should be tagged. Examples:
-  "noodles" -> @[wonton noodles], "broth" -> @[chicken broth], "oil" -> @[olive oil],
-  "spinach" -> @[baby spinach], "cheese" -> @[mozzarella cheese] or @[cottage cheese] depending on context,
-  "pepper" -> @[black pepper] or @[red pepper flakes] or @[bell pepper] depending on context.
-- Match to the MOST SPECIFIC ingredient. If the list has both "wontons" and "wonton noodles", then "wontons" matches @[wontons] and "noodles" matches @[wonton noodles].
-- Tag EVERY mention of an ingredient throughout the instructions, not just the first occurrence.
-- Do NOT tag inside image alt text (inside ![...] brackets). Only tag in instruction step text.
-- ONLY add @[] tags. Do NOT wrap them in backticks or code formatting. Do NOT change, shorten, or remove ANY other text, images, or step numbers.
-- NON-ENGLISH: Preserve any existing translations (parenthetical English names on ingredients, "> " translation lines after instructions). Tag ingredient mentions in BOTH the original language lines AND the "> " translation lines.
-- IMPORTANT: Output the COMPLETE recipe starting from TITLE through the end. Include ALL sections: TITLE, DESC, SERVINGS, PREP, COOK, TAGS, INGREDIENTS, INSTRUCTIONS. Do not skip the header.`;
+const RAW_EXTRACT_PROMPT = readPrompt("pass0-raw-extract.txt");
+const EXTRACT_PROMPT = readPrompt("pass1-extract.txt");
+const PROCESS_PROMPT = readPrompt("pass2-process.txt");
+const TAG_PROMPT = readPrompt("pass3-tag.txt");
 
 // ─── Parse simple format ─────────────────────────────────────────────────────
 
@@ -792,12 +771,21 @@ async function main(): Promise<void> {
   // ── Fetch & extract JSON-LD ─────────────────────────────────────────────
   console.log("Fetching page...");
   let start = Date.now();
-  const staticResp = await fetch(TARGET_URL, {
-    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-  });
-  let html = await staticResp.text();
-  let recipe = extractJsonLdRecipe(html);
-  console.log(`  ${elapsed(start)} | ${html.length.toLocaleString()} bytes | JSON-LD: ${recipe ? "YES" : "NO"}`);
+  let html = "";
+  let recipe: Record<string, unknown> | null = null;
+  try {
+    const staticResp = await fetch(TARGET_URL, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+    });
+    html = await staticResp.text();
+    recipe = extractJsonLdRecipe(html);
+    console.log(`  ${elapsed(start)} | ${html.length.toLocaleString()} bytes | JSON-LD: ${recipe ? "YES" : "NO"}`);
+  } catch (error) {
+    console.log(`  ${elapsed(start)} | direct fetch failed, trying Browserless render...`);
+    if (error instanceof Error) {
+      console.log(`  Direct fetch error: ${error.message}`);
+    }
+  }
 
   if (!recipe) {
     console.log("  Trying Browserless render...");
@@ -851,7 +839,7 @@ async function main(): Promise<void> {
 
     console.log("\nPass 1: Extract (fix quantities, merge dupes)...");
     start = Date.now();
-    const pass1result = await callLLM(simpleFormat, EXTRACT_PROMPT, true);
+    const pass1result = await callLLM(simpleFormat, EXTRACT_PROMPT, TUNING.pass1);
     pass1 = decodeEntities(pass1result.content);
     console.log(`  ${elapsed(start)}`);
     save("02-extract.txt", pass1);
@@ -870,7 +858,7 @@ async function main(): Promise<void> {
 
     console.log("\nPass 0: Raw extract (page text → simple format)...");
     start = Date.now();
-    const pass0result = await callLLM(cleanedText, RAW_EXTRACT_PROMPT, true);
+    const pass0result = await callLLM(cleanedText, RAW_EXTRACT_PROMPT, TUNING.pass0);
     const pass0 = decodeEntities(pass0result.content);
     console.log(`  ${elapsed(start)}`);
     save("02-raw-extract.txt", pass0);
@@ -882,7 +870,7 @@ async function main(): Promise<void> {
 
     console.log("\nPass 1: Extract (fix quantities, merge dupes)...");
     start = Date.now();
-    const pass1result = await callLLM(pass0, EXTRACT_PROMPT, true);
+    const pass1result = await callLLM(pass0, EXTRACT_PROMPT, TUNING.pass1);
     pass1 = decodeEntities(pass1result.content);
     console.log(`  ${elapsed(start)}`);
     save("03-extract.txt", pass1);
@@ -896,7 +884,7 @@ async function main(): Promise<void> {
   // ── Pass 2: Process ────────────────────────────────────────────────────
   console.log("\nPass 2: Process (clean names, place images)...");
   start = Date.now();
-  const pass2result = await callLLM(pass1, PROCESS_PROMPT, false);
+  const pass2result = await callLLM(pass1, PROCESS_PROMPT, TUNING.pass2);
   const pass2 = decodeEntities(pass2result.content);
   console.log(`  ${elapsed(start)}`);
   save("04-process.txt", pass2);
@@ -908,9 +896,8 @@ async function main(): Promise<void> {
 
   // ── Pass 3: Tag ────────────────────────────────────────────────────────
   console.log("\nPass 3: Tag (add @[] ingredient references)...");
-  console.log("  (thinking enabled)");
   start = Date.now();
-  const pass3result = await callLLM(pass2, TAG_PROMPT, true);
+  const pass3result = await callLLM(pass2, TAG_PROMPT, TUNING.pass3);
   const pass3 = decodeEntities(pass3result.content);
   console.log(`  ${elapsed(start)}`);
   save("05-tag.txt", pass3);

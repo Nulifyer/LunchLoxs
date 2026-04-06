@@ -83,7 +83,11 @@ func main() {
 
 	var muxOpts []server.MuxOption
 	if llmEndpoint := os.Getenv("LLM_ENDPOINT"); llmEndpoint != "" {
-		slog.Info("LLM recipe enhancement enabled", "endpoint", llmEndpoint)
+		slog.Info("LLM recipe enhancement enabled",
+			"endpoint", llmEndpoint,
+			"prompt_dir", getEnv("LLM_PROMPT_DIR", "(bundled prompts)"),
+			"api_key_configured", os.Getenv("LLM_API_KEY") != "",
+		)
 		muxOpts = append(muxOpts, server.WithLLMEndpoint(llmEndpoint))
 	}
 	if browserlessEndpoint := os.Getenv("BROWSERLESS_ENDPOINT"); browserlessEndpoint != "" {

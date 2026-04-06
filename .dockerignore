@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+dev-data/node_modules/
+
+# Build output
+frontend/dist/
+
+# Dev data & models
+dev-data/
+
+# Git
+.git/
+
+# IDE & OS
+.idea/
+.vscode/
+.claude/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
+# Docker volumes
+pgdata/
+
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
