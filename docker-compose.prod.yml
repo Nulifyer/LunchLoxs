@@ -1,60 +1,23 @@
 # Production docker-compose for LunchLoxs
 #
-# Two deployment modes:
-#
-#   Same-origin (default):
-#     Frontend and backend share a domain. Traefik routes /api and /ws to backend.
-#     Set FRONTEND_HOST + FRONTEND_HTTPS in .env.
-#
-#   Cross-origin:
-#     Frontend and backend on separate domains.
-#     Also set BACKEND_HOST + BACKEND_HTTPS in .env.
+# This example matches the Portainer stack used on the Ryzen deployment host.
+# It assumes:
+#   - Traefik already runs separately
+#   - an external Docker network named "traefik" already exists
+#   - the app stack manages postgres, migrations, backend, frontend, and optional local LLM services
 #
 # Usage:
 #   1. Copy .env.example to .env and fill in your values
-#   2. Place TLS cert at ./certs/cert.pem and key at ./certs/key.pem
-#   3. Place traefik-dynamic.yml at ./traefik/dynamic.yml
-#   4. Run: docker compose -f docker-compose.prod.yml up -d
+#   2. Ensure the external "traefik" network exists
+#   3. Deploy the stack with docker compose or Portainer
 #
-# Images are pulled from GHCR. To pin a version, replace :latest with a tag (e.g. :v0.1.0)
-#
-# Optional: Recipe URL Import with LLM enhancement
-#   Enables "Import from URL" with AI-powered ingredient parsing and step image placement.
-#   Requires the "scrape" profile and optionally the "llm" profile.
-#
-#   Without LLM (basic JSON-LD extraction only):
-#     docker compose -f docker-compose.prod.yml --profile scrape up -d
-#
-#   With LLM (enhanced extraction through any OpenAI-style chat service):
-#     docker compose -f docker-compose.prod.yml --profile scrape --profile llm up -d
-#     Set LLM_ENDPOINT=http://llama:8080 in .env
-#
-#   Local development can use CUDA-backed llama.cpp on an RTX 5080 for fast iteration.
-#   Production should stay backend-agnostic and target the actual Ryzen AI deployment host.
-#   Any OpenAI-compatible chat completions endpoint works (e.g. llama.cpp, Ollama, vLLM, or a remote API).
+# Optional services:
+#   - Set ENABLE_LLM=1 to run local llama.cpp on the Ryzen host
+#   - Set ENABLE_SCRAPE=1 to run Browserless for JS-rendered recipe pages
+
+name: lunchloxs
 
 services:
-  traefik:
-    image: traefik:3
-    restart: unless-stopped
-    command:
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:443"
-      - "--entrypoints.web.http.tls=true"
-      - "--entrypoints.web-insecure.address=:80"
-      - "--entrypoints.web-insecure.http.redirections.entrypoint.to=web"
-      - "--entrypoints.web-insecure.http.redirections.entrypoint.scheme=https"
-      - "--providers.file.filename=/etc/traefik/dynamic.yml"
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - certs:/certs:ro
-    networks:
-      - app
-
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -70,10 +33,11 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      - app
+      - lunchloxs-net
 
   migrate:
     image: ghcr.io/nulifyer/lunchloxs-migrate:latest
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,26 +47,55 @@ services:
         "up",
       ]
     networks:
-      - app
+      - lunchloxs-net
 
   llama:
-    build:
-      context: docker/llama
+    image: ghcr.io/ggml-org/llama.cpp:server-vulkan
     restart: unless-stopped
-    profiles: ["llm"]
+    deploy:
+      replicas: ${ENABLE_LLM:-0}
+    environment:
+      LLAMA_ARG_HF_REPO: ${LLM_MODEL:-Qwen/Qwen3-8B-GGUF:Q4_K_M}
+      LLAMA_ARG_HOST: "0.0.0.0"
+      LLAMA_ARG_PORT: "8080"
+      LLAMA_ARG_CTX_SIZE: "32768"
+      LLAMA_ARG_N_PREDICT: "16384"
+      LLAMA_ARG_REASONING: "off"
+      LLAMA_ARG_N_PARALLEL: "1"
+      LLAMA_ARG_CACHE_TYPE_K: q4_0
+      LLAMA_ARG_CACHE_TYPE_V: q4_0
+      LLAMA_ARG_MMPROJ_AUTO: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - llm-models:/root/.cache/huggingface
     networks:
-      - app
+      - lunchloxs-net
 
   browserless:
     image: ghcr.io/browserless/chromium
     restart: unless-stopped
-    profiles: ["scrape"]
+    deploy:
+      replicas: ${ENABLE_SCRAPE:-0}
     environment:
       TOKEN: ${BROWSERLESS_TOKEN:-}
       CONCURRENT: "10"
       TIMEOUT: "30000"
+      HEALTH: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/docs || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     networks:
-      - app
+      - lunchloxs-net
 
   backend:
     image: ghcr.io/nulifyer/lunchloxs-backend:latest
@@ -113,39 +106,45 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lunchloxs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lunchloxs}?sslmode=disable
       PORT: "8000"
-      FRONTEND_HOST: ${FRONTEND_HOST:?Set FRONTEND_HOST in .env}
-      FRONTEND_HTTPS: ${FRONTEND_HTTPS:-}
       BIND_HOST: "0.0.0.0"
+      FRONTEND_HOST: ${DOMAIN:?Set DOMAIN in .env}
+      FRONTEND_HTTPS: "true"
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      LLM_ENDPOINT: ${LLM_ENDPOINT:-}
+      LOG_FORMAT: "json"
+      RATE_LIMIT_PER_SEC: ${RATE_LIMIT_PER_SEC:-}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-}
+      LLM_ENDPOINT: ${LLM_ENDPOINT:-http://llama:8080}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_PROMPT_DIR: ${LLM_PROMPT_DIR:-}
+      LLM_PROMPT_DIR: ${LLM_PROMPT_DIR:-/app/prompts/url-import}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-20m}
-      LLM_DEFAULT_TEMPERATURE: ${LLM_DEFAULT_TEMPERATURE:-}
-      LLM_DEFAULT_TOP_P: ${LLM_DEFAULT_TOP_P:-}
-      LLM_DEFAULT_MAX_TOKENS: ${LLM_DEFAULT_MAX_TOKENS:-}
-      LLM_PASS0_TEMPERATURE: ${LLM_PASS0_TEMPERATURE:-}
-      LLM_PASS0_TOP_P: ${LLM_PASS0_TOP_P:-}
-      LLM_PASS0_MAX_TOKENS: ${LLM_PASS0_MAX_TOKENS:-}
-      LLM_PASS1_TEMPERATURE: ${LLM_PASS1_TEMPERATURE:-}
-      LLM_PASS1_TOP_P: ${LLM_PASS1_TOP_P:-}
-      LLM_PASS1_MAX_TOKENS: ${LLM_PASS1_MAX_TOKENS:-}
-      LLM_PASS2_TEMPERATURE: ${LLM_PASS2_TEMPERATURE:-}
-      LLM_PASS2_TOP_P: ${LLM_PASS2_TOP_P:-}
-      LLM_PASS2_MAX_TOKENS: ${LLM_PASS2_MAX_TOKENS:-}
-      LLM_PASS3_TEMPERATURE: ${LLM_PASS3_TEMPERATURE:-}
-      LLM_PASS3_TOP_P: ${LLM_PASS3_TOP_P:-}
-      LLM_PASS3_MAX_TOKENS: ${LLM_PASS3_MAX_TOKENS:-}
-      BROWSERLESS_ENDPOINT: ${BROWSERLESS_ENDPOINT:-}
+      LLM_DEFAULT_TEMPERATURE: ${LLM_DEFAULT_TEMPERATURE:-0.7}
+      LLM_DEFAULT_TOP_P: ${LLM_DEFAULT_TOP_P:-0.8}
+      LLM_DEFAULT_MAX_TOKENS: ${LLM_DEFAULT_MAX_TOKENS:-8192}
+      LLM_PASS0_TEMPERATURE: ${LLM_PASS0_TEMPERATURE:-0.6}
+      LLM_PASS0_TOP_P: ${LLM_PASS0_TOP_P:-0.95}
+      LLM_PASS0_MAX_TOKENS: ${LLM_PASS0_MAX_TOKENS:-16384}
+      LLM_PASS1_TEMPERATURE: ${LLM_PASS1_TEMPERATURE:-0.6}
+      LLM_PASS1_TOP_P: ${LLM_PASS1_TOP_P:-0.95}
+      LLM_PASS1_MAX_TOKENS: ${LLM_PASS1_MAX_TOKENS:-16384}
+      LLM_PASS2_TEMPERATURE: ${LLM_PASS2_TEMPERATURE:-0.7}
+      LLM_PASS2_TOP_P: ${LLM_PASS2_TOP_P:-0.8}
+      LLM_PASS2_MAX_TOKENS: ${LLM_PASS2_MAX_TOKENS:-8192}
+      LLM_PASS3_TEMPERATURE: ${LLM_PASS3_TEMPERATURE:-0.6}
+      LLM_PASS3_TOP_P: ${LLM_PASS3_TOP_P:-0.95}
+      LLM_PASS3_MAX_TOKENS: ${LLM_PASS3_MAX_TOKENS:-16384}
+      PROXY_TIMEOUT_SECS: ${PROXY_TIMEOUT_SECS:-15}
+      BROWSERLESS_ENDPOINT: ${BROWSERLESS_ENDPOINT:-http://browserless:3000}
       BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-}
+      BROWSERLESS_TIMEOUT_SECS: ${BROWSERLESS_TIMEOUT_SECS:-30}
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`${FRONTEND_HOST}`) && (PathPrefix(`/api`) || PathPrefix(`/ws`))"
-      - "traefik.http.routers.backend.entrypoints=web"
-      - "traefik.http.routers.backend.tls=true"
-      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+      - "traefik.http.routers.lunchloxs-api-https.entrypoints=websecureEx"
+      - "traefik.http.routers.lunchloxs-api-https.rule=Host(`${DOMAIN}`) && (PathPrefix(`/api`) || PathPrefix(`/ws`))"
+      - "traefik.http.services.lunchloxs-api.loadbalancer.server.scheme=http"
+      - "traefik.http.services.lunchloxs-api.loadbalancer.server.port=8000"
     networks:
-      - app
+      - lunchloxs-net
+      - traefik
 
   frontend:
     image: ghcr.io/nulifyer/lunchloxs-frontend:latest
@@ -158,17 +157,22 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-}
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.frontend.rule=Host(`${FRONTEND_HOST}`)"
-      - "traefik.http.routers.frontend.entrypoints=web"
-      - "traefik.http.routers.frontend.tls=true"
-      - "traefik.http.routers.frontend.priority=1"
-      - "traefik.http.services.frontend.loadbalancer.server.port=5000"
+      - "traefik.http.routers.lunchloxs-http.entrypoints=webEx"
+      - "traefik.http.routers.lunchloxs-http.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.lunchloxs-http.middlewares=https-redirect"
+      - "traefik.http.routers.lunchloxs-https.entrypoints=websecureEx"
+      - "traefik.http.routers.lunchloxs-https.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.services.lunchloxs-web.loadbalancer.server.scheme=http"
+      - "traefik.http.services.lunchloxs-web.loadbalancer.server.port=5000"
     networks:
-      - app
+      - lunchloxs-net
+      - traefik
 
 volumes:
   pgdata:
-  certs:
+  llm-models:
 
 networks:
-  app:
+  lunchloxs-net:
+  traefik:
+    external: true
