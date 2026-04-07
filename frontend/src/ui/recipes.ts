@@ -6,7 +6,7 @@ import { log, warn, error } from "../lib/logger";
 import { initRecipeList } from "../views/recipe-list";
 import { initRecipeDetail, openRecipe, closeRecipe, setIngredientSuggestions } from "../views/recipe-detail";
 import { recipeToMarkdown, extractBlobChecksums, mimeToExt } from "../lib/export";
-import { loadBlobDecrypted } from "../lib/blob-client";
+import { loadBlobDecrypted, storeBlob } from "../lib/blob-client";
 import { showConfirm, showSelect } from "../lib/dialogs";
 import { handleImportFromUrl } from "../lib/url-import";
 import { handleImportToBook } from "../import-export";
@@ -21,6 +21,14 @@ import { canEditActiveBook } from "../sync/vault-helpers";
 import { switchBook } from "../ui/books";
 import type { BookCatalog, CatalogEntry, Recipe } from "../types";
 import type { TagInput } from "../components/tag-input";
+
+function rewriteBlobRefs(text: string, map: Map<string, string>): string {
+  if (map.size === 0) return text;
+  return text.replace(/\(blob:([a-f0-9]{64})\)/g, (match, oldChecksum) => {
+    const newChecksum = map.get(oldChecksum);
+    return newChecksum ? `(blob:${newChecksum})` : match;
+  });
+}
 
 export async function selectRecipe(id: string) {
   const docMgr = getDocMgr();
@@ -315,6 +323,29 @@ export function initRecipes() {
       const srcStore = docMgr.get<Recipe>(`${activeBook.vaultId}/${selectedRecipeId}`);
       if (!srcStore) return;
       const src = srcStore.getDoc();
+      const db = docMgr.getDb();
+      const checksumMap = new Map<string, string>();
+      const sourceChecksums = extractBlobChecksums(src);
+
+      if (sourceChecksums.size > 0) {
+        if (!activeBook.encKey || !targetBook.encKey) {
+          toastWarning("Copied recipe text, but encrypted image assets could not be copied.");
+        } else {
+          for (const checksum of sourceChecksums) {
+            const result = await loadBlobDecrypted(db, activeBook.vaultId, checksum, activeBook.encKey);
+            if (!result) continue;
+            const newChecksum = await storeBlob(
+              db,
+              targetBook.vaultId,
+              result.plaintext,
+              result.meta.mimeType,
+              result.meta.filename || `${checksum}.${mimeToExt(result.meta.mimeType)}`,
+              targetBook.encKey,
+            );
+            checksumMap.set(checksum, newChecksum);
+          }
+        }
+      }
       // Create in target book
       const newId = crypto.randomUUID();
       const targetCatalog = docMgr.get<BookCatalog>(`${targetBook.vaultId}/catalog`);
@@ -332,9 +363,9 @@ export function initRecipes() {
         doc.createdAt = now; doc.updatedAt = now;
         doc.description = src.description ?? "";
         doc.ingredients = (src.ingredients ?? []) as any;
-        doc.instructions = src.instructions ?? "";
-        doc.imageUrls = [];
-        doc.notes = src.notes ?? "";
+        doc.instructions = rewriteBlobRefs(src.instructions ?? "", checksumMap);
+        doc.imageUrls = [...(src.imageUrls ?? [])];
+        doc.notes = rewriteBlobRefs(src.notes ?? "", checksumMap);
       });
       newStore.ensureInitialized();
       pushSnapshot(`${targetBook.vaultId}/${newId}`);
