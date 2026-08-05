@@ -24,6 +24,7 @@ func TestNormalizeChatCompletionsURL(t *testing.T) {
 		{name: "base url", in: "http://localhost:8080", want: "http://localhost:8080/v1/chat/completions"},
 		{name: "full path", in: "http://localhost:8080/v1/chat/completions", want: "http://localhost:8080/v1/chat/completions"},
 		{name: "trailing slash", in: "http://localhost:8080/", want: "http://localhost:8080/v1/chat/completions"},
+		{name: "OpenAI base URL", in: "http://localhost:8080/api/v1", want: "http://localhost:8080/api/v1/chat/completions"},
 	}
 
 	for _, tc := range tests {
@@ -43,11 +44,15 @@ func TestLoadLLMConfigFromEnvPrecedence(t *testing.T) {
 	t.Setenv("LLM_PASS2_TEMPERATURE", "0.2")
 	t.Setenv("LLM_PASS3_MAX_TOKENS", "12000")
 	t.Setenv("LLM_TIMEOUT", "90s")
+	t.Setenv("LLM_CHAT_MODEL", "test-model")
 
 	cfg := loadLLMConfigFromEnv()
 
 	if cfg.Timeout != 90*time.Second {
 		t.Fatalf("timeout = %s, want 90s", cfg.Timeout)
+	}
+	if cfg.Model != "test-model" {
+		t.Fatalf("model = %q, want test-model", cfg.Model)
 	}
 	if got := cfg.Tuning[llmPassExtract].Temperature; got != 0.5 {
 		t.Fatalf("pass1 temperature = %v, want 0.5", got)
@@ -106,6 +111,7 @@ func TestLLMClientCallBuildsGenericRequestAndAuthHeader(t *testing.T) {
 	client, err := newLLMClient(llmConfig{
 		CompletionsURL: normalizeChatCompletionsURL(srv.URL),
 		APIKey:         "secret",
+		Model:          "test-model",
 		Timeout:        time.Second,
 		PromptDir:      dir,
 		Tuning: map[llmPass]llmTuning{
@@ -133,8 +139,8 @@ func TestLLMClientCallBuildsGenericRequestAndAuthHeader(t *testing.T) {
 	if _, ok := gotBody["chat_template_kwargs"]; ok {
 		t.Fatalf("request unexpectedly included chat_template_kwargs")
 	}
-	if _, ok := gotBody["model"]; ok {
-		t.Fatalf("request unexpectedly included model")
+	if gotBody["model"] != "test-model" {
+		t.Fatalf("model = %v, want test-model", gotBody["model"])
 	}
 	if gotBody["temperature"] != 0.1 {
 		t.Fatalf("temperature = %v, want 0.1", gotBody["temperature"])

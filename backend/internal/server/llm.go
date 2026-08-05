@@ -36,6 +36,7 @@ type llmTuning struct {
 
 type llmConfig struct {
 	APIKey         string
+	Model          string
 	Timeout        time.Duration
 	ProbeTimeout   time.Duration
 	ProbeInterval  time.Duration
@@ -68,6 +69,7 @@ func loadLLMConfigFromEnv() llmConfig {
 
 	cfg := llmConfig{
 		APIKey:         strings.TrimSpace(os.Getenv("LLM_API_KEY")),
+		Model:          strings.TrimSpace(os.Getenv("LLM_CHAT_MODEL")),
 		Timeout:        timeout,
 		ProbeTimeout:   durationEnvAny([]string{"LLM_PROBE_TIMEOUT"}, 90*time.Second),
 		ProbeInterval:  durationEnvAny([]string{"LLM_PROBE_INTERVAL"}, 2*time.Second),
@@ -144,8 +146,11 @@ func normalizeChatCompletionsURL(raw string) string {
 		return ""
 	}
 	endpoint = strings.TrimRight(endpoint, "/")
-	if strings.HasSuffix(endpoint, "/v1/chat/completions") {
+	if strings.HasSuffix(endpoint, "/chat/completions") {
 		return endpoint
+	}
+	if strings.HasSuffix(endpoint, "/v1") {
+		return endpoint + "/chat/completions"
 	}
 	return endpoint + "/v1/chat/completions"
 }
@@ -239,6 +244,9 @@ func (c *llmClient) call(ctx context.Context, pass llmPass, system, user string)
 		"temperature": tuning.Temperature,
 		"top_p":       tuning.TopP,
 		"max_tokens":  tuning.MaxTokens,
+	}
+	if c.config.Model != "" {
+		llmReq["model"] = c.config.Model
 	}
 	llmBody, err := json.Marshal(llmReq)
 	if err != nil {

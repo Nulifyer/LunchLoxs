@@ -103,6 +103,7 @@ services:
       LOG_LEVEL: debug
       LLM_ENDPOINT: http://llama:8080
       LLM_API_KEY: ""
+      LLM_CHAT_MODEL: ${LLM_CHAT_MODEL:-}
       LLM_PROMPT_DIR: /app/prompts/url-import
       LLM_TIMEOUT: 20m
       LLM_DEFAULT_TEMPERATURE: "0.7"

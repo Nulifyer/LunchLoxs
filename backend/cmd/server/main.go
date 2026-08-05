@@ -85,6 +85,7 @@ func main() {
 	if llmEndpoint := os.Getenv("LLM_ENDPOINT"); llmEndpoint != "" {
 		slog.Info("LLM recipe enhancement enabled",
 			"endpoint", llmEndpoint,
+			"model", getEnv("LLM_CHAT_MODEL", "(server default)"),
 			"prompt_dir", getEnv("LLM_PROMPT_DIR", "(bundled prompts)"),
 			"api_key_configured", os.Getenv("LLM_API_KEY") != "",
 		)
